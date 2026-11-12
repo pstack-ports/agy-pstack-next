@@ -64,7 +64,7 @@ jobs:
           trap 'rm -rf "$AGY_HOME"' EXIT
           HOME="$AGY_HOME" agy plugin validate --strict .
           HOME="$AGY_HOME" agy plugin install .
-          HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/pstack"
+          HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/agy-pstack-next"
           HOME="$AGY_HOME" agy plugin list --json > "$AGY_HOME/plugins.json"
           AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" bun -e '
             import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";

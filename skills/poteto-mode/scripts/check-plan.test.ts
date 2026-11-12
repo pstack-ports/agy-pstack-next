@@ -20,7 +20,7 @@ ${rule}
 ### PR mechanics
 ### Verdict and merge
 ### Boot recipe
-\`~/.gemini/config/plugins/pstack/\` /schedule 1h status message
+\`~/.gemini/config/plugins/agy-pstack-next/\` /schedule 1h status message
 
 ## PR 1
 **Depends on.** None.
@@ -114,7 +114,7 @@ test("accepts installed Antigravity plugin path in Program checklist", () => {
 	const file = join(directory, "plan.md");
 	writeFileSync(
 		file,
-		validPlan.replace("`~/.gemini/config/plugins/pstack/`", "`~/.gemini/config/plugins/pstack/skills/swarm/SKILL.md`"),
+		validPlan.replace("`~/.gemini/config/plugins/agy-pstack-next/`", "`~/.gemini/config/plugins/agy-pstack-next/skills/swarm/SKILL.md`"),
 	);
 	try {
 		const result = spawnSync("node", [checker, file], { encoding: "utf8" });

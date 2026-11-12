@@ -21,7 +21,7 @@ fork it. improve it. make it yours. PRs are welcome!
 Install the plugin with the Antigravity CLI:
 
 ```bash
-agy plugin install https://github.com/pstack-ports/agy-pstack
+agy plugin install https://github.com/pstack-ports/agy-pstack-next
 ```
 
 Verify the installation:

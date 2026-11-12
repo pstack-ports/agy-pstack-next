@@ -7,7 +7,7 @@ In this page you install the plugin, pick which models pstack uses, and run your
 Install the plugin with the Antigravity CLI:
 
 ```bash
-agy plugin install https://github.com/pstack-ports/agy-pstack
+agy plugin install https://github.com/pstack-ports/agy-pstack-next
 ```
 
 ## Pick your models
