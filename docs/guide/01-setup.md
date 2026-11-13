@@ -1,62 +1,66 @@
 # Set up pstack
 
-In this page you install the plugin, pick which models pstack uses, and run your first task. Setup is one command plus a short conversation.
+In this page you install `agy-pstack-next`, map swarm worker prefixes to models, optionally bootstrap project verification skills, and run your first swarm task.
 
 ## Install the plugin
 
-Install the plugin with the Antigravity CLI:
+Install the plugin from the terminal with the Antigravity CLI:
 
 ```bash
 agy plugin install https://github.com/pstack-ports/agy-pstack-next
 ```
 
-## Pick your models
+Installing registers root [`hooks.json`](../../hooks.json), [`hooks/guard.mjs`](../../hooks/guard.mjs), the four role capsules under `roles/`, and all 13 skills automatically.
 
-Run:
+## Configure swarm models and budgets
+
+Run the setup skill inside Antigravity:
 
 ```text
 /setup-pstack
 ```
 
-[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) detects the model tiers you want to use, asks for a reasoning budget, shows you each role (code delegates, judgment, the review panels), and asks what you want. Answer the questions. It writes `~/.gemini/config/rules/pstack-models.md`, a small rule every pstack skill reads.
+[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) queries `swarm{action: "models"}` to discover every model currently available in your Antigravity environment across Claude, Gemini, and GPT-OSS families, alongside `inherit` (which runs workers on your active session model). It asks for your budget preset and writes `~/.gemini/config/rules/pstack-models.md`.
 
-The defaults use `flash` for code-writing and exploration delegates and `pro` for deep reasoning and judgment. `unlimited` and `large` use `pro` for judgment and `flash` for fast execution; `medium` and `small` shift roles down toward `flash` and `flash_lite` to spend fewer tokens.
+Every swarm workflow reads that rule to pin models by role prefix.
 
-You only override what you care about. A role with no line in the rule keeps the skill's default. To restore a default, delete that role's line. A rerun of `/setup-pstack` keeps any role whose model differs from the default. When a default changes, a rule written before the change still pins the old default, so delete those role lines, or delete the file, then run `/setup-pstack` again.
+- **`coordinator`.** Plans slices, manages the board, and synthesizes results.
+- **`impl-*`, `cand-*`, `lead-*`.** Author code, prototypes, and sub-area slices in `workspace: "share"` worktrees.
+- **`ro-*` and `ro-verify`.** Run read-only exploration, trace probes, and independent behavioral verification in `workspace: "inherit"`.
+- **`adv-*` and `ro-judge`.** Run adversarial bug repros and cross-family design or eval judging so a model family does not grade its own blind spots.
+- **`sicko-*`.** Runs post-pass comment and slop surgery across diffs.
 
-You might be wondering what happens if you use `inherit`. Set a role to `inherit` (or `inherit-parent` / `auto`) and pstack passes `Model: "inherit"` (or omits `Model`), so the subagent inherits your parent chat model. For a panel role the value is a list, and one subagent runs per entry, so the list length sets the panel size. Setup also configures `swarm workers`, the default model for every `/swarm` worker unless a race names a model for each arm.
+You override only the roles you care about. Roles omitted from `pstack-models.md` fall back to `inherit` or the skill's preset defaults. If a worker hits rate limits or low quota mid-run, `/pstack` hot-swaps its model live via `swarm{action: "model"}` without losing its conversation or worktree.
 
-## Accept the verification offers, or don't
+`/setup-pstack` also handles two companion jobs whenever you ask for them. It recommends the right v2 skill or prompt for an unfamiliar task, and it configures standing `/schedule` automations.
 
-At the end of setup, `/setup-pstack` looks for a way to prove app behavior in your project, either a `verify-*` skill or an existing harness. If it finds neither, it offers once to generate one with [`/create-verification-skill`](../../skills/create-verification-skill/SKILL.md).
+## Generate project verification skills
 
-Say yes and it writes `.agents/skills/verify-<app>/`, a project-local skill that teaches agents to drive your app the way a user does. It proves the skill works once before handing it over. Say no and setup moves on. You can run `/create-verification-skill` yourself any time. [Verify and ship](./06-verify-and-ship.md#create-a-project-verification-skill) covers it in depth.
+At the end of setup, `/setup-pstack` checks whether your repository already has a `.agents/skills/verify-*` skill or local E2E harness. When none exists, it offers to run [`/verify-gen`](../../skills/verify-gen/SKILL.md).
 
-If you're new to pstack, say yes. An agent that can check its own work keeps going until the check passes. An agent that can't hands every result back to you to check by hand. Of everything in this guide, the verification skill pays off the most.
+Say yes on any project you work in regularly. `/verify-gen` interviews the codebase with `ro-*` mappers, writes `.agents/skills/verify-<app>/` with a `features/` map in an isolated `impl-verify` worktree, and proves the new skill end to end with `ro-verify` before landing it. An agent that can launch and verify your app autonomously loops until checks pass instead of handing half-tested diffs back to you.
 
-Then setup offers once to generate a formal verification skill with [`/create-formal-verification-skill`](../../skills/create-formal-verification-skill/SKILL.md), unless the project already has one. Tests check the cases someone thought to write. A formal verification skill checks one key property of your code, such as "a job never runs twice at once", in every case within a stated scope. Say yes when your code has concurrency, retries, a state machine, or a parser, where a bug is costly and tests rarely reach the case that breaks. Otherwise say no, and run it later if that changes. [Verify and ship](./06-verify-and-ship.md#prove-a-property-with-a-formal-verification-skill) covers it.
+When your repository has concurrency, retries, leases, state machines, or parsers where unit tests miss interleavings, run [`/verify-gen --formal`](../../skills/verify-gen/SKILL.md) as well. It models or property-tests your highest-risk invariant and proves the check catches a real injected break. [Verify and ship](./06-verify-and-ship.md) covers both modes in detail.
 
-After setup, start a new chat. The model rule applies to new sessions.
+Start a fresh chat after writing `pstack-models.md` so new sessions pick up the updated rule.
 
-## Keep the cost in check
+## Keep token spend predictable
 
-pstack spends extra tokens on subagents and review panels. That's the price of the rigor. To spend fewer:
+Parallel swarms trade tokens for wall-clock speed and independent verification. Four levers control spend.
 
-- Rerun `/setup-pstack` and pick a smaller reasoning budget or cheaper models. A strong model in the main chat with cheaper, faster models in the code roles is a good split.
-- Set a role to `inherit` (or `auto` / `inherit-parent`) so it runs on the chat's own model.
-- Shorten a panel list. Each entry runs one subagent.
-- Save `/poteto-mode` for work that needs rigor. A small, obvious edit doesn't.
+- Pick a leaner budget preset in `/setup-pstack` so `ro-*` explorers and `sicko-*` cleanup workers use fast, inexpensive models while `coordinator` and `ro-judge` keep frontier reasoning models.
+- Leave roles on `inherit` when your active session already uses the exact model you want.
+- Right-size candidate counts in `/crucible` and `/interrogate` (`2` or `3` candidates for routine boundaries, more only for irreversible interfaces).
+- Use `/pstack` for multi-file, risky, or verifiable engineering tasks rather than single-line typo edits.
 
 ## Run your first task
 
-Pick something real but small, and describe it the way you'd describe it to a colleague:
+Give `/pstack` a small, concrete change with an explicit invariant:
 
 ```text
-/poteto-mode add a --json flag to this command. text output stays byte-identical. verify both.
+/pstack add a --json flag to this CLI command. plain-text output must stay byte-identical. verify both modes.
 ```
 
-Watch the todo list. Its first items are the matched playbook's steps copied in, the Feature playbook for this prompt. If `/poteto-mode` skips a step, the step stays in the list with `skip: <reason>`, so you can see what it chose not to do.
+`/pstack` matches the [`build`](../../skills/pstack/topologies/build.md) topology, implements the change in an isolated `impl-*` worktree, runs `ro-verify` against both CLI modes, merges the verified commit locally, and tears down its workers cleanly.
 
-From here you can type normal follow-ups. `/poteto-mode` attaches the skill to one message, and it fades as the chat moves on, so start each new task with `/poteto-mode`.
-
-Next: [Route work through `/poteto-mode`](./02-poteto-mode.md).
+Continue to [Route work through `/pstack`](./02-pstack.md).

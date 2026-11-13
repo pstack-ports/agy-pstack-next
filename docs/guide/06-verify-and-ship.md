@@ -1,162 +1,85 @@
-# Verify the result and open a PR
+# Verify the result and ship cleanly
 
-"It compiles" is not evidence. The [Prove It Works principle](../../skills/principle-prove-it-works/SKILL.md) makes the agent check the real artifact before it reports success, and your job is to make "the real artifact" checkable. This page covers stating a finish condition, vetting a measured number, generating a verification skill for your app, formally verifying a property tests rarely reach, opening the PR, and driving it to merged.
+`"It compiles"` is not verification. In Swarm-Centric Pstack v2, no author worker grades its own homework. Independent `ro-verify` workers check the real artifact against your finish condition, [`/verify-gen`](../../skills/verify-gen/SKILL.md) turns manual verification into reusable repo infrastructure, and the [`ship`](../../skills/pstack/topologies/ship.md) topology gates PRs and CI triage with mechanical push rules.
 
-Verification is the slowest step in most agent work, because it's the step that usually waits on a human. Make the agent able to do it, and you stop being the bottleneck. Skip it, and running more agents only gets you more unchecked work to review.
+![A prototype plane flies a real test course while an engineer times it with a stopwatch and robots film and checklist the run.](./images/verification.jpg)
 
-![A prototype plane flies a real test course while she times it with a stopwatch and robots film and checklist the run; the terminal reads verify: pass, evidence: captured.](./images/verification.jpg)
+## State a falsifiable finish condition up front
 
-## State the finish condition up front
-
-Put what done means in the first prompt, in whatever words fit:
+Put what `"done"` means in your opening prompt so `ro-verify` has concrete predicates to execute:
 
 ```text
-/poteto-mode add json output to this command. text output stays byte-identical, the json parses, both run against the sample project. show me the evidence.
+/pstack add --format json to the audit command. plain text stays byte-identical, JSON output parses cleanly, and both run against the sample fixture. show the command outputs.
 ```
 
-Now the agent has three checks it can run, not a mood to satisfy. When the reply comes back, it should carry the exact commands and outputs. If a check couldn't run, a good reply says "inconclusive". A confident reply without evidence is a warning sign.
+Match the required proof artifact to the surface you changed.
 
-Match the check to the change:
+- **CLI or TUI changes.** Run the real binary via [`/control-cli`](../../skills/control-cli/SKILL.md) and capture stdout, stderr, and exit codes.
+- **Web or Electron changes.** Walk the real user flow via [`/control-ui`](../../skills/control-ui/SKILL.md) and capture ARIA snapshots plus before-and-after screenshots.
+- **Storage or schema changes.** Query a read-only second view to prove persisted values rather than trusting an `"OK"` toast.
+- **Performance changes.** Compare alternating baseline and candidate runs with `ro-bench`.
+- **Cross-cutting changes.** Run [`/interrogate`](../../skills/interrogate/SKILL.md) so `adv-*` probes edge cases and `ro-blast` audits downstream callers and rollout order.
 
-- A CLI change runs the real command.
-- A UI change walks the changed flow in the running app. When it must match a reference pixel for pixel, the [Visual parity playbook](../../skills/poteto-mode/playbooks/visual-parity.md) diffs screenshots against a frozen baseline instead of judging by eye.
-- A parser or migration replays a saved input.
-- A perf change compares before and after profiles.
-- A storage change reads back the written value.
+## Vet every measured number before citing it
 
-Ask for the proof as an artifact you can inspect yourself: the failing test and then the passing one, a before-and-after video, the trace, the screenshot. If the fix already merged, ask for the same check again on main. An artifact beats a plausible explanation, because you can challenge it without replaying the whole run.
+Benchmarks lie easily through warm caches, untuned debug builds, or timed regions that omit async work. Inside `hillclimb` (and distilled in [`principles.md`](../../skills/pstack/references/principles.md) under Explain the Number), `ro-bench` answers seven mandatory questions from real runs before any speedup claim survives.
 
-For a small diff you don't fully trust, [`/blast-radius`](../../skills/blast-radius/SKILL.md) finds what it could break elsewhere. It finds the one fact that makes the change safe and proves that fact by running code, not by arguing for it.
+1. What hardware or algorithmic bottleneck limits the number right now, and why is it not twice as fast?
+2. Did baseline and candidate both run with production flags and warm-up parity?
+3. Does the claimed throughput respect physical limits (disk bandwidth, memory bus, core count, network RTT)?
+4. Did every run produce valid output with zero silent errors?
+5. Does the delta hold across alternating runs with reported median and range?
+6. Does the speedup move an end-to-end path a user actually waits on?
+7. Did all real work finish inside the measured timer window?
 
-## Vet a measured number with `/benchmark-checklist`
+Any measurement that cannot name its limiter or reproduce across alternating runs is marked `inconclusive`.
 
-A before-and-after number is the easiest evidence to get wrong by accident. A warm cache, a debug build on one side, or work that never ran inside the timed region can each produce a convincing speedup. Before you report or act on a number, type:
+## Generate and maintain behavioral verification skills with `/verify-gen`
+
+Agents can verify your app autonomously only when the repo gives them a repeatable way to launch, health-check, and drive it. Bootstrap that capability once with [`/verify-gen`](../../skills/verify-gen/SKILL.md):
 
 ```text
-/benchmark-checklist vet the export speedup before it goes in the pr
+/verify-gen
 ```
 
-[`/benchmark-checklist`](../../skills/benchmark-checklist/SKILL.md) asks seven questions and wants evidence from a run for each:
+`/verify-gen` runs a three-stage swarm pipeline. Parallel `ro-*` mappers interview your codebase for launch commands, readiness signals, harnesses, and port or data-dir isolation flags. `impl-verify` (`workspace: "share"`) authors `.agents/skills/verify-<app>/SKILL.md` (with `Launch`, `Doctor`, `Drive`, `Evidence`, `Cleanup`, and executable `Helpers`) plus a `features/` directory modeled on [`feature-map-example`](../../skills/verify-gen/references/feature-map-example/README.md). Finally, `ro-verify` executes the skill cold end to end and confirms proof artifacts survive cleanup before the commit lands.
 
-1. What limits the number, and why isn't it double?
-2. Did every side run tuned the way production runs?
-3. Does the result break a physical limit, like disk bandwidth or core count?
-4. Did anything error or return wrong output?
-5. Does it reproduce over alternating runs, with a median and a range?
-6. Does it matter end to end, on the path a user waits on?
-7. Did the work actually happen inside the timed region?
-
-The verdict comes back as faster, slower, no measurable difference, or inconclusive, with the run count, range, and limiter. It says inconclusive when it can't name the limiter or a side ran untuned. `/poteto-mode` already runs the checklist inside the Perf issue and Hillclimb playbooks, so you type it yourself when you measured something outside them, or when someone else's number looks too good. It's the working form of the [Explain the Number principle](../../skills/principle-explain-the-number/SKILL.md).
-
-## Create a project verification skill
-
-The UI bullet above hides a real requirement. The agent needs a scripted way to drive your app. If your project has one, great. If not, run:
+Commit `.agents/skills/verify-<app>/` to git so every teammate and every future swarm worker drives the app identically. As features evolve, keep the map honest with `--maintain` (on demand or on a daily `/schedule` cron):
 
 ```text
-/create-verification-skill
+/verify-gen --maintain
 ```
 
-[`/create-verification-skill`](../../skills/create-verification-skill/SKILL.md) interviews the repository, not you. It works out what a user touches, how the app launches locally, what can drive it (an existing harness first, otherwise browser and CDP, a PTY, or plain HTTP), what evidence proves behavior, and whether two instances can run side by side. It asks you only what the code can't answer.
+`--maintain` fans out `ro-map-*` readers across every feature file, patches doc or selector drift in `impl-verify`, runs a full live `ro-verify` session under strict health-check and cleanup invariants, and reports `clean`, `changed`, or `blocked` while flagging real product regressions without masking them in docs.
 
-It writes `.agents/skills/verify-<app>/`, agent-facing instructions with exact Launch, Doctor, Drive, Evidence, and Cleanup sections, a Helpers section for any script it ships, plus a feature map under `features/` that indexes what the app does and what result proves each feature works. The skill ships a [worked feature-map example](../../skills/create-verification-skill/references/feature-map-example/) with a README index and one file per feature using the four required H2s. Before handing it over, the generator proves the skill once end to end: launch, doctor check, drive one feature, capture evidence, clean up, then confirm the evidence survived the cleanup. If that proof fails, don't use the output.
+## Prove invariants and state machines with `--formal` and `/statechart`
 
-From then on, "verify it in the app" is a step any agent can execute, in this repo, with no setup conversation. Name it in the prompt when you want the proof in a specific form:
+Behavioral E2E drives exercise common journeys, while costly bugs often hide in rare retry interleavings, lock expirations, or parser edge cases. Generate a formal check for those promises with `--formal`:
 
 ```text
-/poteto-mode build the bulk-archive action. use /verify-<app> to verify your changes and show me a video and screenshots as proof.
+/verify-gen --formal verify job lease renewal so one job never executes on two workers simultaneously
 ```
+
+`/verify-gen --formal` picks the lowest-cost tool that answers the question (TLA+ model checking via TLC for event ordering, language-native SMT or code-level verifiers, or property-based testing with generated inputs against real functions). `impl-verify` maps indivisible code steps faithfully, proves the check catches an injected scratch bug in its isolated worktree, records covered files plus `sync_commit`, and hands off to `ro-verify`.
+
+After refactors or merges touch covered files, bring the formal model back in sync and separate stale-model drift from real code bugs:
 
 ```text
-/poteto-mode repro this with /verify-<app>. if it repros on main, fix it and show me a video as proof.
+/verify-gen --maintain --formal
 ```
 
-Once the verify skill works, a [`/swarm`](../../skills/swarm/SKILL.md) can split a full pass by feature-map entry and aggregate the results. A swarm of verifiers also confirms a perf win over a big enough sample, or fuzzes the app for regressions before a PR ships.
+Whenever a stakeholder needs to inspect a TLA+ protocol or UI flow visually without reading TLA+ syntax, pair with [`/statechart`](../../skills/statechart/SKILL.md) to render checked Mermaid or Pele SVG statecharts showing shortest counterexample paths in user terms.
 
-Treat the verification skill as infrastructure, not a one-off. Commit it, so every person and every agent on the team drives the app the same way. Then [build the lever](../../skills/principle-build-the-lever/SKILL.md). When agents keep writing throwaway scripts to click through the app, ask for a small control CLI that the skill calls instead. Agents spend fewer tokens, and every run becomes repeatable. A CLI that agents use well has these traits:
+## Land locally, open PRs on request, and babysit CI (`ship`)
 
-- A few composable commands, each doing real work, rather than many thin ones.
-- A `--dry-run` option on anything destructive.
-- Subcommands that reveal features gradually instead of all at once.
-- Error messages that say what to do instead.
-- Rich `--help` text.
-- Machine-readable output, such as JSON.
+Pstack v2 never pushes to a remote repository unless you ask. `hooks/guard.mjs` enforces that boundary mechanically by blocking force-pushes to `main` or `master`, forbidding `git push` for `adv-*` and `sicko-*`, and requiring `PSTACK_ALLOW_PUSH=1` for authorized push steps.
 
-While you're there, make the dev setup repeatable too: seeded data, test users, and one command that brings the environment up the same way every time.
-
-## Keep the verification skill honest
-
-Apps change, and feature maps go out of date. Run this at least once a day, ideally from a scheduled automation so nobody has to remember:
+When you want a verified branch turned into a clean PR and driven to green CI, invoke `/pstack` (`ship` topology):
 
 ```text
-/maintain-verification-skill
+/pstack verify this branch, open a crisp PR with evidence in the body, and babysit CI and review comments until merge-ready.
 ```
 
-[`/maintain-verification-skill`](../../skills/maintain-verification-skill/SKILL.md) audits the generated skill: one read-only source reader per feature in parallel, then one live pass that drives every mapped feature. It ends in exactly one of three outcomes. `clean` means full coverage and nothing to ship. `changed` means one PR of proven corrections, confined to the verification skill's own directory. `blocked` names the blocker. It never edits product code. If the live pass catches a product regression, it reports the regression instead of hiding it with a doc edit.
+In [`ship`](../../skills/pstack/topologies/ship.md), `/pstack` runs `ro-verify` and `/interrogate` pre-flight checks, orders commits cleanly, formats the PR briefing under `/technical-writing` rules, pushes with `PSTACK_ALLOW_PUSH=1`, and monitors checks and review threads using [`watch-pr`](../../skills/pstack/scripts/watch-pr) and [`bugbot-triage.md`](../../skills/pstack/references/bugbot-triage.md). Real defects route to `impl-fix` (`workspace: "share"`), false-positive bot comments get concise factual replies backed by evidence, and stacked PRs verify independently from bottom to top before landing.
 
-## Prove a property with a formal verification skill
-
-A verification skill proves the paths you drive. Some bugs live on paths nobody drives: two retries that overlap, a lock that expires mid-write, a state change that arrives out of order. Tests rarely reach those cases. For code where such a bug is costly, run:
-
-```text
-/create-formal-verification-skill
-```
-
-[`/create-formal-verification-skill`](../../skills/create-formal-verification-skill/SKILL.md) picks the target from the code: a promise the code makes, where a break harms users and tests rarely reach the case that breaks it. It picks the strongest target, not the easiest to verify. Name an area or a bug to start there instead:
-
-```text
-/create-formal-verification-skill the job lease and retry logic. a job must never run twice at once.
-```
-
-The question picks the tool. Whether events can happen in a bad order suits a model checker over a small model of the design, and TLA+ is the default for that in any language. Whether the code behaves for every input suits a verifier that runs on the code. If no verifier runs on your language, the agent says so and tests the real code with generated inputs, not a hand-written model of the function. A property that must hold at every size can need a proof. The agent tells you which tool it chose and why.
-
-It verifies one property and shows that property failing on a broken variant of the code, because a check you've never seen fail proves nothing. When the current code already breaks the property, you get the counterexample as a short sequence of steps in your code's terms. The property stays as stated, so the finding stays a finding. Product code doesn't change unless you ask.
-
-It writes a project-local skill that tells the next agent whether a change touches the verified code, how to run the check with one command, and how to tell a real bug from a modeling error. Before handing it over, the generator follows that skill once on a scratch change that breaks the property, and the check must catch it. The handoff says what was verified, with which tool and bounds, what the check found, and what it doesn't cover. A pass covers the model or the bound, not the whole system.
-
-The skill also records which code each check covers and the commit where the check last matched it. Merges and refactors that skip the skill can leave the check passing on a description of code that's gone. After them, run [`/maintain-formal-verification-skill`](../../skills/maintain-formal-verification-skill/SKILL.md). It updates the verification from the code, reruns it, shows that each updated check can still fail, and tells you whether each failure is drift in the verification or a bug in the code.
-
-## Show the behavior as a statechart
-
-A counterexample in model terms convinces you. The PM or designer who owns the behavior needs to see it in their terms. Run:
-
-```text
-/statechart what the user sees when they edit a note offline
-```
-
-[`/statechart`](../../skills/statechart/SKILL.md) draws a Mermaid statechart of what the user sees, generated from a TLA+ model, so the picture and the checked model can't drift apart. The reader's rules ("you never see Synced while you're offline") become invariants. The chart marks each state that breaks a rule, and the report gives the shortest path to it in the reader's words. Before the hand-off, the agent reproduces each bug path in the real code, so a modeling error doesn't reach the reader as a bug.
-
-## Open the PR
-
-```text
-/poteto-mode open the pr. small ordered commits, evidence in the description.
-```
-
-The [Opening a PR playbook](../../skills/poteto-mode/playbooks/opening-a-pr.md) works from a worktree, rebases the work into small ordered commits, cleans the diff, unslops the prose, and returns the PR link. Five narrow PRs beat one fat one, and stacked follow-ups beat a growing branch.
-
-## Drive the PR to merge-ready with Babysit
-
-An open PR starts collecting blockers immediately. Checks fail, reviewers comment, trunk moves. Hand that churn to the [Babysit playbook](../../skills/poteto-mode/playbooks/babysit.md):
-
-```text
-/poteto-mode babysit this pr. get it green.
-```
-
-Babysit watches the PR, with a bundled watcher on GitHub or the Origin CLI when it's available, and takes blockers in order: conflicts, then review threads, then CI. Every known fix batches into one push, so the checks restart once instead of after every fix. The comment triage is skeptical, because humans and bots file real catches and noise in the same list. A real finding gets a fix, and noise gets dismissed with the disproof posted on the thread. When all you want is status, ask smaller and Babysit answers without starting the loop:
-
-```text
-/poteto-mode check on pr 123. anything outstanding?
-```
-
-Babysit stops at merge-ready. It never merges, even with everything green, because merging is a different decision.
-
-## Land the stack with Shipping
-
-Green is not the same as safe. When you're ready to land, say so:
-
-```text
-/poteto-mode land the stack.
-```
-
-The [Shipping playbook](../../skills/poteto-mode/playbooks/shipping.md) verifies each PR independently before it arms anything. One fresh agent per PR proves the behavior live, and the agent that judges a change is never the one that wrote it. Then Shipping lands only the contiguous verified run from the bottom, one PR at a time through GitHub by default or Origin when its CLI is available, and reports the first PR that breaks the chain. A verified PR sitting above an unverified one waits, because merging it would pull the gap in underneath.
-
-Next: [Run work while you sleep](./07-overnight.md).
+Continue to [Run work while you sleep](./07-overnight.md).

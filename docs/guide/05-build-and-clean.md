@@ -1,83 +1,67 @@
 # Build the change and clean the diff
 
-The build playbooks share one discipline. Say what you observed, and let the playbook demand the evidence. This page shows what to put in the prompt for each common build task, then the cleanup habit that keeps diffs reviewable.
+Every `/pstack` build, diagnosis, and optimization topology follows one core discipline. State what you observed and what must hold, and let the swarm demand runtime evidence from isolated workers before landing commits.
 
-## Prompt each build playbook with what you know
+## Prompt each topology with concrete facts
 
-A bug prompt states the symptom and asks for a reproduction first:
+### Bug fixes and forensics (`diagnose`)
 
-```text
-/poteto-mode this command emits two records after a retry. repro first, then fix and verify.
-```
-
-A feature prompt states the behavior and what must not change:
+Give the symptom, any known failure artifact, and `"reproduce first"`:
 
 ```text
-/poteto-mode add a --json flag. text output stays byte-identical. verify both forms.
+/pstack this CLI emits duplicate summary lines when stdin closes mid-batch. reproduce first, fix the root cause, and prove the regression test passes.
 ```
 
-A refactoring prompt pins behavior before structure moves:
+In [`diagnose`](../../skills/pstack/topologies/diagnose.md), parallel `ro-*` workers probe competing hypotheses across code, logs, CPU profiles, or heap snapshots first. Once a probe isolates the root cause, the coordinator warm-forks that investigator (`fork: "ro-winner"`) into `impl-fix` (`workspace: "share"`), writes a failing behavioral test first whenever a fast local test path exists, applies the root-cause fix, and hands verification to `ro-verify`.
+
+For live leaks, CPU spins, or captured `.cpuprofile` and trace files where you want diagnosis before any code edits, add `"do not change code yet"`:
 
 ```text
-/poteto-mode move parsing into one module, zero behavior change. record the current output first and prove it's unchanged after.
+/pstack inspect /tmp/startup.cpuprofile, attribute the 1.8s stall to exact source lines, and report the bottleneck without changing code yet.
 ```
 
-A perf prompt states the measurement, not an impression:
+### Features, refactors, and visual parity (`build`)
+
+State the target behavior alongside invariants that must not change:
 
 ```text
-/poteto-mode startup takes 1.8s on this fixture. trace it, fix the measured cause, show me before and after.
+/pstack move query parsing into a single boundary module with zero behavior change. record baseline fixture outputs first and prove byte-identical output afterward.
 ```
 
-Each of these routes to its playbook ([Bug fix](../../skills/poteto-mode/playbooks/bug-fix.md), [Feature](../../skills/poteto-mode/playbooks/feature.md), [Refactoring](../../skills/poteto-mode/playbooks/refactoring.md), [Perf issue](../../skills/poteto-mode/playbooks/perf-issue.md)), and the playbook supplies the steps you didn't type: reproduce before fixing, name the data shape before implementing, pin behavior before restructuring, profile before optimizing.
+In [`build`](../../skills/pstack/topologies/build.md), the coordinator slices disjoint file or module ownership across parallel `impl-*` (`workspace: "share"`) authors so two workers never touch the same file. Refactors migrate all callers and delete legacy APIs in the same wave rather than leaving compatibility shims behind. Visual parity tasks pair `impl-*` with [`/control-ui`](../../skills/control-ui/SKILL.md) to diff screenshots on ephemeral ports and isolated `--user-data-dir` profiles until layouts match.
 
-For sustained improvement of one number, there's the [Hillclimb playbook](../../skills/poteto-mode/playbooks/hillclimb.md). Give it the metric, a target, and a floor on attempts, and it loops one hypothesis at a time with a frozen measurement harness. It keeps wins and reverts everything else.
+### Sustained performance work (`hillclimb`)
 
-Both perf playbooks run [`/benchmark-checklist`](../../skills/benchmark-checklist/SKILL.md) on their numbers. Perf issue vets its baseline and every number after it, and Hillclimb vets its harness before freezing it. [Verify and ship](./06-verify-and-ship.md#vet-a-measured-number-with-benchmark-checklist) shows when to type it yourself.
-
-Sometimes you want the cause before any fix. For a live symptom, such as a leak, an idle CPU spin, or a visual glitch, the [Runtime forensics playbook](../../skills/poteto-mode/playbooks/runtime-forensics.md) instruments the running process. For a profile you already captured, the [Trace forensics playbook](../../skills/poteto-mode/playbooks/trace-forensics.md) reads the artifact and maps the hot frame to source. Both return a diagnosis, not a fix:
+State the measured baseline, the target, and the fixture:
 
 ```text
-/poteto-mode here's a cpuprofile from the slow startup. tell me where the time goes and which source lines own it. no fix yet.
+/pstack startup takes 1.8s on the 10k-file workspace fixture. lock a baseline noise floor, hillclimb cold-start latency below 600ms, and show the scoreboard.
 ```
 
-## Write the failing test first with `/tdd`
+In [`hillclimb`](../../skills/pstack/topologies/hillclimb.md), `ro-bench` locks a baseline median, range, and noise floor first, checking every number against physical limits and arithmetic sanity. Parallel `cand-*` (`workspace: "share"`) workers test orthogonal optimization levers, post `#seq` measurements to a live board scoreboard, discard sub-noise edits, and cherry-pick orthogonal wins onto the main branch.
 
-When a bug has a cheap local test path, the whole prompt can be two words:
+## Drive UIs and CLIs without port collisions
 
-```text
-/tdd implement
-```
+When `impl-*`, `adv-*`, and `ro-verify` exercise apps concurrently on one machine, shared ports and profiles cause flaky false failures. Two specialist skills keep local harnesses isolated.
 
-In context, that's enough. [`/tdd`](../../skills/tdd/SKILL.md) writes the smallest test that fails for the intended reason, then the fix, then reruns the test. If a test would need broad harness setup or brittle mocks, the skill says so and uses the closest executable check instead. Don't force a test where a real command is stronger evidence.
+- **[`/control-ui`](../../skills/control-ui/SKILL.md).** Drives Playwright, Chromium, or Electron over ephemeral dev ports and per-worker `--user-data-dir=/tmp/ui-profile-<worker>-<run>` directories, selecting pages by stable ARIA roles and `data-*` markers.
+- **[`/control-cli`](../../skills/control-cli/SKILL.md).** Drives interactive CLIs and TUIs inside worker-scoped `tmux -L` sockets or Python PTY harnesses with isolated `HOME`, `TMPDIR`, and `XDG_CONFIG_HOME` paths and `127.0.0.1:0` inspector ports.
 
-## Load the TypeScript rules by name
+## TypeScript and test-first discipline in the capsule
 
-[`typescript-best-practices`](../../skills/typescript-best-practices/SKILL.md) turns the type-system principles into concrete rules: discriminated unions, `unknown` at boundaries, exhaustive variants, schema-derived types. It doesn't load on its own, so type `/typescript-best-practices` when a task touches `.ts` or `.tsx` files.
+Every `impl-*`, `cand-*`, and `lead-*` worker receives [`roles/poteto-agent.md`](../../roles/poteto-agent.md) automatically via `hooks/guard.mjs`, backed by [`ts-patterns.md`](../../skills/pstack/references/ts-patterns.md).
 
-## Clean before you commit
+- **Behavioral tests first.** Write the smallest test that fails for the intended user-observable reason before changing production code. Skip brittle mock-heavy unit scaffolding when running the real CLI or HTTP boundary proves more.
+- **Illegal states unrepresentable.** Parse external data as `unknown` at boundaries, model state transitions with discriminated unions, enforce exhaustiveness with `never`, and derive types from authoritative schemas.
 
-The [Opening a PR playbook](../../skills/poteto-mode/playbooks/opening-a-pr.md) runs [`/deslop`](../../skills/deslop/SKILL.md) on the diff before each commit and applies [`/unslop`](../../skills/unslop/SKILL.md) to the PR description and commit bodies.
+## Strip comments and AI slop with `sicko-*`
 
-For prose, `/unslop` takes a target and any extra rules you have:
+Authors defend their own narrating comments and defensive boilerplate. Before `ro-verify` signs off on a non-trivial diff in `build` or `ship`, `/pstack` spawns `sicko-clean` (`workspace: "share"`), which receives [`roles/comment-sicko.md`](../../roles/comment-sicko.md).
 
-```text
-/unslop the readme changes, no emdashes
-```
+`hooks/guard.mjs` enforces `sicko-*` boundaries mechanically. It permits `edit_file` inside the worker's worktree while blocking `write_file` and `git push`, ensuring cleanup never invents new wrapper files or pushes unverified commits. `sicko-*` keeps only license headers, public API docstrings, external bug links, and genuine third-party quirk explanations. Every comment that apologizes for confusing internal code becomes either a root-cause simplification or a structural type, lint, or test check, and the comment comes out.
 
-You'll develop your own shorthand. The skill reads intent fine from terse prompts like `unslop that, tighten it`.
+For standalone documentation, READMEs, RFCs, and PR bodies, invoke [`/technical-writing`](../../skills/technical-writing/SKILL.md) to enforce Diataxis mode discipline, crisp Global English syntax, zero AI filler, and `ro-*` technical accuracy checks.
 
-## Strip the comments with `/no-comments`
+**Pitfall.** Never treat diff cleanup as optional polish after review. Redundant guards, narrating comments, and dead compatibility branches hide bugs and slow down every reviewer who reads the PR.
 
-Comments need their own pass, and not from the agent that wrote them. An author defends its comments the way you'd defend yours. So before review, hand them to fresh eyes:
-
-```text
-/no-comments the diff
-```
-
-[`/no-comments`](../../skills/no-comments/SKILL.md) spawns [Comment Sicko](../../agents/comment-sicko.md), a read-only reviewer with a short keep list: license headers, doc comments on a public API, links that explain what code can't, behavior forced by an external dependency you can't reshape. Everything else goes. A surprise in your own code gets no such pass. The comment comes back as a refactor flag, and `/no-comments` fixes the flags it accepts at the root cause. When a comment claims a constraint, "do not remove", the skill offers to encode the claim as a type, test, or lint. Either way, the comment comes out.
-
-The division of labor is worth keeping straight. `/deslop` cleans slop out of the code, `/unslop` cleans it out of prose, and `/no-comments` hands the comments to a reviewer who didn't write them.
-
-**Pitfall:** cleanup is not optional polish. A diff with narrating comments and defensive dead weight reads as unfinished to reviewers, and the extra code is where the next bug hides. If the diff feels padded, say `deslop it` before you commit, not after review calls it out.
-
-Next: [Verify and ship](./06-verify-and-ship.md).
+Continue to [Verify and ship](./06-verify-and-ship.md).

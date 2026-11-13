@@ -1,72 +1,78 @@
 # Steer with principle names
 
-pstack ships 24 principles as individual skills. `/poteto-mode` reads their index at the start of every multi-step task, applies the ones the task triggers, and names each applied principle in its reply along with the decision it changed.
+Pstack v2 compiles 24 battle-tested engineering principles into [`skills/pstack/references/principles.md`](../../skills/pstack/references/principles.md) and distills them directly into the four hook-injected role capsules ([`coordinator.md`](../../roles/coordinator.md), [`poteto-agent.md`](../../roles/poteto-agent.md), [`research.md`](../../roles/research.md), and [`comment-sicko.md`](../../roles/comment-sicko.md)).
 
-You don't invoke principles. You use their names to steer. Each name points at a complete rule the agent has already read, so one phrase redirects the work more precisely than a paragraph of instructions.
+You never invoke principles as separate slash commands. Instead, you name a principle mid-conversation to redirect the coordinator or a worker in one crisp sentence. Because every role capsule already carries these definitions, naming the rule changes concrete engineering decisions immediately without a three-paragraph lecture.
 
-## Steering in practice
+## Steering a live swarm in one line
 
-Say the agent is about to bolt a new adapter onto three existing ones:
-
-```text
-use subtract before you add. delete the obsolete adapters first, then design what's left.
-```
-
-Say it claims success because the build passed:
+When an author starts bolting a fourth compatibility wrapper onto three legacy ones:
 
 ```text
-apply prove it works. run the real import flow and show me the written records.
+apply subtract before you add. delete the dead legacy adapters first, then build on what remains.
 ```
 
-Say two parallel attempts are about to write to the same branch:
+When a worker reports `"done"` because `tsc` exited zero:
 
 ```text
-separate before serializing shared state. give each attempt its own worktree, no locks.
+apply prove it works. drive the real import endpoint against the sample payload and show the persisted rows.
 ```
 
-Each phrase lands because the rule behind it is specific. The agent still has to say, in its reply, which decision the rule changed. A principle citation with no decision behind it means the agent named the rule without applying it.
+When two fix attempts fail the same integration gate:
 
-## The 24, briefly
+```text
+attack the premise. write down the assumption both fixes shared and test that assumption directly with ro-probe before writing a third patch.
+```
 
-The core principles decide how much to build and when to rethink the design:
+When an agent proposes adding a mutex around shared temp state across workers:
 
-- [Laziness Protocol](../../skills/principle-laziness-protocol/SKILL.md) prefers deletion and the smallest change that solves the problem.
-- [Foundational Thinking](../../skills/principle-foundational-thinking/SKILL.md) chooses the core data structures before writing logic.
-- [Redesign from First Principles](../../skills/principle-redesign-from-first-principles/SKILL.md) integrates a new requirement as if it had been there from day one.
-- [Attack the Premise](../../skills/principle-attack-the-premise/SKILL.md) writes down the premise that two or more failed fixes shared and tests it directly before the next fix.
-- [Subtract Before You Add](../../skills/principle-subtract-before-you-add/SKILL.md) removes dead weight before building on top of it.
-- [Minimize Reader Load](../../skills/principle-minimize-reader-load/SKILL.md) collapses layers and hidden state a reader must hold in their head.
-- [Outcome-Oriented Execution](../../skills/principle-outcome-oriented-execution/SKILL.md) converges rewrites on the target design instead of preserving throwaway compatibility states.
-- [Experience First](../../skills/principle-experience-first/SKILL.md) chooses the user's result over implementation convenience.
-- [Exhaust the Design Space](../../skills/principle-exhaust-the-design-space/SKILL.md) builds two or three competing prototypes when there's no precedent.
-- [Build the Lever](../../skills/principle-build-the-lever/SKILL.md) builds the script that does or proves the work, so a reviewer can rerun it. When an agent keeps doing the same thing by hand, have it write the tool or skill it wishes it had. If a script can do a step the same way every time, use the script, and save agents for the judgment calls.
+```text
+separate before serializing shared state. give each worker its own /tmp data dir and ephemeral port instead of a lockfile.
+```
 
-The architecture principles decide where state, validation, and compatibility live:
+## All 24 principles at a glance
 
-- [Model the Domain](../../skills/principle-model-the-domain/SKILL.md) encodes repeated rules in one structure, not scattered conditionals.
-- [Boundary Discipline](../../skills/principle-boundary-discipline/SKILL.md) validates at the boundary and trusts internal types.
-- [Type System Discipline](../../skills/principle-type-system-discipline/SKILL.md) makes illegal states unrepresentable.
-- [Make Operations Idempotent](../../skills/principle-make-operations-idempotent/SKILL.md) converges retries on the same end state.
-- [Migrate Callers Then Delete Legacy APIs](../../skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md) migrates and deletes in one wave.
-- [Separate Before Serializing Shared State](../../skills/principle-separate-before-serializing-shared-state/SKILL.md) removes the sharing before adding coordination.
+Read [`skills/pstack/references/principles.md`](../../skills/pstack/references/principles.md) for the full operational triggers and anti-patterns behind each rule.
 
-The verification principles define what counts as proof:
+### Core (what to build and when to rethink)
 
-- [Prove It Works](../../skills/principle-prove-it-works/SKILL.md) verifies the real artifact, not a proxy.
-- [Fix Root Causes](../../skills/principle-fix-root-causes/SKILL.md) reproduces and traces to the cause before changing code.
-- [Sequence Work into Verifiable Units](../../skills/principle-sequence-verifiable-units/SKILL.md) ends each small unit in a check before starting the next.
-- [Test Behavior, Not Implementation](../../skills/principle-test-behavior-not-implementation/SKILL.md) asserts what the code's users can observe, so a test fails when that behavior breaks and survives a change to the internals.
-- [Explain the Number](../../skills/principle-explain-the-number/SKILL.md) names what limits a measured number and rules out that it measured something else, before anyone trusts or reports it. [`/benchmark-checklist`](../../skills/benchmark-checklist/SKILL.md) turns it into seven questions you answer from real runs.
+- **Laziness Protocol.** Prefer deletion and the smallest change that solves the real problem.
+- **Foundational Thinking.** Settle core data structures and ownership boundaries before writing control-flow logic.
+- **Redesign from First Principles.** Integrate new requirements as if they existed on day one instead of bolting on special-case flags.
+- **Attack the Premise.** After two failed fixes sharing one assumption, test that assumption directly before attempting a third fix.
+- **Subtract Before You Add.** Remove dead code, unused shims, and redundant checks before building new behavior.
+- **Minimize Reader Load.** Collapse single-caller indirection layers and shrink mutable state a reader must track mentally.
+- **Outcome-Oriented Execution.** Converge multi-phase migrations directly onto the target design without preserving throwaway intermediate APIs.
+- **Experience First.** Optimize for user clarity and polish over internal implementation convenience.
+- **Exhaust the Design Space.** Explore two or three orthogonal candidates in `/crucible` when precedent does not settle the shape.
+- **Build the Lever.** Build a reusable script, codemod, generator, or `/verify-gen` harness that any reviewer or worker can rerun instead of performing repetitive steps by hand.
 
-The delegation principles keep parallel work sane:
+### Architecture (boundaries, types, and state)
 
-- [Guard the Context Window](../../skills/principle-guard-the-context-window/SKILL.md) routes bulk reading to subagents and keeps findings in the main chat.
-- [Never Block on the Human](../../skills/principle-never-block-on-the-human/SKILL.md) proceeds on reversible work and presents the result.
+- **Model the Domain.** Encode domain rules once in data structures and types rather than scattered `if` branches.
+- **Boundary Discipline.** Parse and validate untrusted inputs at system edges (CLI, HTTP, config, DB) and trust typed values inside pure core functions.
+- **Type System Discipline.** Make illegal states unrepresentable with discriminated unions, branded IDs, `unknown` boundary parsing, and exhaustive switches ([`ts-patterns.md`](../../skills/pstack/references/ts-patterns.md)).
+- **Make Operations Idempotent.** Ensure retries and re-runs converge on the exact same end state without duplicating side effects.
+- **Migrate Callers Then Delete Legacy APIs.** Update every caller and delete the deprecated function in the same wave.
+- **Separate Before Serializing Shared State.** Eliminate shared mutable state (via `workspace: "share"`, ephemeral ports, and isolated temp dirs) before reaching for locks or queues.
 
-And one meta principle:
+### Verification (what counts as evidence)
 
-- [Encode Lessons in Structure](../../skills/principle-encode-lessons-in-structure/SKILL.md) turns advice you've repeated twice into a lint, check, or script. [`/correct`](../../skills/correct/SKILL.md) applies it to a whole repo, as shown in [Make it yours](./09-make-it-yours.md#fix-the-environment-with-correct).
+- **Prove It Works.** Verify behavior against the real running artifact rather than compiler exit codes, mocks, or self-reports.
+- **Fix Root Causes.** Trace every symptom back to the first place an invariant broke and fix it there. Add a defensive guard only when the guarded state is genuinely valid.
+- **Sequence Verifiable Units.** Slice large changes into small commits or stacked PRs that each compile and pass behavioral checks independently.
+- **Test Behavior, Not Implementation.** Assert observable outputs and side effects so tests catch user-visible breakage and survive internal refactors.
+- **Explain the Number.** Identify the physical or algorithmic limiter behind every benchmark or eval delta and verify repeatability across alternating runs before trusting it.
 
-Don't memorize the list. Skim it now, then come back when you catch the agent doing something a name here would have prevented. That's how the vocabulary sticks.
+### Delegation (swarm scale and autonomy)
 
-Next: [Make it yours](./09-make-it-yours.md).
+- **Guard the Context Window.** Keep heavy source reading, trace crunching, and raw command output inside `ro-*` and `impl-*` workers, posting concise `#seq` evidence on the board so the coordinator stays sharp.
+- **Never Block on the Human.** Execute reversible engineering choices autonomously, verify them, and present evidence, pausing only for irreversible actions or external policy calls.
+
+### Meta (compounding improvements)
+
+- **Encode Lessons in Structure.** Whenever agents repeat a mistake twice, encode the rule into architecture, types, `hooks/guard.mjs`, lints, or tests via [`/reflect`](../../skills/reflect/SKILL.md) rather than repeating chat reminders.
+
+Skim this list once, then return whenever an agent drifts. Having exact shared names turns vague frustration into a one-sentence course correction.
+
+Continue to [Make it yours](./09-make-it-yours.md).

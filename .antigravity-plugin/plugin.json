@@ -1,8 +1,8 @@
 {
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
-  "version": "0.15.36",
-  "description": "if you want to go fast, go deep first. pstack helps you write less, but higher quality code. rigorous agent workflows you can parallelize with confidence.",
+  "version": "2.0.0",
+  "description": "Swarm-centric engineering workflows for Antigravity. Hook-enforced role capsules, worktree isolation, adversarial verification, and 13 composable skills for high-rigor parallel code.",
   "author": {
     "name": "Lauren Tan"
   },
@@ -11,17 +11,17 @@
   "license": "MIT",
   "keywords": [
     "pstack",
-    "poteto-mode",
+    "swarm",
     "workflow",
-    "principles",
-    "agent-style",
-    "subagents",
-    "unslop"
+    "hooks",
+    "verification",
+    "crucible",
+    "interrogate"
   ],
   "logo": "assets/logo.png",
   "suggestedPrompts": [
-    "/poteto-mode reproduce and fix this bug with runtime evidence",
-    "/how walk me through how this subsystem works",
-    "/interrogate adversarially review the current branch diff"
+    "/pstack reproduce this bug, fix the root cause in an isolated worktree, and verify the result",
+    "/understand walk me through how this subsystem works before we /crucible competing designs",
+    "/interrogate adversarially test the current branch diff and map its blast radius"
   ]
 }

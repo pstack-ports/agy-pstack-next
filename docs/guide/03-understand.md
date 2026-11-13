@@ -1,79 +1,75 @@
 # Understand the code before changing it
 
-Editing code you don't understand is how subtle regressions ship, and that's as true for the agent as for you. Agents usually fail in one of two ways. They misread what you want, or they don't have the context to do the work right. [What goes in a prompt](./02-poteto-mode.md#what-goes-in-a-prompt) handles the first. This page handles the second.
+Editing unfamiliar code blind is the fastest way to ship subtle regressions. Agents fail the same way humans do when they patch the first plausible line without tracing callers, state invariants, or historical constraints. [`/understand`](../../skills/understand/SKILL.md) builds a verified mental model before any file changes, and [`/ketchup`](../../skills/ketchup/SKILL.md) rebuilds context across long or prior sessions.
 
-pstack gives you four ways in. `/how` explains what the code does now. `/why` digs up the reasons it's shaped that way. `/teach` blends both into one explanation. `/recall` rebuilds your own recent context on a topic. Each one also makes the agent explain itself in words you can check. That's how you supervise an agent that may know the code better than you do.
+![A detective studies a machine blueprint with a magnifying glass while robots gather case files and link clues across an evidence board.](./images/understanding.jpg)
 
-![A detective studies a machine blueprint with a magnifying glass while robots fetch case files; the evidence board behind her links clues under /how and /why.](./images/understanding.jpg)
+## One parallel `ro-*` mesh, three modes
 
-## Start with a read-only investigation
+[`/understand`](../../skills/understand/SKILL.md) spawns a read-only swarm mesh (`ro-code`, `ro-git`, `ro-tracker`, `ro-docs` in `workspace: "inherit"`). Because `hooks/guard.mjs` enforces read-only safety mechanically across files, shell commands, and MCP tools, every `ro-*` worker can cross-query source files, `git log` and `git blame`, GitHub PRs, issue trackers, and design docs simultaneously. Workers post `#seq` clues on the shared board so peers pivot live when `git blame` uncovers a decisive PR or incident ticket.
 
-When the cause is unclear, ask for findings, not a fix:
+Pick any of `/understand`'s three modes through natural phrasing.
 
-```text
-/poteto-mode investigate why background jobs time out every few hours. give me what we know, what data you used, and your best hypotheses. don't change any code yet.
-```
+### 1. Mechanism walkthrough
 
-"don't change any code yet" routes this to the [Investigation playbook](../../skills/poteto-mode/playbooks/investigation.md). It runs `/how`, adds `/why` for questions about motivation, and returns a cited explanation. For a choice between options, it returns a recommendation with a trade-offs table. Asking "what data you used" makes the agent separate its evidence from its guesses. When the findings point at a fix, start the fix as a new task.
-
-## Trace behavior with `/how`
+Ask how a subsystem works right now:
 
 ```text
-/how do we dedupe notifications? is there an n+1 when we look up subscribers?
+/understand how do we deduplicate outbound webhooks, and can concurrent retries trigger an N+1 query?
 ```
 
-Ask the question you actually have. [`/how`](../../skills/how/SKILL.md) reads the code and answers at the level of a senior engineer onboarding you onto the subsystem, with the runtime flow, the key types, and the non-obvious parts. For a big subsystem it fans out two to four read-only explorers first. For a narrow question it just reads and explains.
+The mesh traces entry points, data types, state transitions, and subtle invariants, returning a senior-engineer walkthrough backed by exact `file:line` citations.
 
-## Dig up history with `/why`
+### 2. Historical provenance and archaeology
+
+Ask why something was built or constrained a specific way:
 
 ```text
-/why was the retry limit set to five? does the reason still hold?
+/understand why was the lease renewal cap fixed at five attempts, and does that constraint still hold?
 ```
 
-[`/why`](../../skills/why/SKILL.md) starts from source control, then queries whatever evidence categories your MCPs expose, such as the issue tracker, long-form docs, team chat, observability, error tracking, and analytics, all in parallel. The report cites everything, separates direct evidence from inference, and says "appears to" when the record is thin. A null result gets reported too, because "nobody wrote down why" is itself an answer.
+Grounded in [`skills/understand/references/epistemics.md`](../../skills/understand/references/epistemics.md), the report separates direct primary evidence (commits, PR discussions, tickets, post-mortems) from inference, flags thin records explicitly, and reports null findings honestly when nobody wrote down the original reason.
 
-The two compose naturally. `do why first then how` is a good prompt when you suspect the history explains the mess.
+### 3. Interactive Socratic walkthrough
 
-## Actually understand it with `/teach`
+Ask to build real mastery over a complex subsystem or diff rather than skimming a summary:
 
 ```text
-/teach me how this PR changes retries. convince me it fixes the cause and not the symptom.
+/understand walk me through how this branch changes transaction retries step by step, with diagrams, and check my understanding as we go.
 ```
 
-[`/teach`](../../skills/teach/SKILL.md) is for when a summary isn't enough. It runs `/how` and `/why`, for a small change maybe just one of them, and weaves the findings into a plain explanation that builds up diagram by diagram. The "convince me" framing is worth reusing. It turns the explanation into an argument you can test instead of a tour.
+It blends mechanism and history into progressive chunks with Mermaid diagrams and concrete mental-model checks, turning passive reading into active verification. You can also turn it on an agent's own work (`"/understand convince me your fix addresses the root cause rather than the symptom"`).
 
-It works on the agent's own choices too:
+## Warm fork from investigation straight to code
+
+Once `/understand` (or `/pstack` in `diagnose` topology) pinpoints the exact root cause, you do not throw away the investigator's loaded context. Native swarm supports `fork: "<member>"`, allowing the coordinator to spawn `impl-fix` (`workspace: "share"`, `fork: "ro-code"`) with every file trace and invariant already warm in memory while switching cleanly into an isolated author worktree.
+
+## Catch up and recall context with `/ketchup`
+
+When returning to a long-running swarm or resuming work from earlier in the week, run [`/ketchup`](../../skills/ketchup/SKILL.md):
 
 ```text
-/teach me why you implemented it this way and not with a queue. what did you trade off, and why?
+/ketchup
 ```
 
-Teaching helps the agent as much as you. An agent that has to explain its work must read the code and back each claim with evidence, instead of stating it confidently and moving on.
+Parallel `ro-*` gatherers inspect active swarm `view.json` state, `board.jsonl` `#seq` deltas, prior `<appDataDir>/brain/*/.system_generated/swarm/` boards, `git log`, and open `gh pr` status without mutating anything. Every item waiting on your decision comes back with options, `#seq` evidence, and risk so you can decide from the briefing alone.
 
-## Rebuild your own context with `/recall`
+Pass `--plain` when you want a zero-jargon human summary of a dense technical thread, or `--video` when you want a short subtitled slide walkthrough of what changed:
 
 ```text
-/recall catch me up on the export work from last week
+/ketchup --plain
 ```
-
-[`/recall`](../../skills/recall/SKILL.md) mines your own recent chats plus the shared record (issues, prior fixes, errors still firing) and hands back a brief on where things stand and what's next. Your old chats hold context that a fresh agent lacks, so start new work on an old topic by loading it first, then hand over the new input:
 
 ```text
-/recall my work on the virtualized list from yesterday, then read this bug report.
+/ketchup --video
 ```
 
-If you want to resume one specific chat, that's the Session pickup playbook below, not `/recall`.
-
-## Take over prior work with Session pickup
-
-When another agent (or you, last week) left a branch mid-flight:
+To take over an unfinished branch left by an earlier session and continue execution from its last verified state, hand the branch to `/pstack` (`program` topology):
 
 ```text
-/poteto-mode take over this branch. read the decision log, figure out what's done, and continue from there. don't redo finished work.
+/pstack pick up the in-flight parser migration branch, verify what already passes, and finish the remaining callers without redoing completed slices.
 ```
 
-The [Session pickup playbook](../../skills/poteto-mode/playbooks/session-pickup.md) treats the prior trail as authoritative. It reconstructs the branch state and decisions, names the resume point, and verifies inherited claims against the original goal instead of re-deriving everything from scratch.
+**Pitfall.** Never skip `/understand` on thorny subsystems assuming `"the author worker will read the code anyway"`. An author tasked with shipping a diff optimizes for the shortest edit that compiles. Five minutes of read-only `#seq` clue sharing prevents hours of fixing the wrong layer.
 
-**Pitfall:** don't skip this page's skills because "the agent will read the code anyway." An agent that starts editing without a traced model tends to fix the symptom at the first plausible spot. `/how` first is cheaper than the second bug.
-
-Next: [Design the change](./04-design.md).
+Continue to [Design the change](./04-design.md).

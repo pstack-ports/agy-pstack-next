@@ -1,100 +1,72 @@
 # Make it yours
 
-poteto-mode is one person's style. The playbooks, routing, and model roles underneath it work just as well with yours. This page covers generating a personal mode, capturing lessons from a session, fixing the repo so agents stop repeating mistakes, authoring a focused skill, and testing a skill change before you trust it.
+Every repository has its own invariants, failure modes, and team habits. Pstack v2 adapts to how you work through [`/setup-pstack`](../../skills/setup-pstack/SKILL.md) for models and automations, [`/reflect`](../../skills/reflect/SKILL.md) for turning mistakes and slow sessions into structural guardrails, `/pstack` (`evolve` topology) for authoring and blind-testing skills, and [`/make-bot-ui`](../../skills/make-bot-ui/SKILL.md) for custom operator interfaces.
 
-Start smaller than you think. You don't need many skills on day one, or even this whole plugin. Prompt plainly, watch where agents fail, and add a skill or a check when the same failure shows up twice.
+## Tune models, budgets, and standing automations with `/setup-pstack`
 
-## Generate your own mode with `/automate-me`
-
-```text
-/automate-me
-```
-
-You don't describe your style, because [`/automate-me`](../../skills/automate-me/SKILL.md) reads it out of your history. It mines your recent transcripts in the active workspace for repeated preferences, in how you like replies, delegation, verification, code, prose, and process, then asks you which patterns are really you. It drafts `.agents/skills/<your-name>-mode/SKILL.md` through Antigravity's built-in `agy-customizations` guide, runs the draft through [`/unslop`](../../skills/unslop/SKILL.md), and opens a PR from a worktree so you review it like any other change.
-
-Run it again whenever your habits drift:
+Run [`/setup-pstack`](../../skills/setup-pstack/SKILL.md) any time your model catalog, reasoning budget, or daily workflow shifts:
 
 ```text
-/automate-me update my mode skill with everything since its last edit
+/setup-pstack
 ```
 
-Update mode mines only the history since the skill last changed. It keeps rules you haven't contradicted, revises the ones with new evidence, and adds sections only for new patterns.
+Beyond updating `~/.gemini/config/rules/pstack-models.md` across `coordinator`, `impl-*`, `ro-*`, `adv-*`, `ro-judge`, and `sicko-*` prefixes, `/setup-pstack` helps you draft standing `/schedule` automations tailored to your repositories (for example, morning `/ketchup` summaries or scheduled `/verify-gen --maintain` checks) and recommends prompts from [`prompting.md`](../../skills/setup-pstack/references/prompting.md) and [`recipes.md`](../../skills/setup-pstack/references/recipes.md).
 
-## Capture a session's lessons with `/reflect`
+## Turn session friction and repeated corrections into structure with `/reflect`
 
-Right after a task that taught you something, run:
+Whenever a session took twice as long as it should have, or whenever you catch yourself correcting agents for the same repository mistake a second time, run [`/reflect`](../../skills/reflect/SKILL.md):
 
 ```text
-/reflect that took way too long. capture what we learned so the next run doesn't repeat it.
+/reflect agents keep calling the raw SQL client instead of the repository layer, and we wasted three turns debugging port collisions. fix this structurally.
 ```
 
-[`/reflect`](../../skills/reflect/SKILL.md) sends the transcript to three parallel reviewers, then a synthesizer sorts the proposals into `Accepted`, `Rejected`, and `Backlog` and waits for your approval before any skill changes. Approve a proposal only if it would change a future decision. One weird session is an anecdote, not a rule.
+`/reflect` unifies session post-mortems, mid-session user correction capture, and structural rule tightening. Parallel read-only reviewers (`ro-divergent`, `ro-judgment`, and `ro-tooling` in `workspace: "inherit"`, guided by [`divergent-reviewer.md`](../../skills/reflect/references/divergent-reviewer.md), [`judgment-reviewer.md`](../../skills/reflect/references/judgment-reviewer.md), and [`tooling-reviewer.md`](../../skills/reflect/references/tooling-reviewer.md)) mine `<appDataDir>/brain/<id>/.system_generated/logs/transcript.jsonl`, swarm `board.jsonl`, and recent git history.
 
-## Fix the environment with `/correct`
+Instead of appending wishful prose reminders that future agents ignore, `/reflect` ranks enforcement from strongest to weakest and routes verified fixes to `impl-sharpen` (`workspace: "share"`).
 
-When you correct agents for the same mistake again and again, the fix belongs in the repo, not in your next prompt. Rank the options by how well they hold:
+1. **Architecture or data types.** Make the wrong call fail to compile or cease to exist.
+2. **Mechanical hooks, lints, or CI checks.** Block bad tool calls in `hooks/guard.mjs` or fail fast with a lint error that names the exact replacement.
+3. **Behavioral tests.** Catch regressions deterministically on run.
+4. **Role capsules and skills (`roles/*.md`, `SKILL.md`).** Tighten instructions only for judgment calls that code cannot check directly.
 
-1. Make the mistake impossible with architecture or a better data structure.
-2. Block it with types, or with a lint or CI check whose error names the fix.
-3. Catch it with a test.
-4. Write it down as a doc or agent rule. Nothing fails when an agent skips a rule, so this comes last.
+Every structural check gets proven against a real past failure before `impl-sharpen`'s commit lands.
 
-Human review isn't on the list. A reviewer who must catch the same mistake on every PR is the problem this fixes. [`/correct`](../../skills/correct/SKILL.md) does the work:
+## Author and blind-evaluate skills with `/pstack` (`evolve`)
+
+When your team needs a custom domain skill (for example, database migration safety or release cutoffs), route authoring and evaluation through [`evolve`](../../skills/pstack/topologies/evolve.md):
 
 ```text
-/correct agents keep calling the database client directly instead of going through the repository layer
+/pstack author a project skill for zero-downtime Postgres migrations and evaluate it against baseline on three holdout scenarios.
 ```
 
-It reads recent commits, reverts, review comments, and comments that explain workarounds, then groups the mistakes into classes. A class counts once it has happened twice. It fixes the most frequent classes one commit each, at the highest level that works, and proves each new check fails on a real past mistake. It also keeps a table in the agent instruction file that pairs each rule with what enforces it, so a rule that nothing enforces shows up as a repeat. The reply lists each class with its evidence, the level chosen, and why a higher level didn't work.
+`evolve` validates frontmatter and relative links via Antigravity's customization spec (`agy plugin validate --strict`) and prevents prompt overfitting by testing skill or capsule edits blind.
 
-Run it with no argument and it finds the classes from history on its own. `/reflect` and `/correct` split the work. `/reflect` improves skills from one session. `/correct` changes the repo so a mistake class can't come back. Pair it with `/architect` when the fix is a new boundary. [Run many projects in parallel](./07-overnight.md#run-many-projects-in-parallel) has a prompt that does both across a whole repo.
+- **Holdout scenarios.** Tasks mirror organic engineering prompts without leaking words like `"eval"` or `"candidate"`.
+- **Isolated sandboxed trials.** `eval-runner-*` workers run baseline and treatment variants inside clean `agy -p --sandbox` environments so observer bias cannot skew behavior.
+- **Cross-family blind grading.** `ro-judge` scores anonymized outputs and inspects actual tool transcripts to verify instructions were followed in action rather than merely claimed in prose.
 
-## Author a focused skill
+For verification-specific skills, reach directly for [`/verify-gen`](../../skills/verify-gen/SKILL.md) (behavioral E2E) or `/verify-gen --formal` (invariants and TLA+ models) instead of writing harnesses from scratch.
 
-When you already know the workflow you want to capture:
+## Hold documentation to `/technical-writing` standards
+
+Skills are not the only prose your repo ships. Use [`/technical-writing`](../../skills/technical-writing/SKILL.md) when drafting or reviewing READMEs, guides, RFCs, commit bodies, and PR descriptions:
 
 ```text
-/poteto-mode write a skill for verifying database migrations in this repo
+/technical-writing tighten docs/architecture.md and verify every CLI flag and path against HEAD
 ```
 
-Writing a skill matches the [Authoring or modifying a skill playbook](../../skills/poteto-mode/playbooks/authoring-a-skill.md), which routes through Antigravity's built-in `agy-customizations`, validates the frontmatter and links, and ships the result through the Opening a PR playbook. Agent-facing prose has a higher bar than human prose, because an unhelpful sentence becomes an instruction some future agent follows. Let the playbook hold that bar rather than writing a `SKILL.md` freehand.
+It enforces Diataxis mode purity (tutorial, how-to, reference, or explanation), active Google developer style, single-thought STE sentences, Global English disambiguation, zero AI vocabulary or em-dashes, and an independent `ro-*` accuracy pass against real source symbols.
 
-Two special cases have their own generators. A skill that must drive your app and prove behavior is a verification skill, so use [`/create-verification-skill`](../../skills/create-verification-skill/SKILL.md) and [`/maintain-verification-skill`](../../skills/maintain-verification-skill/SKILL.md) instead. A skill that checks a property of your code with a model checker, a proof, or another verifier is a formal verification skill, so use [`/create-formal-verification-skill`](../../skills/create-formal-verification-skill/SKILL.md) and [`/maintain-formal-verification-skill`](../../skills/maintain-formal-verification-skill/SKILL.md). [Verify and ship](./06-verify-and-ship.md#prove-a-property-with-a-formal-verification-skill) covers both kinds.
+## Build custom wake dashboards with `/make-bot-ui`
 
-## Write docs to a standard with `/technical-writing`
-
-Skills aren't the only prose you ship. For docs, RFCs, readmes, PR descriptions, and commit messages:
+When you want a one-click browser dashboard on your laptop or phone (over Tailscale) that wakes Antigravity agents to triage queues, approve staging actions, or kick off `/pstack` workflows, run [`/make-bot-ui`](../../skills/make-bot-ui/SKILL.md):
 
 ```text
-/technical-writing review the readme changes
+/make-bot-ui build a mobile-friendly triage board on my tailnet where each button wakes an agent to reproduce or close an issue
 ```
 
-[`/technical-writing`](../../skills/technical-writing/SKILL.md) applies a layered standard. Its goal is prose that a tired engineer understands on the first read. It picks the document's mode first (tutorial, how-to, reference, or explanation), then works sentence by sentence: who does what, one thought per sentence, nothing readable two ways. Use it to review what you or an agent just wrote, or name it up front when you ask for a doc.
+`/make-bot-ui` wires browser buttons to a local server invoking `agy agentapi` (via safe `execFileSync` argument arrays) or authenticated webhooks, stores any webhook sender key in a `chmod 600` server-side file outside chat and browser code, verifies the UI with `/control-ui`, and prints both MagicDNS and Tailscale IPv4 URLs.
 
-## Test a skill change blind
+**Pitfall.** Never mix skill or hook edits into an unrelated product feature branch. Land workflow improvements in their own commit or PR so `evolve` can measure their effect cleanly.
 
-A skill edit affects every future session, so test it like the experiment it is. The same goes for adopting someone else's skill. Check that it makes the agent better on your work before you keep it.
-
-```text
-/poteto-mode run the eval playbook on this skill change. same task for both variants, candidates stay blind.
-```
-
-When a skill keeps missing and you know what it should do, change and test it in one task:
-
-```text
-/poteto-mode update the review skill so it flags missing migrations, and eval the change.
-```
-
-Asking for the eval up front keeps the edit honest. A fix written from one bad session tends to overfit that session, and over many edits the skill drifts. The eval catches the drift before it ships.
-
-The [Eval playbook](../../skills/poteto-mode/playbooks/eval.md) is built around one failure mode, the observer effect. An agent that knows it's being evaluated behaves differently. So candidate agents get an organic-looking task in sanitized directories, never the words "eval" or "candidate", and never each other's existence. One judge scores all outputs under neutral labels, and chain-following gets graded from which files each candidate actually read, not from what it claims.
-
-Read every output yourself before accepting the verdict. If you disagree with the judge, suspect the rubric before you suspect your judgment.
-
-## Build a bot UI with `/make-bot-ui`
-
-[`/make-bot-ui`](../../skills/make-bot-ui/SKILL.md) builds a small page whose buttons wake an agent through a local server (`agy agentapi` or a webhook). For example, you could swipe through a review queue and have each swipe ask the agent to act on that item. A server on your machine holds any webhook sender key, so the key never reaches the browser or the chat. The skill also covers exposing the page on Tailscale.
-
-**Pitfall:** don't edit a skill mid-task because it's misbehaving. Fix it in its own PR and keep the task moving. A skill edit that ships tangled into feature work is invisible to review and impossible to evaluate.
-
-Next: [Recipes and pitfalls](./10-recipes-and-pitfalls.md).
+Continue to [Recipes and pitfalls](./10-recipes-and-pitfalls.md).

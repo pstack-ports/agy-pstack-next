@@ -67,8 +67,8 @@ jobs:
           HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/agy-pstack-next"
           HOME="$AGY_HOME" agy plugin list --json > "$AGY_HOME/plugins.json"
           AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" bun -e '
-            import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
-            import { join, basename } from "node:path";
+            import { readdirSync, readFileSync, existsSync, accessSync, constants } from "node:fs";
+            import { join } from "node:path";
 
             const errors = [];
             const fail = (msg) => errors.push(msg);
@@ -76,8 +76,37 @@ jobs:
             if (existsSync("plugin.json")) {
               fail("root plugin.json should not exist alongside .antigravity-plugin/plugin.json");
             }
-            const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
+            if (existsSync("agents")) {
+              fail("legacy agents directory should not exist in Swarm-Centric Pstack v2");
+            }
+            if (existsSync("automations")) {
+              fail("legacy automations directory should not exist in Swarm-Centric Pstack v2");
+            }
+            if (!existsSync("hooks.json")) {
+              fail("root hooks.json is missing");
+            }
 
+            const checkExecutable = (relPath) => {
+              try {
+                accessSync(relPath, constants.X_OK);
+              } catch {
+                fail(`${relPath} is missing or not executable`);
+              }
+            };
+            checkExecutable("hooks/guard.mjs");
+            checkExecutable("skills/pstack/scripts/watch-pr");
+
+            for (const capsule of ["coordinator", "poteto-agent", "research", "comment-sicko"]) {
+              const p = join("roles", `${capsule}.md`);
+              if (!existsSync(p)) fail(`Missing role capsule ${p}`);
+            }
+
+            for (const topo of ["program", "build", "diagnose", "hillclimb", "ship", "evolve"]) {
+              const p = join("skills/pstack/topologies", `${topo}.md`);
+              if (!existsSync(p)) fail(`Missing pstack topology ${p}`);
+            }
+
+            const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
             const allowedPluginKeys = new Set([
               "name",
               "displayName",
@@ -118,133 +147,37 @@ jobs:
               return match[1];
             };
 
-            const validateSkillDir = (skillsRoot) => {
-              const dirs = readdirSync(skillsRoot, { withFileTypes: true })
-                .filter((d) => d.isDirectory())
-                .map((d) => d.name)
-                .sort();
-              for (const dir of dirs) {
-                const skillFile = join(skillsRoot, dir, "SKILL.md");
-                if (!existsSync(skillFile)) {
-                  fail(`${skillsRoot}/${dir}: missing SKILL.md`);
-                  continue;
-                }
-                const fm = parseFrontmatter(skillFile);
-                if (!fm) continue;
-                const nameMatch = fm.match(/^name:\s*(.+)$/m);
-                const descMatch = fm.match(/^description:\s*(.+)$/m);
-                const skillName = nameMatch?.[1]?.trim();
-                if (skillName !== dir) {
-                  fail(`${skillFile}: frontmatter name "${skillName}" does not match directory "${dir}"`);
-                }
-                if (!descMatch?.[1]?.trim()) {
-                  fail(`${skillFile}: missing description in frontmatter`);
-                }
-                for (const badKey of ["paths", "icon", "color"]) {
-                  if (new RegExp(`^${badKey}:`, "m").test(fm)) {
-                    fail(`${skillFile}: unsupported top-level frontmatter key "${badKey}"`);
-                  }
-                }
-              }
-              return dirs;
-            };
+            const expectedSkills = readdirSync("skills", { withFileTypes: true })
+              .filter((d) => d.isDirectory())
+              .map((d) => d.name)
+              .sort();
 
-            const expectedSkills = validateSkillDir("skills");
-            for (const autoEntry of readdirSync("automations", { withFileTypes: true })) {
-              if (!autoEntry.isDirectory()) continue;
-              const autoSkillsRoot = join("automations", autoEntry.name, "skills");
-              if (existsSync(autoSkillsRoot) && statSync(autoSkillsRoot).isDirectory()) {
-                validateSkillDir(autoSkillsRoot);
-              }
+            if (expectedSkills.length !== 13) {
+              fail(`Expected 13 skills, found ${expectedSkills.length}: ${expectedSkills.join(", ")}`);
             }
 
-            const validAgentTools = new Set([
-              "send_message",
-              "read_file",
-              "view_file",
-              "grep_search",
-              "find_by_name",
-              "list_dir",
-              "read_url_content",
-              "search_web",
-              "schedule",
-              "generate_image",
-              "edit_file",
-              "multi_replace_file_content",
-              "replace_file_content",
-              "write_file",
-              "write_to_file",
-              "run_command",
-              "manage_task",
-              "notebook_edit",
-              "define_subagent",
-              "invoke_subagent",
-              "manage_subagents",
-            ]);
-
-            const expectedAgents = readdirSync("agents")
-              .filter((f) => f.endsWith(".md"))
-              .sort();
-            for (const agentFile of expectedAgents) {
-              const fullPath = join("agents", agentFile);
-              const fm = parseFrontmatter(fullPath);
+            for (const dir of expectedSkills) {
+              const skillFile = join("skills", dir, "SKILL.md");
+              if (!existsSync(skillFile)) {
+                fail(`skills/${dir}: missing SKILL.md`);
+                continue;
+              }
+              const fm = parseFrontmatter(skillFile);
               if (!fm) continue;
-              const expectedName = basename(agentFile, ".md");
               const nameMatch = fm.match(/^name:\s*(.+)$/m);
               const descMatch = fm.match(/^description:\s*(.+)$/m);
-              if (nameMatch?.[1]?.trim() !== expectedName) {
-                fail(`${fullPath}: frontmatter name "${nameMatch?.[1]?.trim()}" does not match "${expectedName}"`);
+              const skillName = nameMatch?.[1]?.trim();
+              if (skillName !== dir) {
+                fail(`${skillFile}: frontmatter name "${skillName}" does not match directory "${dir}"`);
               }
               if (!descMatch?.[1]?.trim()) {
-                fail(`${fullPath}: missing description in frontmatter`);
+                fail(`${skillFile}: missing description in frontmatter`);
               }
-              for (const toolMatch of fm.matchAll(/^\s*-\s*([a-z0-9_]+)\s*$/gm)) {
-                const toolName = toolMatch[1];
-                if (!validAgentTools.has(toolName)) {
-                  fail(`${fullPath}: unregistered Antigravity subagent tool "${toolName}"`);
+              for (const badKey of ["paths", "icon", "color"]) {
+                if (new RegExp(`^${badKey}:`, "m").test(fm)) {
+                  fail(`${skillFile}: unsupported top-level frontmatter key "${badKey}"`);
                 }
               }
-            }
-
-            const toKebab = (s) =>
-              s
-                .toLowerCase()
-                .replace(/[^a-z0-9\s-]/g, "")
-                .trim()
-                .replace(/\s+/g, "-");
-
-            const potetoSkill = readFileSync("skills/poteto-mode/SKILL.md", "utf8");
-            const principlesSection = potetoSkill.split("## Principles")[1]?.split("## Autonomy")[0] ?? "";
-            const playbooksSection = potetoSkill.split("## Playbooks")[1] ?? "";
-
-            const indexedPrinciples = new Set();
-            for (const line of principlesSection.split(/\r?\n/)) {
-              const m = line.match(/^- \*\*([^*]+?)\.?\*\*(?: \(\*\*(principle-[a-z0-9-]+)\*\*\))?/);
-              if (m) {
-                indexedPrinciples.add(m[2] ?? `principle-${toKebab(m[1])}`);
-              }
-            }
-            const diskPrinciples = new Set(expectedSkills.filter((s) => s.startsWith("principle-")));
-            for (const p of indexedPrinciples) {
-              if (!diskPrinciples.has(p)) fail(`skills/poteto-mode/SKILL.md references missing principle skill "${p}"`);
-            }
-            for (const p of diskPrinciples) {
-              if (!indexedPrinciples.has(p)) fail(`skills/${p} is not indexed in skills/poteto-mode/SKILL.md`);
-            }
-
-            const indexedPlaybooks = new Set();
-            for (const line of playbooksSection.split(/\r?\n/)) {
-              const m = line.match(/^- \*\*([^*]+?)\.\*\*(?:.*?File: `playbooks\/([^`]+)`)?/);
-              if (m) {
-                indexedPlaybooks.add(m[2] ?? `${toKebab(m[1])}.md`);
-              }
-            }
-            const diskPlaybooks = new Set(readdirSync("skills/poteto-mode/playbooks").filter((f) => f.endsWith(".md")));
-            for (const pb of indexedPlaybooks) {
-              if (!diskPlaybooks.has(pb)) fail(`skills/poteto-mode/SKILL.md references missing playbook "playbooks/${pb}"`);
-            }
-            for (const pb of diskPlaybooks) {
-              if (!indexedPlaybooks.has(pb)) fail(`skills/poteto-mode/playbooks/${pb} is not indexed in skills/poteto-mode/SKILL.md`);
             }
 
             const installedList = JSON.parse(readFileSync(process.env.AGY_PLUGINS_JSON, "utf8"));
@@ -257,15 +190,12 @@ jobs:
                 fail(`Installed plugin version "${installed.version}" !== "${pluginJson.version}"`);
               }
               const loadedSkills = [...(installed.skills ?? [])].sort();
-              // agy 1.3.5 listed agent filenames; 1.3.6+ lists frontmatter ids.
-              const agentId = (name) => basename(String(name), ".md");
-              const loadedAgents = [...(installed.agents ?? [])].map(agentId).sort();
-              const expectedAgentIds = expectedAgents.map(agentId);
+              const loadedAgents = [...(installed.agents ?? [])].sort();
               if (JSON.stringify(loadedSkills) !== JSON.stringify(expectedSkills)) {
                 fail(`Loaded skills mismatch: expected ${expectedSkills.length}, got ${loadedSkills.length}`);
               }
-              if (JSON.stringify(loadedAgents) !== JSON.stringify(expectedAgentIds)) {
-                fail(`Loaded agents mismatch: expected ${JSON.stringify(expectedAgentIds)}, got ${JSON.stringify(loadedAgents)}`);
+              if (loadedAgents.length !== 0) {
+                fail(`Expected 0 loaded agents, got ${loadedAgents.length}`);
               }
             }
 
@@ -273,29 +203,14 @@ jobs:
               for (const err of errors) console.error(`ERROR: ${err}`);
               process.exit(1);
             }
-            console.log(`Validated ${expectedSkills.length} skills, ${expectedAgents.length} agents, and ${diskPlaybooks.size} playbooks.`);
+            console.log(`Validated ${expectedSkills.length} skills, 4 role capsules, 6 topologies, and hooks guard.`);
           '
 
-      - name: Check shell scripts
-        run: |
-          bash -n skills/poteto-mode/scripts/worktree-audit.sh
-          bash -n skills/show-me-your-work/scripts/log.sh
+      - name: Run swarm guard unit tests
+        run: node --test hooks/guard.test.mjs
 
-      - name: Install script dependencies
-        working-directory: skills/poteto-mode/scripts
-        run: bun install --frozen-lockfile
-
-      - name: Typecheck scripts
-        working-directory: skills/poteto-mode/scripts
-        run: bun run typecheck
-
-      - name: Run script tests
-        working-directory: skills/poteto-mode/scripts
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: commit.gpgsign
-          GIT_CONFIG_VALUE_0: "false"
-        run: bun run test
+      - name: Smoke check watch-pr CLI
+        run: ./skills/pstack/scripts/watch-pr --help > /dev/null
 
       - name: Test statechart
         working-directory: skills/statechart/scripts
