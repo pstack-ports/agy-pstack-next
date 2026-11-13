@@ -1,43 +1,85 @@
 ---
 name: ketchup
-description: "Catch the user up on what changed in this chat since their last message, in plain words and small visuals. List every item waiting on them with what they need to decide it from the reply alone. Use for /ketchup."
-disable-model-invocation: true
+description: >-
+  Unifies live chat and swarm catch-up briefings (standard), zero-jargon
+  plain-language restatements (--plain), subtitled slide walkthrough videos
+  (--video), and cross-session transcript and swarm recall (--recall). Parallel
+  read-only ro-* gatherers inspect view.json, board.jsonl #seq deltas, prior
+  swarm boards, git log, and gh pr state. Use for /ketchup, "catch me up",
+  "ketchup --plain", "explain that in plain words", "ketchup --video", "recall
+  my work on X", or "where did I leave off".
 ---
 
 # Ketchup
 
-Catch the user up on what changed in this chat since the last message they wrote before `/ketchup`, and help them understand each change, not only where it stands. Then lay out every call waiting on them so they can make it from your reply alone. Notifications and subagent results are not their messages. Assume the user remembers their last message and nothing after it.
+Catch the human up on what changed, what stands in flight across transcripts, swarms, branches, and pull requests, and what decisions genuinely wait on them.
 
-Use [`/bro`](../bro/SKILL.md)'s voice, not its task: plain words, short sentences, no jargon, like one person catching up another. Say what changed for the user, not how you did it. Say "the tests pass", not "CI is green". Leave out hashes, file paths, commands, build numbers, and test counts unless the user needs one to act. Call each PR, branch, or agent by a name the user would know, not by a label you invented. If a fact needs context to make sense, give the context or leave the fact out.
+## Route by mode
 
-## Gather what changed
+Pick the output mode from flags or phrasing:
 
-Keep this turn read-only. Make visuals only from what you already have: do not change code, start an app or a job, or post anything. Collect your own work since that message, reports from subagents, and messages from anyone else in this chat. Check the current state of each PR, CI run, or agent this chat touched. Check each number you will show against the facts it comes from, and say so when you correct one.
+1. **Standard catch-up (default `/ketchup`).** Summarizes everything that happened in this conversation and its active swarm since the last message the human wrote (timer wakeups, background tasks, and swarm board posts are not human messages). Uses plain human speech, compact visuals, and self-contained **Action items**.
+2. **Zero-jargon restatement (`/ketchup --plain` or "restate that in plain English").** Restates the previous technical reply (or current catch-up) in everyday conversational speech with zero jargon, acronyms, file paths, or commit hashes. Runs inline with no swarm fan-out when restating a single message.
+3. **Subtitled slide video (`/ketchup --video`).** Renders what changed since the human's last message as a short silent landscape MP4 slide walkthrough above the remaining autonomous work line and text **Action items**.
+4. **Cross-session and shared-record recall (`/ketchup --recall [topic]` or "what have I been working on / where did I leave off").** Reconstructs working state across recent workspace transcripts, prior swarm boards, git branches, PRs, and team trackers into a tight resume capsule.
 
-An action item is a call or step only the user can take, such as a product choice, an approval, an irreversible action, or access you lack. Include any still waiting on the user, even one raised before their last message. Work you can still do yourself is not an action item. Never make up a call to fill the reply. A step the user did not ask for and the work does not need is not an action item, unless it is irreversible and waiting on the user: give it one line and no visual.
+Keep the repository completely read-only in every mode. Rendering the MP4 into `<appDataDir>/brain/<conversation-id>/` (or `/tmp`) during `--video` is the sole artifact-write exception.
 
-One call can cover many items, such as each PR in a set awaiting merge. For each item, collect its link, what it changes for users, the evidence behind your pick, its risk, and your pick. Write "unknown" for a fact the call needs that you do not know. Leave out a link you do not have.
+---
 
-## Write the reply
+## Gather ground truth with parallel `ro-*` scouts
 
-Spend words on the calls, not on the story. Keep what happened under 100 words, not counting pictures, and shorter when less happened. Leave out work that changed nothing for the user. Give each item about 30 words. The reply grows with the number of items: two items need well under 150 words in all, not counting pictures, and thirty need far more. Never cut items or shrink them to stay under a word count: no count in place of a list, and no link in place of an item. A link can add depth, but the reply alone must be enough to decide.
+Never trust stale prose in chat when live state can be checked. For small single-turn catch-ups, inspect directly. Whenever a swarm ran, multiple PRs or branches moved, or `--recall` spans prior sessions, spawn parallel read-only `ro-*` gatherers (`workspace: "inherit"`, enforced read-only by `hooks/guard.mjs`) using the `ro-*` model from `~/.gemini/config/rules/pstack-models.md` (or `inherit`):
 
-Open with one short sentence that names what waits on the user, or says nothing does. The action items give the detail. If nothing happened and nothing waits on the user, say so and stop.
+- **`ro-swarm` (live swarm and board delta).** Inspects `<appDataDir>/brain/<conversation-id>/.system_generated/swarm/` (`view.json` when present, `members.json` roster states and worktree paths, `swarm.json`, and `board.jsonl` `#seq` deltas since the human's last message) alongside `swarm{action: "status"}`. Verifies claimed worker completions against real commits and test runs.
+- **`ro-repo` (live git, PR, and CI state).** Runs `git status --short`, `git branch`, `git log`, and `gh pr list` / `gh pr view` / `gh pr checks` to confirm branch cleanliness, review threads, merge readiness, and exact numbers behind any metric before reporting it.
+- **`ro-history` (cross-session transcripts, prior swarms, and shared record for `--recall`).** Orders `<appDataDir>/brain/*` directories strictly within the active workspace by real modification time (`ls -t`, default 7-day window unless another window is named). Filters matching topics first, reads `<appDataDir>/brain/<id>/.system_generated/logs/transcript.jsonl` (`transcript_full.jsonl` only on `truncated_fields` lines) and prior `<appDataDir>/brain/<id>/.system_generated/swarm/` (`view.json`, `members.json`, `board.jsonl`), and skips unrelated workspaces or eval noise. When `--recall` names a feature, module, or bug, also queries issue trackers, docs, chat, and error telemetry per [`../understand/references/source-playbook.md`](../understand/references/source-playbook.md) to surface reverts and recurring user reports.
 
-Then show what happened, pictures first. Embed inline the screenshots and videos the work produced, then any diagram that explains a change. Then sum up in one short bullet per thing the user asked for: what came of it, and whether it is done, still running, failed, or not checked. Write each line the way you would say it out loud: "Search was slow from a missing index", not "Search review: done" or "Slow search: missing index". Name any bug found and fixed on the way. Each line must stay true when read alone. Never mark something done that still waits on the user, and leave out anything the action items say. Under the summary, give at most three short lines that change what the user knows or must do. Then name in one line any work left that you can do yourself.
+Retire all `ro-*` gatherers via `swarm{action: "kill"}` once their `#seq` reports arrive.
 
-Then list the action items. Ask the call the user owns, such as merge, approve, or pick, and give your pick. A step you would take first goes in your pick. So does anything that must happen first, and anything that cannot be undone. Give the number or link of each PR, issue, or agent a call is about, also in a call between options.
+---
 
-Fit the shape to the call. A call about one item is one bullet: the call, your pick, what it changes for users, the evidence behind your pick, and its risk, with the item named once. When items share a call, write the call and your pick once, then give each item its own bullet, riskiest first: its link and name, what it changes for users, the evidence behind your pick, and its risk. Name an item's pick only where it differs from the call's. Give each item's risk even when it is low, such as "Low risk: only the colors change." Say what waiting costs only when it is more than a delay, such as a deadline or lost data.
+## Mode contracts
 
-For a call between options, give every option the work weighed, each with what it gets the user and what it costs, and the current state when there is one. Those costs are the call's risk, so add no separate risk line. When the screenshots above show the options, write each option's gain and cost under its screenshot.
+### 1. Standard catch-up (`/ketchup`)
 
-## Visuals
+Write in plain spoken English like one teammate catching up another. Say "the tests pass", not "CI is green". Omit commit SHAs, file paths, CLI commands, and internal worker roster names (`impl-2`, `ro-verify`) unless the human needs one to decide. Refer to PRs, branches, and features by names the human recognizes.
 
-A visual is a picture: a screenshot, a video, a Mermaid diagram, a chart or widget from Antigravity's built-in `generative_ui` skill, or a generated image (`generate_image` tool). A Markdown table is not a visual, even with before and after columns.
+#### Structure and word discipline
 
-When something is easier to grasp as a picture than as sentences, draw it: how a design or system works, a PR stack or dependency chain with each PR's state, a before and after of a fix, or options side by side. Never draw a status list, a list of action items, or boxes with nothing connecting them. Never give a fact twice, in text or across visuals.
+1. **Opening line.** One short sentence naming what waits on the human right now, or stating that nothing waits on them. If nothing changed and nothing waits, say so in one sentence and stop.
+2. **Visuals first, then tight summary (under 100 words excluding visuals and action items).**
+   - Embed real screenshots and recordings captured during the work inline. Mark any visible UI change lacking a capture with `No screenshot yet` and state plainly what changed on screen.
+   - Draw a small Mermaid diagram (`<=6` boxes, `<=8` words per box, conversational labels rather than `Status: pass` tags) or `xychart-beta` chart when connections, PR stacks, or measured numbers read faster visually than in prose. Markdown tables are not visuals. Never draw an uncaptured screen, invent a number, or repeat a fact across visuals and bullets.
+   - Give one short spoken-style bullet per thing the human asked for ("Checkout was timing out from an unindexed lookup and is fixed now"), naming whether it is done, running, failed, or unchecked, plus any bug caught and fixed along the way. Never mark an item done while a human decision still blocks it.
+   - Add one line naming any remaining work the coordinator or swarm can finish autonomously without human input.
+3. **Action items (~30 words per item; never truncate or replace items with a count).**
+   - An action item is **strictly** a decision or step only the human can take (product tradeoff, approval checkpoint, permission to push or merge, missing credential). Work you can finish yourself is never an action item.
+   - For a single-item call, write one bullet containing the call (`Approve`, `Merge`, `Pick`), your recommended pick, the PR or branch name and link, what changes for users, the evidence behind your pick, and the concrete risk (even when low, such as "Low risk, only button spacing changes").
+   - When several items share one call (such as three PRs ready to merge), state the call and overall recommendation once, then list each item riskiest-first with its name and link, user impact, evidence, and risk.
+   - For a choice between options, state every option weighed, what each gains and costs the user, and your recommendation without adding a duplicate risk line.
 
-Keep each visual small enough to read at a glance: at most six boxes, with at most eight words in each. Write labels as plain words a person would say, not tags like "Tests: pass". A fact that needs a sentence belongs in the text, or nowhere.
+### 2. Zero-jargon restatement (`/ketchup --plain`)
 
-Embed screenshots and videos inline when the change is visible, not only as links. If a visible change has none, mark its summary line "No screenshot yet," and say there what changed on screen. Draw diagrams and charts from facts you have: a Mermaid diagram for how things connect and a Mermaid `xychart-beta` or `generative_ui` chart for numbers. Never invent a number, and never draw or generate a picture of a screen you did not capture. Link only artifacts that exist.
+Restate the preceding message (or active catch-up) in clear, everyday human language with zero engineering jargon:
+
+- Replace internal mechanics, type names, protocol acronyms, and tool names with what actually happens and why it matters.
+- Keep sentences short, direct, and concrete. If a technical detail needs two paragraphs of backstory and changes no human decision, drop it.
+
+### 3. Subtitled slide walkthrough (`/ketchup --video`)
+
+Follow all gathering and action-item rules of Standard catch-up, replacing the summary prose and static diagrams with one rendered silent landscape MP4 (`<=10` slides, fewer when possible):
+
+1. **Progressive slide design.** Plan one core takeaway and one visual point per slide from real screenshots, diffs, and verified numbers. Mutate one visual canvas progressively across slides using consistent colors, arrows, and highlights rather than cutting between unrelated layouts. Never render bullet lists, status tables, or disconnected boxes as slides.
+2. **Dedicated subtitle strip.** Place one conversational subtitle (`~10` words) in a fixed-height empty strip below the slide frame so subtitles never cover visual content. State what the picture means rather than reading out box labels.
+3. **Hold timing and verification.** Burn subtitles directly into slide frames (never screen-record). Hold each slide fully visible (excluding transition motion) for at least **1 second per 3 newly added words** (counting the subtitle plus new or changed slide labels; words inside embedded screenshots do not count). Before embedding, inspect one rendered frame per slide at chat size to verify subtitle legibility and measure frame holds directly, re-rendering any slide that clips or flashes too fast.
+4. **Reply layout.** Output the one-sentence opening line, the inline MP4 artifact, one line of remaining autonomous work, and the text **Action items** (matching option names shown in the video). If rendering fails, state that in one line and deliver the text Action items cleanly.
+
+### 4. Cross-session recall (`/ketchup --recall`)
+
+State the locked search window and active workspace scope upfront (never silently shrink "all" to "last 7 days" without saying so). Synthesize `ro-history` and `ro-repo` findings into four tight sections:
+
+- **Capsule.** At most 5 bullets stating what this body of work is and where it stands today.
+- **Threads.** One line per workstream prefixed with one ground-truth tag verified via `git` and `gh` (`[merged #N]`, `[open PR #N]`, `[in flight <branch>]`, `[verified, uncommitted]`, `[reverted #N]`, or `[planned, not started]`), citing conversation UUIDs and PR or ticket IDs.
+- **Problems.** At most 5 recurring obstacles, production symptoms users still report, or prior fixes that shipped and were reverted so the next run does not repeat a failed approach.
+- **Next move.** One concrete, highest-leverage action to run next.

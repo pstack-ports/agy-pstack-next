@@ -1,121 +1,76 @@
 # Run work while you sleep
 
-This is the payoff for everything before it. An agent you can trust to verify its own work is an agent you can leave alone with a hard task. What makes that safe isn't hope. It's a checkable finish condition, an isolated worktree, and a decision log you audit in the morning.
+Autonomous overnight runs pay off only after verification is rock-solid. What makes an unattended `/pstack` swarm trustworthy is not optimism. It is a falsifiable finish condition, hook-confined `workspace: "share"` worktrees, `#seq` board checkpoints, and independent `ro-verify` gates on every slice.
 
-![She waves goodnight from the door while robots keep the factory running, one updating a DECISION LOG wall board under a BUILD LOOP ACTIVE sign.](./images/overnight.jpg)
+![An engineer waves goodnight from the doorway while robots run verified build loops and update a wall board in the workshop.](./images/overnight.jpg)
 
-## Earn the trust before the loop
+## Earn trust before leaving a loop unattended
 
-A loop you don't trust just produces unchecked work faster, and the mess compounds with every iteration. Before you leave one running, check that it has earned it:
+An unverified loop only manufactures broken diffs faster. Confirm four prerequisites while watching interactively before handing `/pstack` an overnight run.
 
-- You've done the task once by hand, or watched an agent do it, so you know what good looks like.
-- The agent has the tools and signals you'd use yourself: the verification skill, the profiler, the logs.
-- Every stage proves its work and can stop the line when the work misses the bar.
-- You've read a few transcripts and turned the repeated failures into tools, skills, or checks.
-
-Make the loop autonomous only after all four hold. Until then, run it while you watch.
+- You have watched `/pstack` complete a slice of the same shape interactively and seen what good proof looks like.
+- The repository has executable verification levers (`verify-<app>` from `/verify-gen`, deterministic integration suites, or benchmark harnesses).
+- Every stage has an independent `ro-verify` gate capable of rejecting regressions instead of rubber-stamping compiles.
+- Recurring repo footguns have already been encoded into types, lints, hooks, or role rules with [`/reflect`](../../skills/reflect/SKILL.md).
 
 ## The overnight contract
 
-A good handoff has the goal, the finish condition, permissions, and an escape hatch. It doesn't need to be long:
+A crisp autonomous handoff states the goal, the pass/fail finish predicate, branch isolation, push or merge boundaries, and a clean stop condition when genuinely blocked:
 
 ```text
-/poteto-mode im going to bed. migrate every caller to the new parser in a fresh worktree off <base>.
-done means zero old callers, all parser fixtures pass, old api deleted.
-keep a decision log. don't ask me before committing.
-/goal until done. if you're truly stuck after a few hours, stop and write up why.
+/pstack i am going to bed. migrate every caller from the legacy sync store to the async store on a fresh branch.
+done means zero legacy imports remain, the full integration and verify-app suites pass, and the legacy module is deleted.
+commit verified slices locally and do not push.
+/goal keep going until done, or stop and post exact blockers if an external constraint prevents completion.
 ```
 
-Walk through what each line buys you:
+Each line carries operational weight in the [`program`](../../skills/pstack/topologies/program.md) topology.
 
-- "im going to bed" is a session override. The agent stops asking and keeps going.
-- "done means..." turns the goal into checks every iteration can run.
-- "fresh worktree off `<base>`" keeps the run from colliding with anything else you have open.
-- "don't ask me before committing" pre-answers the permission the agent would otherwise block on.
-- `/goal`, `/schedule`, and the `schedule` tool are Antigravity's built-in wake mechanisms, not pstack skills. The [Autonomous run playbook](../../skills/poteto-mode/playbooks/autonomous-run.md) uses them to re-check the finish condition on events or a heartbeat.
-- The escape hatch lets it stop at a genuine dead end and write up why, which beats eight hours of creative goal reinterpretation.
+- **Explicit autonomy signal.** Telling `/pstack` you are stepping away activates non-blocking execution (`Never Block on the Human`), reserving pauses strictly for irreversible or out-of-policy actions.
+- **Executable finish predicate.** Every phase checks concrete commands (`zero legacy imports`, passing test and `/verify-gen` harnesses) rather than subjective quality claims.
+- **Local commits, gated pushes.** Verified worker commits merge into your local target branch safely while `hooks/guard.mjs` prevents unrequested `git push` calls unless you explicitly ask to open or update remote PRs.
+- **Built-in wake persistence.** Antigravity's `/goal` command and `schedule` timers keep the coordinator progressing across phases without busy-polling.
 
-Because you'll review this work after stepping away, `/poteto-mode` routes it through [`/figure-it-out`](../../skills/figure-it-out/SKILL.md), which designs the run's phases before any code and wires in the decision log.
-
-To stop a run on purpose, tell the agent to pause, or that you're about to go offline or restart Antigravity. The [Pause safely playbook](../../skills/poteto-mode/playbooks/pause-safely.md) finishes or backs out of the current step, commits a work-in-progress checkpoint, and writes a resume note. A fresh chat picks the work up from that note through the Session pickup playbook. Saying "keep going" never triggers a pause.
-
-## What the loop does all night
+## How `program` checkpoints and resumes on the board
 
 ```mermaid
 flowchart TD
-    A[Check the finish condition] --> B[Make the smallest justified change]
-    B --> C[Verify against the real artifact]
-    C --> D{Progress?}
-    D -->|Yes| E[Commit]
-    D -->|No| F[Discard]
-    E --> G[Log one decision row]
+    A["Check finish predicate"] --> B["Dispatch disjoint impl-* slices (share)"]
+    B --> C["Run sicko-* cleanup + ro-verify gate"]
+    C --> D{"Verified progress?"}
+    D -->|"Yes"| E["Fetch and merge SHA + post #seq checkpoint"]
+    D -->|"No"| F["Discard unmerged slice + pivot hypothesis"]
+    E --> G["swarm kill merged worker"]
     F --> G
     G --> A
 ```
 
-One change, one check, one log row, every iteration. Changes that didn't help get discarded, not left to ride. A plateau means pivot, not stop, and the finish condition never quietly relaxes to declare victory.
+Every completed phase records its merged commit SHA, verified invariant, and remaining slice list directly on the native swarm board (`board.jsonl`) with `#seq` citations. Failed experiments never pollute the target branch, and finished `share` worktrees are killed immediately after `git merge` so disk usage stays flat all night.
 
-## The morning audit
+If you need to pause a run before going offline or restarting Antigravity, tell the coordinator to pause safely. `program` lands or cleanly stashes active worktrees and posts a structured `#seq` resume checkpoint. A later turn or successor coordinator reconstructs exact program state via `read_board{since: 0}` and `git log` without redoing verified slices.
 
-[`/show-me-your-work`](../../skills/show-me-your-work/SKILL.md) is what makes the run reviewable. Each row records the time, phase, decision, reason, an evidence pointer, and the result, in a TSV at `decisions.tsv` (or `.audit/<task-slug>.tsv` when several runs share a directory). It stays local by default. Commit it when the work is ambitious enough that a reviewer needs the trail to trust the result.
+## Morning catch-up with `/ketchup`
 
-When you're back, ask for the run in review form:
-
-```text
-/show-me-your-work catch me up on what you did last night
-```
-
-Before the skill hands back its summary, it spawns a reviewer on a different model tier to read the trail and the transcript, and the reply ends with an Attention section listing what deserves your scrutiny. Read that section first, then the log rows it points at. You're auditing decisions, not re-reading the whole night.
-
-For a quick status instead of an audit, run [`/ketchup`](../../skills/ketchup/SKILL.md) in the chat that ran the work. It reads only, and tells you in plain words what changed since your last message, with the screenshots and small diagrams the work produced. Then it lists each call waiting on you, such as a merge, an approval, or a choice between options, with its pick, the evidence, and the risk, so you can decide from the reply alone.
-
-## When the night holds a queue, not a task
-
-The contract above drives one task to one finish condition. Some nights hold more, a queue of independent changes or a whole program. Three playbooks scale the same trust up.
-
-[Autopilot-full](../../skills/poteto-mode/playbooks/autopilot-full.md) runs a queue of independent PRs to merged. Each PR gets one owner agent that carries it from build through merge, and no owner merges on its own verdict. A swarm of fresh verifiers checks the owner's code-ready head. A later rebase or minor fix gets one fresh verifier, and only new behavior or a large new diff calls the full swarm again. Only a clean verdict on the patch that merges authorizes the merge:
+When you return in the morning, run [`/ketchup`](../../skills/ketchup/SKILL.md) first:
 
 ```text
-/poteto-mode full autopilot on this queue. each item is independent. i want them merged by morning.
+/ketchup
 ```
 
-[Autopilot-stack](../../skills/poteto-mode/playbooks/autopilot-stack.md) is Autopilot-full without the merge. You wake up to verified PRs, each with its verdict, and you review and land them yourself. A PR stacks only on a PR it builds on. Pick it over Autopilot-full when you want your own eyes on the work before anything merges:
+`/ketchup` inspects `view.json`, `board.jsonl` `#seq` checkpoints, `git log`, and any open PRs in parallel across `ro-*` workers. It summarizes what landed, shows captured screenshots or metrics, and lists any decisions or blockers waiting on your call with `#seq` evidence pointers. Add `--plain` for a quick zero-jargon read on your phone, or `--video` for a short subtitled slide recap.
 
-```text
-/poteto-mode autopilot these five changes, but don't merge. i'll land them in the morning.
-```
+## Scale across multi-area programs
 
-[Orchestrate](../../skills/poteto-mode/playbooks/orchestrate.md) is for a program that outlives any single agent: multi-day, many stacked PRs, fleets of subagents under one standing coordinator chat. The coordinator decides which agent does each piece of work, checks what each one produces, and never writes code itself. If one agent could finish the work in a session, the playbook itself routes you back to the overnight contract above:
+When a migration or release spans more than eight workers or multiple independent subsystems, `program` scales hierarchically on the native swarm runtime.
 
-```text
-/poteto-mode orchestrate the store migration. own it until every package is converted and merged. i'll check in twice a day.
-```
+- **Topic channels.** `swarm{action: "channel"}` partitions high-traffic subsystems (`#storage`, `#api`, `#ui`) so workers only wake on messages relevant to their area.
+- **Area leads (`lead-<area>`).** Each subsystem lead owns a stacked branch in `workspace: "share"`, coordinates its slice authors and `ro-verify` checks, and hands verified phase heads up to the root coordinator.
+- **Stacked PR queues (`program` + `ship`).** Ask `/pstack` to build a verified stack without merging (`"prepare stacked PRs and get CI green, i will merge in the morning"`) or, when explicitly authorized, land contiguous verified PRs bottom-up.
 
-## Run many projects in parallel
+## Standing `/schedule` automations
 
-Give each coordinator agent a dedicated conversation thread. The coordinator doesn't write code. It directs subagents in isolated workspaces (`Workspace: "branch"`). That's the shape the Orchestrate playbook expects. Start your prompts to the coordinator with `/poteto-mode`, and the subagents it spawns follow the playbooks.
+Not every loop needs a manual kickoff. Use [`/setup-pstack`](../../skills/setup-pstack/SKILL.md) (or Antigravity's `/schedule` command) to configure recurring maintenance sweeps such as nightly `/verify-gen --maintain` drift checks, flaky-test quarantine probes, or morning `/ketchup` digests. Keep two rules on every scheduled workflow. Let every stage stop the line cleanly when nothing needs action, and attach concrete `#seq` and artifact proof whenever it proposes a change.
 
-A few habits help:
+**Pitfall.** Never give `/goal` or `/schedule` a wall-clock duration (`"work on this for four hours"`) in place of a falsifiable predicate. Time limits reward churn, whereas pass/fail checks reward finishing cleanly.
 
-- Give each body of work its own coordinator thread, such as a feature, a migration, a perf push, or a tech-debt cleanup. Several can run side by side.
-- Give each PR a verification swarm before it merges, and let Autopilot-stack or Autopilot-full carry the queue.
-- Ask the coordinator for a plan backed by data, and have it answer open questions with prototypes before it asks you.
-
-One prompt can carry a whole program, from research through execution:
-
-```text
-/poteto-mode refactor this repo so its architecture is more agent friendly. use /correct and /architect on past commits and review comments to find the mistakes agents make most here. use /recall for context from past chats. answer open questions with prototypes instead of asking me. come back with a plan backed by real data. once i approve it, run it with autopilot-stack or autopilot-full, and ask me which.
-```
-
-## Let loops start themselves
-
-Every loop above still waits for you to start it. A scheduled or event-driven automation removes that step. Software maintenance splits into stages that suit this well: triage a report, reproduce it, fix it, verify the fix. Two rules keep such a line trustworthy:
-
-- Every stage can stop the line. Triage can decide the report is expected behavior, repro can fail to reproduce it, and the fixer can judge the change too risky. Each of those outcomes is useful, because it keeps bad work from reaching the next stage, where it costs more to undo.
-- Every stage hands over evidence. Repro attaches screenshots and video of the broken state, and the fix attaches before-and-after proof. A human can then check that the agent fixed the right thing before reading a line of code.
-
-pstack ships this as a dormant [automation pack](../../automations/benny/README.md) for Slack issue reports. One automation triages each report. The other reproduces confirmed bugs and may prepare a small draft fix. Point an agent at its [`FOR_AGENTS.md`](../../automations/benny/FOR_AGENTS.md) and name the target repository to set it up.
-
-**Pitfall:** a duration is not a finish condition. "work on this for 4 hours" gives the agent nothing to check, and you'll wake up to four hours of motion instead of a result. Give `/goal` or `schedule` a predicate that can pass or fail.
-
-Next: [Steer with principle names](./08-principles.md).
+Continue to [Steer with principle names](./08-principles.md).

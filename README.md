@@ -1,22 +1,12 @@
 # pstack
 
-Antigravity (`agy`) port of [pstack](https://github.com/cursor/plugins/tree/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack) (`0.15.36`) by [Lauren Tan (poteto)](https://x.com/poteto).
+Swarm-centric engineering workflows for Antigravity (`agy` v2.0), adapted from [pstack](https://github.com/cursor/plugins/tree/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack) by [Lauren Tan (poteto)](https://x.com/poteto).
 
-See the [upstream pstack README](https://github.com/cursor/plugins/blob/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack/README.md) and the [guide](./docs/guide/README.md) for usage and documentation.
+Read the [pstack guide](./docs/guide/README.md) for a step-by-step walkthrough from model setup to autonomous multi-branch programs.
 
-i'm [poteto](https://x.com/poteto). i'm not a president or ceo, but i've worked with millions of lines of code at Meta, Netflix, and Cursor. i'm also on the react core team where i help build and maintain react compiler.
+If you want to go fast, go deep first. Throughput without verification only ships broken code faster. `pstack` turns Antigravity's native swarm runtime into an engineering team with mechanical guardrails, isolated git worktrees, cross-model verification, and zero-slop code hygiene.
 
-there's a growing sense that ai writes too much slop code. i agree. i don't want to ship like a team of twenty slop artists. throughput without quality is not a goal i aspire to. if you want to go fast, go deep first. 
-
-**pstack is my answer.** these are the same skills i use every day to ship high quality code at Cursor. this turns antigravity into a real engineering team. the goal is not to maximize loc, in fact it's the opposite. pstack helps you write less, but higher quality code.
-
-**pstack gives you fearless parallelism.** when you can go deep on one agent and trust it to write good, verifiable code, you can truly parallelize with confidence. start multiple agents up with `poteto-mode` and trust that they'll apply rigorous engineering principles to their work.
-
-**antigravity gives you the best of all worlds.** every frontier model has its strengths and weaknesses. use any model with pstack. in fact, many of my skills use multi-model workflows to take advantage of each model's unique strengths.
-
-fork it. improve it. make it yours. PRs are welcome! 
-
-## install
+## Install
 
 Install the plugin with the Antigravity CLI:
 
@@ -24,264 +14,107 @@ Install the plugin with the Antigravity CLI:
 agy plugin install https://github.com/pstack-ports/agy-pstack-next
 ```
 
-Verify the installation:
+Verify the installed plugin:
 
 ```bash
 agy plugin list
 ```
 
-## get started
+## Quick Start
 
-two steps:
+Run two commands to start working.
 
-1. run [`/setup-pstack`](./skills/setup-pstack/SKILL.md), pick a reasoning budget, and choose which models you want.
-2. use [`/poteto-mode`](./skills/poteto-mode/SKILL.md) whenever you're doing anything that requires rigor.
+1. Run [`/setup-pstack`](./skills/setup-pstack/SKILL.md) to discover your available models, set per-role defaults, and optionally generate a project verification skill.
+2. Start engineering tasks with [`/pstack`](./skills/pstack/SKILL.md), stating the goal and a checkable finish condition.
 
-new here? the [pstack guide](./docs/guide/README.md) walks you through a first real task, from setup and prompting through verification and overnight runs. stuck, or unsure which skill fits? ask [`/poteto-help`](./skills/poteto-help/SKILL.md).
-
-that's it. the other skills are situational, and the mode skill uses them for you as needed. out of the box the mode splits work by model strength: code delegates (feature, refactoring, bug fix, perf, hillclimb) go to flash, while the hardest changes, prose, and judgment go to pro. the default panel is pro / flash. [`/setup-pstack`](./skills/setup-pstack/SKILL.md) changes any of it.
-
-## usage
-
-use [`/poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task. it reads your request, picks from a set of playbooks, and runs the other skills as the steps need them.
-
-pick `/poteto-mode` from the `/` menu before you type your task, so antigravity attaches the skill to the message.
-
-### just use [`/poteto-mode`](./skills/poteto-mode/SKILL.md)
-
-this skill is the main shortcut. i use it whenever i need the agent to do rigorous engineering work. it comes with twenty-three playbooks:
-
-```
-/poteto-mode this pr has a subtle bug where the scroll drifts every 750ms even when idle. repro
-first, then fix and verify.
+```text
+/pstack the scroll container drifts every 750ms while idle. reproduce it first, fix the root cause, and verify in the browser.
 ```
 
-```
-/poteto-mode i'm going to bed. land the stack even if ci flakes. i want everything merged by
-morning.
+```text
+/pstack migrate every caller to the new async store in isolated slices, delete the legacy store, and prove all integration suites pass.
 ```
 
-<details>
-<summary>the twenty-three playbooks</summary>
+New to the toolkit or unsure which workflow fits a task? Ask [`/setup-pstack`](./skills/setup-pstack/SKILL.md) for a workflow recommendation or open the [guide](./docs/guide/README.md).
 
-| playbook | for |
+## Hook-Enforced Swarm Architecture
+
+Pstack v2 replaces prompt-only delegation rules with mechanical enforcement via root [`hooks.json`](./hooks.json), [`hooks/guard.mjs`](./hooks/guard.mjs), and four role capsules under `roles/`.
+
+### Prefix-Typed Roster Contract
+
+Every swarm member's prefix determines its workspace isolation, injected role capsule, and runtime permissions.
+
+| Member Prefix | Default Workspace | Role Capsule | Enforced Permissions |
+|---|---|---|---|
+| Coordinator (root chat) | Primary checkout | [`roles/coordinator.md`](./roles/coordinator.md) | Plans slices, manages swarm lifecycle, judges `#seq` evidence, and merges verified commits. |
+| `impl-*`, `cand-*`, `lead-*` | `workspace: "share"` | [`roles/poteto-agent.md`](./roles/poteto-agent.md) | Edits strictly inside its own worktree. `git push` blocked unless `PSTACK_ALLOW_PUSH=1` is set. |
+| `adv-*` | `workspace: "share"` | [`roles/poteto-agent.md`](./roles/poteto-agent.md) | Writes executable repros and exploit probes inside its own worktree. `git push` always blocked. |
+| `ro-*` | `workspace: "inherit"` | [`roles/research.md`](./roles/research.md) | Strictly read-only. Blocks `edit_file`, `write_file`, mutating shell or git commands, and mutating MCP calls. Allows `/tmp` probes. |
+| `sicko-*` | `workspace: "share"` | [`roles/comment-sicko.md`](./roles/comment-sicko.md) | Comment and slop surgeon. Allows `edit_file` inside its own worktree. Blocks `write_file` and `git push`. |
+| `monitor*`, `narrator*` | Built-in | None (skipped) | Native stall detection and board narration with zero extra capsule tokens. |
+
+### Mechanical Guardrails in `hooks/guard.mjs`
+
+- **One-time capsule injection.** `SessionStart` and `PreInvocation` resolve each conversation against `<appDataDir>/brain/*/.system_generated/swarm/members.json` and inject its matching `roles/*.md` capsule once per role, upgrading cleanly if a worker's roster entry appears after startup.
+- **Native swarm exclusivity.** `PreToolUse` blocks legacy subagent tools across all roles so every multi-agent workflow runs on the shared `#seq` message board.
+- **Symlink-safe worktree confinement.** `PreToolUse` resolves `realpathSync` on the nearest existing ancestor of every `edit_file` and `write_file` path, blocking `../` traversal and symlink escapes into sibling worktrees.
+- **Read-only research integrity.** `ro-*` workers can inspect code, run tests, query read-only MCPs, and write temporary probes under `/tmp`, while `hooks/guard.mjs` denies repository mutations.
+- **Push gating.** Force-pushes to `main` or `master` are always denied. Adversarial (`adv-*`) and cleanup (`sicko-*`) workers can never push, and author workers push only when explicitly authorized with `PSTACK_ALLOW_PUSH=1`.
+
+### Native Swarm Mechanics
+
+- **Warm context forks.** Pass `fork: "<member>"` in `swarm{action: "add"}` to branch an implementation worker directly from a winning `ro-*` investigator or `cand-*` prototype without re-reading the repo cold.
+- **Safe landing before teardown.** Because `swarm{action: "kill"}` permanently deletes a worker's `share` worktree, the coordinator always runs `git fetch <worker_cwd> <sha> && git merge` (or `cherry-pick`) before killing a worker.
+- **Board `#seq` citations and doorbell `@mentions`.** Workers cite earlier findings by `#seq` number instead of re-quoting logs and `@mention` only the specific peer who acts next.
+- **Live quota hot-swap.** If a worker hits rate limits or low quota, `swarm{action: "model"}` switches its model in place while preserving its conversation history and worktree.
+
+## The 13 Skills
+
+`/pstack` orchestrates most end-to-end tasks automatically and composes with the other 12 skills whenever you want a focused workflow directly.
+
+| Skill | Purpose |
 |---|---|
-| [investigation](./skills/poteto-mode/playbooks/investigation.md) | a read-only question. how does x work, why was y built this way, are we sure. |
-| [bug fix](./skills/poteto-mode/playbooks/bug-fix.md) | reproduce a defect, root-cause it, and fix with runtime evidence. |
-| [perf](./skills/poteto-mode/playbooks/perf-issue.md) | trace a measured slowness and improve it against a baseline. |
-| [hillclimb](./skills/poteto-mode/playbooks/hillclimb.md) | sustained, scientific improvement of one metric against a target, looping hypotheses with before/after measurement and one commit per accepted win. |
-| [runtime forensics](./skills/poteto-mode/playbooks/runtime-forensics.md) | diagnose a live symptom (leak, idle-cpu spin, glitch) from instrumentation. |
-| [trace forensics](./skills/poteto-mode/playbooks/trace-forensics.md) | diagnose a captured profiling artifact (cpuprofile, trace, spindump, heap snapshot). |
-| [feature](./skills/poteto-mode/playbooks/feature.md) | new or changed behavior, built from a named data shape. |
-| [refactoring](./skills/poteto-mode/playbooks/refactoring.md) | a behavior-preserving change to structure or shape. |
-| [prototype](./skills/poteto-mode/playbooks/prototype.md) | a throwaway sketch to make a design or behavioral decision cheaply, or to settle an empirical fork by observing it. |
-| [visual parity](./skills/poteto-mode/playbooks/visual-parity.md) | pixel-exact ui equivalence between two implementations. |
-| [authoring a skill](./skills/poteto-mode/playbooks/authoring-a-skill.md) | writing or editing a SKILL.md. |
-| [eval](./skills/poteto-mode/playbooks/eval.md) | test how a skill or prompt change affects agent behavior, blinded. |
-| [babysit](./skills/poteto-mode/playbooks/babysit.md) | drive a pr or a stack to merge-ready: conflicts, review threads, ci. |
-| [shipping](./skills/poteto-mode/playbooks/shipping.md) | independently verify a green stack, then land the contiguous verified run bottom-up through github by default or origin when available. |
-| [autonomous run](./skills/poteto-mode/playbooks/autonomous-run.md) | drive a long task to completion without stopping. |
-| [orchestrate](./skills/poteto-mode/playbooks/orchestrate.md) | a standing project handed to one coordinator chat: multi-day, many stacked prs, fleets of subagents. |
-| [autopilot-full](./skills/poteto-mode/playbooks/autopilot-full.md) | run independent prs to merged with one owner per pr. a swarm verifies each code-ready head, and every later change to the patch gets a fresh check. |
-| [autopilot-stack](./skills/poteto-mode/playbooks/autopilot-stack.md) | autopilot-full without the merge. build and verify prs for the operator to review and land, stacking a pr only on a pr it builds on. |
-| [session pickup](./skills/poteto-mode/playbooks/session-pickup.md) | resume or take over a prior agent's in-flight work. |
-| [pause safely](./skills/poteto-mode/playbooks/pause-safely.md) | suspend in-flight work cleanly so it can be resumed later. |
-| [multi-phase plan](./skills/poteto-mode/playbooks/multi-phase-plan.md) | work that spans phases or stacked PRs. |
-| [worktree cleanup](./skills/poteto-mode/playbooks/worktree-cleanup.md) | reclaim disk by pruning merged or abandoned worktrees and stale ios simulators, safety-gated. |
-| [opening a pr](./skills/poteto-mode/playbooks/opening-a-pr.md) | open a ready pr from small ordered commits with a conventional commits title and a briefing-style body. invoked at the end of every other playbook. |
+| [`/pstack`](./skills/pstack/SKILL.md) | Swarm coordinator kernel with 6 composable topologies (`program`, `build`, `diagnose`, `hillclimb`, `ship`, `evolve`), distilled engineering principles, TypeScript patterns, and PR babysitting. |
+| [`/setup-pstack`](./skills/setup-pstack/SKILL.md) | Live `swarm{action: "models"}` configuration for `~/.gemini/config/rules/pstack-models.md`, budget presets, workflow and prompt advisor, and `/schedule` automation setup. |
+| [`/understand`](./skills/understand/SKILL.md) | Parallel `ro-*` clue-sharing mesh unifying mechanism walkthroughs, historical git and tracker provenance, and interactive Socratic explanations, with warm `fork` into implementation. |
+| [`/crucible`](./skills/crucible/SKILL.md) | Parallel multi-candidate design (`sketch`) and prototype (`full`) arena across orthogonal axes (`cand-*`), cross-family `ro-judge` scoring, and donor `cherry-pick` synthesis. |
+| [`/interrogate`](./skills/interrogate/SKILL.md) | Adversarial bug hunting (`adv-*` executable repros) combined with transitive caller, schema, and rollout blast-radius mapping (`ro-blast`), gated by `ro-verify`. |
+| [`/reflect`](./skills/reflect/SKILL.md) | Post-mortem, user-correction mining, and structural tightening across transcripts and `board.jsonl`, encoding fixes into hooks, capsules, types, lints, tests, or skills. |
+| [`/ketchup`](./skills/ketchup/SKILL.md) | Catch-up briefings across live swarm `view.json`, `#seq` board deltas, prior sessions, `git log`, and PR status in standard, `--plain`, and `--video` formats. |
+| [`/verify-gen`](./skills/verify-gen/SKILL.md) | Create and `--maintain` project-local behavioral E2E verification skills (`features/` maps) and `--formal` invariant or TLA+ verification skills, proven live by `ro-verify`. |
+| [`/control-ui`](./skills/control-ui/SKILL.md) | Local Playwright, browser, and CDP harness craft with per-worker ephemeral ports and isolated `--user-data-dir` profiles so parallel swarm workers never collide. |
+| [`/control-cli`](./skills/control-cli/SKILL.md) | Local `tmux`, PTY, and runtime-inspector harness craft with isolated sockets, temp home directories, and deterministic terminal dimensions per worker. |
+| [`/statechart`](./skills/statechart/SKILL.md) | Check a TLA+ state machine with TLC and render user-facing Mermaid or Pele SVG statecharts showing shortest counterexample paths. |
+| [`/technical-writing`](./skills/technical-writing/SKILL.md) | Four-layer documentation standard (Diataxis, Google developer style, STE, Global English) with zero-slop hygiene and `ro-*` technical accuracy checks. |
+| [`/make-bot-ui`](./skills/make-bot-ui/SKILL.md) | Build local or Tailscale web UIs whose buttons wake Antigravity agents via `agy agentapi` or webhooks while keeping secrets strictly server-side. |
 
-</details>
+## The 6 `/pstack` Topologies
 
+[`/pstack`](./skills/pstack/SKILL.md) routes tasks across six composable swarm topologies under `skills/pstack/topologies/`.
 
-
-when invoked it:
-
-1. matches your task to a [playbook](./skills/poteto-mode/playbooks/) and opens a todo list whose first items are its steps, copied in verbatim.
-2. routes to the other skills as the steps fire.
-3. writes unslopped replies framed for the consumer and the maintainer.
-
-the full rules and playbooks live in [`skills/poteto-mode/SKILL.md`](./skills/poteto-mode/SKILL.md).
-
-to keep [`/poteto-mode`](./skills/poteto-mode/SKILL.md) on across turns, start each new task with `/poteto-mode`. plain enter attaches it to one message only.
-
-[`/poteto-mode`](./skills/poteto-mode/SKILL.md) works extremely well with antigravity's `/goal` command. you can make antigravity work for many hours without sacrificing rigor.
-
-## skills
-
-[`/poteto-mode`](./skills/poteto-mode/SKILL.md) runs most of these for you when a step needs them (`how`, `why`, `architect`, `arena`, `swarm`, `interrogate`, `unslop`, `no-comments`, `technical-writing`, `tdd`, and the principles). the table below is for when you want one directly:
-
-```
-/how do we cancel runs? do we have an n+1 when we look up every run to cancel?
-```
-
-```
-/interrogate review this pr.
-```
-
-<details>
-<summary>all skills</summary>
-
-| skill | use it when |
+| Topology | What It Orchestrates |
 |---|---|
-| [`/poteto-mode`](./skills/poteto-mode/SKILL.md) | default entry point for any non-trivial task. |
-| [`/poteto-help`](./skills/poteto-help/SKILL.md) | you're new to pstack, or unsure which skill, playbook, or principle fits. finds out what you're trying to do, answers that part, and hands you a prompt to type. runs only when you type `/poteto-help`. |
-| [`/in-your-own-words`](./skills/in-your-own-words/SKILL.md) | you want the agent to play back your goal and the problem before it starts. runs only when you type `/in-your-own-words`. |
-| [`/sharpen`](./skills/sharpen/SKILL.md) | you want a prompt made deeper, not bigger, before you send it: what a top professional would do that you didn't ask for, the raw material they'd start from, their methods and tools, and an outside check that the result is right. hands back the rewritten prompt and leaves your choices open. doesn't do the task. runs only when you type `/sharpen`. |
-| [`/how`](./skills/how/SKILL.md) | you want a walkthrough of how a subsystem works. |
-| [`/why`](./skills/why/SKILL.md) | you want to know why something was built this way. discovers available MCPs at run time and queries each evidence category in parallel (source control, issue tracker, long-form docs, real-time chat, infra observability, error tracking, analytics warehouse). |
-| [`/recall`](./skills/recall/SKILL.md) | you're starting or resuming work and want your recent context on a topic rebuilt from your own chat history and the shared record, handed back as a tight current-state brief. |
-| [`/ketchup`](./skills/ketchup/SKILL.md) | you want what changed in this chat since your last message, in plain words and small visuals, with every item waiting on you listed and decidable from the reply alone, even when that makes the reply long. |
-| [`/ketchup-video`](./skills/ketchup-video/SKILL.md) | you want the `/ketchup` catch-up as a short subtitled video of slides, with the calls waiting on you as text under it. |
-| [`/blast-radius`](./skills/blast-radius/SKILL.md) | you have a small-looking change and want to know what else it could break, with the one fact it's safe because of proven by running code, not asserted. |
-| [`/architect`](./skills/architect/SKILL.md) | you're about to write code that crosses a function boundary and want the caller's usage, types, and module shape settled first. |
-| [`/arena`](./skills/arena/SKILL.md) | you want N parallel attempts at the same thing, then to grab the best parts of each. |
-| [`/swarm`](./skills/swarm/SKILL.md) | you want N parallel workers across different slices or races, then one aggregated report. |
-| [`/interrogate`](./skills/interrogate/SKILL.md) | you have a diff and want different models to try to break it, keeping only findings a run proves. |
-| [`/automate-me`](./skills/automate-me/SKILL.md) | you want your own `-mode` skill, drafted from how you've actually worked. |
-| [`/make-bot-ui`](./skills/make-bot-ui/SKILL.md) | you want a page or dashboard whose buttons wake an antigravity agent over `agy agentapi` or a webhook, including the sender-key handoff and Tailscale. |
-| [`/setup-pstack`](./skills/setup-pstack/SKILL.md) | you want to pick which models pstack uses per role. detects your models and writes a config rule. |
-| [`/reflect`](./skills/reflect/SKILL.md) | a long task landed and you want the recipe captured as a skill edit. |
-| [`/correct`](./skills/correct/SKILL.md) | you keep correcting agents for the same mistakes. mines history for mistake classes, fixes each at the highest level that works (architecture, then types, lint, and ci, then tests, with docs last), and keeps a table pairing each rule with what enforces it. |
-| [`/teach`](./skills/teach/SKILL.md) | you want to actually understand a change or subsystem, not just have it summarized. runs how + why and weaves one plain explanation, built up diagram by diagram. |
-| [`/tdd`](./skills/tdd/SKILL.md) | you're fixing a bug and there's a cheap local test path. write the failing test first, then the fix. |
-| [`/benchmark-checklist`](./skills/benchmark-checklist/SKILL.md) | you ran a benchmark or measured a speedup or regression. vets the number (limiter, tuning, errors, repeat runs, end-to-end relevance) before you report or act on it. |
-| [`/no-comments`](./skills/no-comments/SKILL.md) | strip comments before review; spawns Comment Sicko, fixes accepted findings, offers encodings for claimed constraints. |
-| [`/typescript-best-practices`](./skills/typescript-best-practices/SKILL.md) | you're reading or editing typescript. grounds the type-system-discipline principle in syntax. |
-| [`/figure-it-out`](./skills/figure-it-out/SKILL.md) | no bundled playbook fits. designs a rigorous, auditable playbook for the task. |
-| [`/show-me-your-work`](./skills/show-me-your-work/SKILL.md) | you want a reviewable decision trail. logs decisions to a tsv you can commit. |
-| [`/create-verification-skill`](./skills/create-verification-skill/SKILL.md) | your project has no scripted way to prove app behavior. generates a project-local verify skill with a feature map, for any language or platform. |
-| [`/maintain-verification-skill`](./skills/maintain-verification-skill/SKILL.md) | your verify skill's feature map has drifted from the app. source wave + one live pass, at most one PR of proven corrections. |
-| [`/create-formal-verification-skill`](./skills/create-formal-verification-skill/SKILL.md) | tests can't reach the case that breaks a race, retry, state machine, parser, or unsafe code. verifies one property with the tool that fits and generates a project-local skill to recheck it on every change. |
-| [`/maintain-formal-verification-skill`](./skills/maintain-formal-verification-skill/SKILL.md) | code your formal verification covers has changed since it was last checked. updates the model, harness, or properties to match the code, reruns, and says whether each failure is drift in the verification or a bug in the code. |
-| [`/statechart`](./skills/statechart/SKILL.md) | someone who owns the behavior needs to see it, not read a spec. checks a tla+ model, draws what the user sees as a mermaid statechart, marks each state that breaks a rule, and gives the shortest path to each one. |
-| [`/unslop`](./skills/unslop/SKILL.md) | you're cleaning up writing. removes AI tells. |
-| [`/bro`](./skills/bro/SKILL.md) | you want the last message restated in plain human language, no jargon. |
-| [`/technical-writing`](./skills/technical-writing/SKILL.md) | layered doc standard (Diátaxis + Google developer style + STE + Global English) for docs, RFCs, readmes, PR descriptions, commit messages. |
+| [`program`](./skills/pstack/topologies/program.md) | Multi-phase plans, stacked branches, `#area` swarm channels, `lead-<area>` sub-coordinators, autonomous overnight runs, board checkpointing, session resume, and safe worktree cleanup. |
+| [`build`](./skills/pstack/topologies/build.md) | Features, caller-migrating refactors, prototypes, and visual parity loops across disjoint `impl-*` worktrees, `sicko-*` diff cleanup, and `ro-verify` behavioral proof. |
+| [`diagnose`](./skills/pstack/topologies/diagnose.md) | Bug fixes, read-only investigations, live runtime forensics, and trace profiling via parallel `ro-*` hypothesis probes, warm `fork` into `impl-fix`, and regression verification. |
+| [`hillclimb`](./skills/pstack/topologies/hillclimb.md) | Sustained metric optimization with `ro-bench` baseline and noise-floor locking, explain-the-number checks, parallel `cand-*` lever trials, and compounding cherry-picked wins. |
+| [`ship`](./skills/pstack/topologies/ship.md) | Pre-PR `ro-verify` and `/interrogate` gates, local branch landing, opt-in PR creation and push (`PSTACK_ALLOW_PUSH=1`), CI and review triage via [`watch-pr`](./skills/pstack/scripts/watch-pr) and [`bugbot-triage.md`](./skills/pstack/references/bugbot-triage.md), and clean worker teardown. |
+| [`evolve`](./skills/pstack/topologies/evolve.md) | Skill and role-capsule authoring plus blind behavioral evaluations in isolated `agy -p --sandbox` runs scored by `ro-judge` without prompt overfitting. |
 
-</details>
+## Engineering Principles and References
 
+All 24 core, architecture, verification, delegation, and meta principles are compiled into [`skills/pstack/references/principles.md`](./skills/pstack/references/principles.md) and distilled into the four role capsules (`roles/*.md`), alongside [`skills/pstack/references/ts-patterns.md`](./skills/pstack/references/ts-patterns.md) for strict TypeScript boundary and union modeling. See [Steer with principle names](./docs/guide/08-principles.md) in the guide for how to redirect a live swarm in one sentence.
 
+## Validation and Testing
 
-### examples
+Validate the plugin manifest, hooks, and skills strictly with the Antigravity CLI, and run the hook guard unit test suite with Node:
 
-mostly i type [`/poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task and let it route to a playbook. the other skills fire as the steps need them. a few i reach for directly.
-
-
-<details>
-<summary>all the examples</summary>
-
-```
-bug fix:           /poteto-mode this pr has a subtle bug where the scroll drifts every 750ms even
-                   when idle. repro first, then fix and verify.
-perf:              /poteto-mode a big list takes a second or two to load even though we virtualize.
-                   run a cpu trace and tell me why.
-feature:           /poteto-mode build a small feature behind a feature flag. verify it really works.
-prototype:         /poteto-mode build two prototypes of the markdown renderer so we can compare.
-                   spawn an agent for each.
-multi-phase:       /poteto-mode open source these skills as a plugin. nothing internal leaks, work
-                   in a temp dir, show me the dependency graph first.
-overnight run:     /poteto-mode i'm going to bed. land the stack even if ci flakes. i want
-                   everything merged by morning.
-babysit:           /poteto-mode check on pr 123. anything outstanding?
-visual parity:     /poteto-mode the row spacing is too tall when this flag is on. the second image
-                   is correct. repro and fix until it matches.
-figure it out:     /poteto-mode i'm stepping away. migrate every caller from the synchronous store
-                   to the new async one, keeping behavior identical. i want to trust it was done
-                   right when i'm back.
-how:               /how do we cancel runs? do we have an n+1 when we look up every run to cancel?
-why:               /why is this feature flag not on yet?
-architect:         design this instrumentation to be high signal with no false positives. /architect
-                   this first.
-arena:             /arena take my prompt to the arena verbatim. i want to compare their proposals
-                   with yours.
-swarm:             /swarm check every package under packages/ against its check.sh. one worker per
-                   package. one report.
-interrogate:       /interrogate review this pr.
-tdd:               /tdd implement
-unslop:            can we unslop and tighten the new changes?
-reflect:           /reflect that took too long. capture what we learned so the next run doesn't
-                   repeat it.
-correct:           /correct
-show-me-your-work: /show-me-your-work keep a decision trail i can review when i'm back.
-automate-me:       /automate-me
-help:              /poteto-help which skill should i use to review this branch?
+```bash
+agy plugin validate --strict --json .
+node --test hooks/guard.test.mjs
 ```
 
-</details>
-
-## the `poteto-agent` and Comment Sicko subagents
-
-[`/poteto-mode`](./skills/poteto-mode/SKILL.md) runs in the chat that receives it. that chat owns the playbook, the todo list, and every subagent spawn.
-
-pstack also ships [`TypeName: "poteto-agent"`](./agents/poteto-agent.md) as the wrapper for delegates spawned during a run. it reads `poteto-mode` in full, including its inline principles index, before doing any work. substituting `self` skips that read and drifts. do not spawn `poteto-agent` to run the playbook itself.
-
-[`/poteto-mode`](./skills/poteto-mode/SKILL.md) and [`TypeName: "poteto-agent"`](./agents/poteto-agent.md) route through the same wrapper.
-
-pstack also ships [Comment Sicko](./agents/comment-sicko.md), a read-only comment reviewer available as `TypeName: "comment-sicko"`. usually invoke it through [`/no-comments`](./skills/no-comments/SKILL.md), not directly.
-
-## principles
-
-twenty-four short skills, one principle each. `poteto-mode` indexes them inline and reads that index at task start. the standalone files are there so other skills can reference a principle by name, and so the index can point at the full rule for each.
-
-<details>
-<summary>all twenty-four principles</summary>
-
-| principle | group | rule |
-|---|---|---|
-| [laziness-protocol](./skills/principle-laziness-protocol/SKILL.md) | core | Bias toward deletion and the smallest change that solves the problem. |
-| [foundational-thinking](./skills/principle-foundational-thinking/SKILL.md) | core | Apply before writing logic: choosing core types and data structures, sequencing scaffold-vs-feature work, asking what concurrent actors share. Get the data structures right so downstream code becomes obvious. |
-| [redesign-from-first-principles](./skills/principle-redesign-from-first-principles/SKILL.md) | core | Redesign as if the requirement had been a foundational assumption from day one, instead of bolting it on. |
-| [attack-the-premise](./skills/principle-attack-the-premise/SKILL.md) | core | Apply when two or more fixes that share one premise have failed the same gate. Write the premise down and test it directly before you write another fix that assumes it. |
-| [subtract-before-you-add](./skills/principle-subtract-before-you-add/SKILL.md) | core | Remove dead weight, redundant validators, and stub references first, then build on the simpler base. |
-| [minimize-reader-load](./skills/principle-minimize-reader-load/SKILL.md) | core | Count layers between question and answer, and hidden state in the reader's head; collapse one-caller wrappers and shrink mutable scope. |
-| [outcome-oriented-execution](./skills/principle-outcome-oriented-execution/SKILL.md) | core | Apply during planned rewrites and migrations with explicit phase boundaries. Converge on the target architecture; don't preserve smooth intermediate states with throwaway compatibility code. |
-| [experience-first](./skills/principle-experience-first/SKILL.md) | core | Choose user delight over implementation convenience; ship fewer polished features over more rough ones. |
-| [exhaust-the-design-space](./skills/principle-exhaust-the-design-space/SKILL.md) | core | Build 2-3 competing prototypes and compare side by side before committing. |
-| [build-the-lever](./skills/principle-build-the-lever/SKILL.md) | core | Apply to any non-trivial work, not just bulk work: edits, migrations, analyses, checks. Build the tool that does it or proves it (codemod, script, generator, or a skill your subagents follow) instead of working by hand. The tool is the artifact a reviewer can rerun. |
-| [model-the-domain](./skills/principle-model-the-domain/SKILL.md) | architecture | Encode the domain in a structure instead of scattered conditionals. |
-| [boundary-discipline](./skills/principle-boundary-discipline/SKILL.md) | architecture | Concentrate guards at system boundaries (CLI, config, network, external APIs); trust internal types and keep business logic in pure functions. |
-| [type-system-discipline](./skills/principle-type-system-discipline/SKILL.md) | architecture | Make illegal states unrepresentable, brand semantic primitives, parse external data at boundaries, exhaust variants, derive from authoritative schemas. |
-| [make-operations-idempotent](./skills/principle-make-operations-idempotent/SKILL.md) | architecture | Converge to the same end state regardless of partial prior runs. |
-| [migrate-callers-then-delete-legacy-apis](./skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md) | architecture | Migrate callers and delete the old API in the same wave instead of preserving compatibility layers. |
-| [separate-before-serializing-shared-state](./skills/principle-separate-before-serializing-shared-state/SKILL.md) | architecture | Eliminate the sharing first; serialize structurally only when one shared writer is a real invariant. |
-| [prove-it-works](./skills/principle-prove-it-works/SKILL.md) | verification | Apply after completing a task, before declaring done. Verify against the real artifact (run the feature, read the actual value, inspect the diff), not a proxy, self-report, or 'it compiles.'. |
-| [fix-root-causes](./skills/principle-fix-root-causes/SKILL.md) | verification | Trace each symptom back to the first place the system went wrong and fix it there. A guard is a fix only when the state it handles is legitimate. |
-| [sequence-verifiable-units](./skills/principle-sequence-verifiable-units/SKILL.md) | verification | Apply to multi-step work (sweeps, migrations, runs of similar edits) and to how you stack commits and PRs. Break work into small units that each end in a verifiable state, check each before the next, and order delivery so the sequence proves itself to a reviewer. |
-| [test-behavior-not-implementation](./skills/principle-test-behavior-not-implementation/SKILL.md) | verification | Apply when you write, change, or keep a test. Assert what the code's users can observe, so the test fails when that behavior breaks and keeps passing when only the internals change. |
-| [explain-the-number](./skills/principle-explain-the-number/SKILL.md) | verification | Apply before you trust, report, or act on a number you measured: a speedup, a regression, a throughput, a latency, or an eval result. Find what limits it, and rule out that it measured something other than the work you think. |
-| [guard-the-context-window](./skills/principle-guard-the-context-window/SKILL.md) | delegation | Route bulk to subagents; keep summaries in the main thread, not raw payloads. |
-| [never-block-on-the-human](./skills/principle-never-block-on-the-human/SKILL.md) | delegation | Proceed, present the result, let the human course-correct after the fact; reserve confirmation for irreversible actions. |
-| [encode-lessons-in-structure](./skills/principle-encode-lessons-in-structure/SKILL.md) | meta | Encode the rule as a lint, metadata flag, runtime check, or script instead of more text. |
-
-</details>
-
-## not shipped here
-
-a few things `poteto-mode` references but doesn't bundle:
-
-- `agy-customizations` is an antigravity built-in for authoring skills.
-- inside `poteto-mode`, pr-status requests go to the [babysit playbook](./skills/poteto-mode/playbooks/babysit.md).
-
-## why are there no planning skills?
-
-antigravity already has a great `/plan` which works great with pstack. but personally, i don't believe in planning. the best spec is code. if you do want to make a plan, [`/poteto-mode`](./skills/poteto-mode/SKILL.md) covers it, but it's not a default. 
-
-## make it yours
-
-`poteto-mode` is my style. you may not want exactly that.
-
-type [`/automate-me`](./skills/automate-me/SKILL.md). it mines your recent transcripts, drafts a `<your-name>-mode` skill from how you've actually worked, and routes through pstack underneath. you keep pstack as the base and end up with your own routing skill alongside `poteto-mode`.
-
-models are configurable too. type [`/setup-pstack`](./skills/setup-pstack/SKILL.md). it writes a small always-applied rule mapping each role (code, judgment, the review panels) to a tier (`pro`, `flash`, `flash_lite`, or `inherit`). every skill reads it and falls back to sensible defaults when the rule is absent, so you override only what you want.
-
-when a default changes, a rule written before the change still pins the old default. delete those role lines, or delete the file, then run `/setup-pstack` again. a rerun keeps any role whose model differs from the default.
-
-## automations
-
-pstack also ships a dormant [benny automation pack](./automations/benny/). benny triages slack issue reports, then reproduces and fixes confirmed bugs with real ui evidence. its files are not registered as slash skills.
-
-to set it up, point antigravity at [`FOR_AGENTS.md`](./automations/benny/FOR_AGENTS.md). setup copies the pack into the target repository at `.agents/automations/benny/`, enables pstack there for shared skills, and keeps user configuration outside the copied pack.
-
-## license
+## License
 
 MIT

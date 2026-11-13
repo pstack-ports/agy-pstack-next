@@ -1,38 +1,38 @@
 # The pstack guide
 
-pstack works best when you stop micromanaging the agent. You describe what you want and how you'll know it's done. `/poteto-mode` picks the playbook, runs the other skills as the steps need them, and shows you the evidence. This guide teaches that habit with realistic prompts.
+`pstack` works best when you stop micromanaging individual steps. State what you want changed and how to check that it works. [`/pstack`](../../skills/pstack/SKILL.md) selects the matching swarm topology, spawns isolated workers under mechanical hook guardrails, verifies behavior against the real artifact, and brings back concrete proof.
 
-Here's what you'll learn:
+This guide walks through the complete Swarm-Centric Pstack v2 workflow in ten short pages.
 
-1. [Set up pstack](./01-setup.md). Install the plugin and pick your models.
-2. [Route work through `/poteto-mode`](./02-poteto-mode.md). Give it a goal and watch it pick a playbook.
-3. [Understand the code](./03-understand.md). A read-only investigation, then `/how`, `/why`, `/teach`, and `/recall` before you edit anything.
-4. [Design the change](./04-design.md). `/architect`, `/arena`, `/swarm`, `/interrogate`, prototypes, and plans before code locks in a shape.
-5. [Build and clean the change](./05-build-and-clean.md). The build playbooks, `/tdd`, `/unslop`, and `/no-comments`.
-6. [Verify and ship](./06-verify-and-ship.md). Prove behavior on the real app, formally verify what tests rarely reach, vet numbers with `/benchmark-checklist`, then open a focused PR and drive it to merged.
-7. [Run work while you sleep](./07-overnight.md). Trust before loops, an overnight contract, a decision log you can audit, and Projects and automations that scale past one agent.
-8. [Steer with principle names](./08-principles.md). The 24 names that redirect an agent mid-task.
-9. [Make it yours](./09-make-it-yours.md). Your own mode, `/correct` for repeated mistakes, and how to test a skill change.
-10. [Recipes and pitfalls](./10-recipes-and-pitfalls.md). Prompts to copy and mistakes to skip.
+1. [Set up pstack](./01-setup.md). Install the plugin, configure per-role swarm models, and generate a project verification skill.
+2. [Route work through `/pstack`](./02-pstack.md). Understand the 6 topologies, prefix-typed swarm workers, worktree isolation, and crisp prompting.
+3. [Understand the code](./03-understand.md). Run parallel read-only investigations with `/understand`, rebuild context with `/ketchup`, and fork findings straight into code.
+4. [Design the change](./04-design.md). Explore competing designs in `/crucible`, check state machines with `/statechart`, and stress-test diffs with `/interrogate`.
+5. [Build and clean the change](./05-build-and-clean.md). Drive `build`, `diagnose`, and `hillclimb` topologies, local UI and CLI harnesses, and `sicko-*` diff cleanup.
+6. [Verify and ship](./06-verify-and-ship.md). Generate E2E and formal verification skills with `/verify-gen`, vet numbers, open crisp PRs, and babysit CI to merge-ready.
+7. [Run work while you sleep](./07-overnight.md). Pair `/pstack` (`program` topology) with `/goal` and `/schedule`, audit `#seq` board checkpoints, and catch up in the morning.
+8. [Steer with principle names](./08-principles.md). Use the 24 engineering principle names to redirect a swarm in one sentence.
+9. [Make it yours](./09-make-it-yours.md). Capture structural lessons with `/reflect`, blind-test skill edits with `evolve`, polish docs with `/technical-writing`, and build wake UIs with `/make-bot-ui`.
+10. [Recipes and pitfalls](./10-recipes-and-pitfalls.md). Copy-ready prompts and common mistakes to avoid.
 
-Read the pages in order the first time. After that, each page stands alone.
+Read the pages in order once. After that, each page stands on its own as a reference.
 
-When you're stuck, or can't tell which skill fits, type [`/poteto-help`](../../skills/poteto-help/SKILL.md) with your question:
+When you are unsure which skill or topology fits a problem, ask [`/setup-pstack`](../../skills/setup-pstack/SKILL.md) for a recommendation before spending swarm tokens:
 
 ```text
-/poteto-help which skill should i use to review this branch?
+/setup-pstack which workflow should i use to audit and migrate our webhook retry queue?
 ```
 
-It answers, hands you a prompt to send, and links the skill or guide page the answer came from. It doesn't start the work, because a pstack run spends real tokens, so you send the prompt when you're ready. It runs only when you type it.
+It recommends the matching skill or `/pstack` topology, sharpens a copy-ready prompt, and waits for your go-ahead before launching workers.
 
 ## If you only remember one thing
 
-Give the agent a goal and a way to check it, in your own words:
+Give `/pstack` a clear outcome and a check that can fail:
 
 ```text
-/poteto-mode the export writes duplicate rows when a retry lands mid-run. repro first, then fix and verify.
+/pstack the export writes duplicate rows when a retry lands mid-run. reproduce first, fix the root cause, and prove the 60k-row fixture exports zero duplicates.
 ```
 
-You don't need to name a playbook or list skills. "repro first" and a checkable outcome are all the routing signal `/poteto-mode` needs. It matches the Bug fix playbook, copies the steps into a todo list, and calls the right skills as each step fires.
+You never need to list sub-skills or micromanage worker names. `/pstack` routes that prompt to the [`diagnose`](../../skills/pstack/topologies/diagnose.md) topology, probes hypotheses with read-only `ro-*` workers, forks the winning trace into an isolated `impl-fix` worktree, and proves the fix with `ro-verify`.
 
-Next: [Set up pstack](./01-setup.md).
+Continue to [Set up pstack](./01-setup.md).

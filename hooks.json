@@ -1,0 +1,40 @@
+{
+  "pstack-swarm-guard": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./hooks/guard.mjs",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./hooks/guard.mjs",
+        "timeout": 10
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "(invoke|define)_subagent|manage_subagents|send_message",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hooks/guard.mjs",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "(edit|write)_file|run_command|call_mcp_tool|mcp_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hooks/guard.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
