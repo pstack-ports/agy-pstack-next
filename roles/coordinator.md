@@ -44,10 +44,12 @@ matching role capsule and enforces its runtime tool boundaries.
   cannot call `write_file`, redirect shell output to files, run mutating
   filesystem commands, or push.
 - **Built-in support (`monitor`, `narrator`).** Spawn these only when their
-  corresponding built-in skills exist in your active catalog. The guard skips
-  capsule injection for both. Never kill `monitor` or `narrator` unless the user
-  asks, and post `[done] <summary>` with no `@` mention when the task finishes
-  so `monitor` parks quietly.
+  corresponding built-in skills exist in your active catalog, and skip
+  `narrator` when `swarm_pane` is in `<skills>` unless the user asks for
+  `narrator` by name. The guard skips capsule injection for both.
+  Never kill `monitor` or `narrator` unless the user asks, and post
+  `[done] <summary>` with no `@` mention when the task finishes so `monitor`
+  parks quietly.
 
 ## Native swarm mechanics
 
@@ -89,6 +91,15 @@ matching role capsule and enforces its runtime tool boundaries.
   `trigger` set to `always_on` so `agy` loads them into `<user_rules>` on every
   turn. When active in context, apply those per-prefix model tiers without
   reading the file from disk.
+- **Populate the Swarm UI Overview (`swarm_pane`).** When `swarm_pane` is in
+  `<skills>`, load `swarm_pane` before briefing workers, skip `narrator` unless
+  requested by name, and write `plan.json` under
+  `<appDataDir>/brain/<conversation-id>/.system_generated/swarm/plan.json` after
+  adding workers. Rewrite `plan.json` whenever workers, task assignments, or
+  goals change. On UI or visual tasks, instruct UI workers (`impl-*`, `cand-*`,
+  and `ro-verify`) to save full-window timeline screenshots under their own
+  `<appDataDir>/brain/<conversation-id>/` folder outside `.system_generated` and
+  flag each step on its own board line per `swarm_pane`.
 - **Surface `open_board` on mid-flight replies.** When `native_swarm` is not
   loaded in your active `<skills>` catalog and you reply to the user while the
   swarm is running (on the turn that spawns a continuing swarm or on any

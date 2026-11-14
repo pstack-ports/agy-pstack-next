@@ -50,16 +50,17 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 | Coordinator (root chat) | Primary checkout | [`roles/coordinator.md`](./roles/coordinator.md) | Plans slices, manages swarm lifecycle, judges `#seq` evidence, and merges verified commits. |
 | `impl-*`, `cand-*`, `lead-*` | `workspace: "share"` | [`roles/poteto-agent.md`](./roles/poteto-agent.md) | Edits strictly inside its own worktree. `git push` blocked unless `PSTACK_ALLOW_PUSH=1` is set. |
 | `adv-*` | `workspace: "share"` | [`roles/poteto-agent.md`](./roles/poteto-agent.md) | Writes executable repros and exploit probes inside its own worktree. `git push` always blocked. |
-| `ro-*` | `workspace: "inherit"` | [`roles/research.md`](./roles/research.md) | Strictly read-only. Blocks `edit_file`, `write_file`, mutating shell or git commands, and mutating MCP calls. Allows `/tmp` probes. |
+| `ro-*` | `workspace: "inherit"` | [`roles/research.md`](./roles/research.md) | Strictly read-only. Blocks `edit_file`, `write_file`, mutating shell or git commands, and mutating MCP calls outside temp roots and brain-directory timeline screenshots. |
 | `sicko-*` | `workspace: "share"` | [`roles/comment-sicko.md`](./roles/comment-sicko.md) | Comment and slop surgeon. Allows `edit_file` inside its own worktree. Blocks `write_file` and `git push`. |
-| `monitor*`, `narrator*` | Built-in | None (skipped) | Native stall detection and board narration with zero extra capsule tokens. |
+| `monitor*`, `narrator*` | Built-in | None (skipped) | Native stall detection (`swarm_monitor`) and board narration (`swarm_narrator`, skipped when `swarm_pane` Overview is active unless requested) with zero extra capsule tokens. |
 
 ### Mechanical Guardrails in `hooks/guard.mjs`
 
-- **One-time capsule injection.** `SessionStart` and `PreInvocation` resolve each conversation against `<appDataDir>/brain/*/.system_generated/swarm/members.json` and inject its matching `roles/*.md` capsule once per role, upgrading cleanly if a worker's roster entry appears after startup.
-- **Native swarm exclusivity.** `PreToolUse` blocks legacy subagent tools and `run_workflow` across all roles so every multi-agent workflow runs on the shared `#seq` message board.
-- **Symlink-safe worktree confinement.** `PreToolUse` resolves `realpathSync` on the nearest existing ancestor of every `edit_file` and `write_file` path, blocking `../` traversal and symlink escapes into sibling worktrees.
-- **Read-only research integrity.** `ro-*` workers can inspect code, run tests, query read-only MCPs, and write temporary probes under `/tmp`, while `hooks/guard.mjs` denies repository mutations.
+- **One-time capsule injection.** `SessionStart` and `PreInvocation` resolve each conversation against local `<appDataDir>/brain/*/.system_generated/swarm/members.json` or remote `swarm.json` (`--roster-only`) rosters and inject its matching `roles/*.md` capsule once per role, upgrading cleanly if a worker's roster entry appears after startup.
+- **Scoped lifecycle and plain `/swarm` pass-through.** Global `~/.gemini/config/hooks.json` commands guard execution with `test ! -f '<abs_guard_path>' ||` so `agy plugin uninstall agy-pstack-next` leaves a clean exit-0 no-op. `hooks/guard.mjs` inspects `~/.gemini/config/config.json` (`plugins["agy-pstack-next"].enabled`) so `agy plugin disable agy-pstack-next` suspends capsule injection and `PreToolUse` gating globally, and plain built-in `/swarm` sessions without a pstack skill or pstack worker prefixes (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`) pass through unmanaged.
+- **Native swarm exclusivity.** `PreToolUse` blocks legacy subagent tools and `run_workflow` across all managed roles so every pstack workflow runs on the shared `#seq` message board.
+- **Symlink-safe worktree confinement.** `PreToolUse` resolves `realpathSync` on the nearest existing ancestor of every `edit_file` and `write_file` path, blocking `../` traversal, symlink escapes into sibling worktrees, and worker writes inside `.system_generated/`.
+- **Read-only research integrity.** `ro-*` workers can inspect code, run tests, query read-only MCPs, write temporary probes under canonical temp roots, and save Swarm UI timeline screenshots inside their own `<appDataDir>/brain/<conversation-id>/` directory outside `.system_generated/`, while `hooks/guard.mjs` denies repository mutations.
 - **Push gating.** Force-pushes to `main` or `master` are always denied. Adversarial (`adv-*`) and cleanup (`sicko-*`) workers can never push, and author workers push only when explicitly authorized with `PSTACK_ALLOW_PUSH=1`.
 
 ### Native Swarm Mechanics

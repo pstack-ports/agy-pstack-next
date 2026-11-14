@@ -13,11 +13,13 @@ directly, and post cited evidence on the swarm message board.
   (`rm`, `mv`, `cp`, `mkdir`, `chmod`, `unlink`, `touch`, `tee`), and inline
   `node -e` or `python3 -c` filesystem writes or deletes whenever the resolved
   target falls outside canonical temp roots (`/tmp`, `/private/tmp`, and
-  `TMPDIR`). It also blocks mutating git subcommands (`commit`, `push`, `merge`,
-  `rebase`, `cherry-pick`, `reset`, `clean`, `checkout`, `switch`, and mutating
-  `stash` or `tag` forms), in-place editors (`sed -i`, `perl -i`, `patch`),
-  package installs, mutating MCP tool calls, `run_workflow`, and legacy subagent
-  tools. Never attempt to bypass these guards.
+  `TMPDIR`) or allowed screenshot paths in your own conversation artifact
+  directory outside `.system_generated`. It also blocks mutating git subcommands
+  (`commit`, `push`, `merge`, `rebase`, `cherry-pick`, `reset`, `clean`,
+  `checkout`, `switch`, and mutating `stash` or `tag` forms), in-place editors
+  (`sed -i`, `perl -i`, `patch`), package installs, mutating MCP tool calls,
+  `run_workflow`, and legacy subagent tools. Never attempt to bypass these
+  guards.
 - **Full inspection, temp-root probe, and native swarm access.** Read source
   files freely, inspect git history and read-only refs (`git status`,
   `git diff`, `git log`, `git show`, `git blame`, `git tag -l`,
@@ -28,7 +30,11 @@ directly, and post cited evidence on the swarm message board.
   trackers, docs, team chat, observability, error tracking, and analytics
   warehouses, and use native swarm tools (`swarm` including `add` for read-only
   helpers and `model` for quota hot-swap, `post_message`, `read_board`,
-  `swarm_wait`, `schedule`, and `manage_task`).
+  `swarm_wait`, `schedule`, and `manage_task`). Alongside canonical temp roots,
+  the guard permits writing or copying screenshot image files (`.png`, `.jpg`,
+  `.jpeg`, `.webp`) and screenshot subdirectories inside your own conversation
+  artifact directory (`<appDataDir>/brain/<conversation-id>/`) outside
+  `.system_generated` for Swarm UI timeline proofs.
 - **Clue-sharing mesh etiquette.** Read recent board posts before repeating a
   search. Post concise clues with exact `file` and line anchors, commit SHAs, or
   ticket IDs so parallel `ro-*` peers can pivot live. Cite earlier board posts

@@ -118,14 +118,14 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
     "SessionStart": [
       {
         "type": "command",
-        "command": "node '<abs_guard_path>'",
+        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
         "timeout": 10
       }
     ],
     "PreInvocation": [
       {
         "type": "command",
-        "command": "node '<abs_guard_path>'",
+        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
         "timeout": 10
       }
     ],
@@ -135,7 +135,7 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
         "hooks": [
           {
             "type": "command",
-            "command": "node '<abs_guard_path>'",
+            "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
             "timeout": 10
           }
         ]
@@ -145,7 +145,7 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
         "hooks": [
           {
             "type": "command",
-            "command": "node '<abs_guard_path>'",
+            "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
             "timeout": 10
           }
         ]
@@ -156,6 +156,12 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
 ```
 
 4. Write the merged JSON object back to `~/.gemini/config/hooks.json` with 2-space indentation.
+
+Global registration stays inert outside active pstack swarms:
+
+- **Safe uninstall.** Guarding each command with `test ! -f '<abs_guard_path>' ||` keeps global `~/.gemini/config/hooks.json` a clean exit-0 no-op if `agy plugin uninstall agy-pstack-next` removes the plugin directory.
+- **Disable parity.** `hooks/guard.mjs` inspects `~/.gemini/config/config.json` (`plugins["agy-pstack-next"].enabled`), so running `agy plugin disable agy-pstack-next` suspends capsule injection and `PreToolUse` gating across global hooks too.
+- **Plain `/swarm` pass-through.** Plain built-in `/swarm` sessions that do not invoke a pstack skill or pstack worker prefixes (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`) pass through `hooks/guard.mjs` unmanaged.
 
 Tell the user that `~/.gemini/config/rules/pstack-models.md` and `~/.gemini/config/hooks.json` were saved and take effect on new conversations and newly spawned workers, while `swarm{action: "model"}` can hot-swap waiting workers immediately in the active swarm.
 
