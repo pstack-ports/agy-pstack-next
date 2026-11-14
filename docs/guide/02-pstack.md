@@ -31,7 +31,7 @@ Each topology lives under `skills/pstack/topologies/` and composes cleanly when 
 Skip hand-written implementation plans. State what is broken or what behavior you want, plus any known context that saves search time:
 
 ```text
-/pstack users receive duplicate webhook deliveries after a worker restart. reproduce first, fix the root cause, and prove retries stay idempotent.
+/agy-pstack-next:pstack users receive duplicate webhook deliveries after a worker restart. reproduce first, fix the root cause, and prove retries stay idempotent.
 ```
 
 `"reproduce first"` is an executable constraint. In [`diagnose`](../../skills/pstack/topologies/diagnose.md), parallel `ro-*` workers trace competing hypotheses first, then the coordinator forks the winning investigator (`fork: "ro-winner"`) into an `impl-fix` (`workspace: "share"`) worktree to write the failing repro test and fix before `ro-verify` confirms it.
@@ -49,7 +49,7 @@ Most great `/pstack` prompts fit in two to four sentences built from five pieces
 Here is all five in one prompt:
 
 ```text
-/pstack CSV exports drop the final row on batches over 50k records (see job 4812). reproduce first, then fix. done means the 60k-row fixture exports all 60,000 rows. show before-and-after row counts.
+/agy-pstack-next:pstack CSV exports drop the final row on batches over 50k records (see job 4812). reproduce first, then fix. done means the 60k-row fixture exports all 60,000 rows. show before-and-after row counts.
 ```
 
 Leave two things out of your opening prompt.
@@ -75,13 +75,13 @@ When stale worktrees accumulate across cancelled sessions, run `/pstack` (`progr
 Inside an active thread, short follow-ups work cleanly because the swarm board retains `#seq` history:
 
 ```text
-/pstack proceed with option B and verify it
+/agy-pstack-next:pstack proceed with option B and verify it
 ```
 
 When switching to an unrelated problem in the same chat, say `"new task"` explicitly so the coordinator selects a fresh topology instead of extending the previous one:
 
 ```text
-/pstack new task. trace why session tokens survive logout. do not change code yet.
+/agy-pstack-next:pstack new task. trace why session tokens survive logout. do not change code yet.
 ```
 
 When stepping away from your keyboard, pair `/pstack` with Antigravity's `/goal` command and state your finish predicate clearly. [Run work while you sleep](./07-overnight.md) covers the full autonomous contract.

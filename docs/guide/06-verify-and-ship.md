@@ -9,7 +9,7 @@
 Put what `"done"` means in your opening prompt so `ro-verify` has concrete predicates to execute:
 
 ```text
-/pstack add --format json to the audit command. plain text stays byte-identical, JSON output parses cleanly, and both run against the sample fixture. show the command outputs.
+/agy-pstack-next:pstack add --format json to the audit command. plain text stays byte-identical, JSON output parses cleanly, and both run against the sample fixture. show the command outputs.
 ```
 
 Match the required proof artifact to the surface you changed.
@@ -39,7 +39,7 @@ Any measurement that cannot name its limiter or reproduce across alternating run
 Agents can verify your app autonomously only when the repo gives them a repeatable way to launch, health-check, and drive it. Bootstrap that capability once with [`/verify-gen`](../../skills/verify-gen/SKILL.md):
 
 ```text
-/verify-gen
+/agy-pstack-next:verify-gen
 ```
 
 `/verify-gen` runs a three-stage swarm pipeline. Parallel `ro-*` mappers interview your codebase for launch commands, readiness signals, harnesses, and port or data-dir isolation flags. `impl-verify` (`workspace: "share"`) authors `.agents/skills/verify-<app>/SKILL.md` (with `Launch`, `Doctor`, `Drive`, `Evidence`, `Cleanup`, and executable `Helpers`) plus a `features/` directory modeled on [`feature-map-example`](../../skills/verify-gen/references/feature-map-example/README.md). Finally, `ro-verify` executes the skill cold end to end and confirms proof artifacts survive cleanup before the commit lands.
@@ -47,7 +47,7 @@ Agents can verify your app autonomously only when the repo gives them a repeatab
 Commit `.agents/skills/verify-<app>/` to git so every teammate and every future swarm worker drives the app identically. As features evolve, keep the map honest with `--maintain` (on demand or on a daily `/schedule` cron):
 
 ```text
-/verify-gen --maintain
+/agy-pstack-next:verify-gen --maintain
 ```
 
 `--maintain` fans out `ro-map-*` readers across every feature file, patches doc or selector drift in `impl-verify`, runs a full live `ro-verify` session under strict health-check and cleanup invariants, and reports `clean`, `changed`, or `blocked` while flagging real product regressions without masking them in docs.
@@ -57,7 +57,7 @@ Commit `.agents/skills/verify-<app>/` to git so every teammate and every future 
 Behavioral E2E drives exercise common journeys, while costly bugs often hide in rare retry interleavings, lock expirations, or parser edge cases. Generate a formal check for those promises with `--formal`:
 
 ```text
-/verify-gen --formal verify job lease renewal so one job never executes on two workers simultaneously
+/agy-pstack-next:verify-gen --formal verify job lease renewal so one job never executes on two workers simultaneously
 ```
 
 `/verify-gen --formal` picks the lowest-cost tool that answers the question (TLA+ model checking via TLC for event ordering, language-native SMT or code-level verifiers, or property-based testing with generated inputs against real functions). `impl-verify` maps indivisible code steps faithfully, proves the check catches an injected scratch bug in its isolated worktree, records covered files plus `sync_commit`, and hands off to `ro-verify`.
@@ -65,7 +65,7 @@ Behavioral E2E drives exercise common journeys, while costly bugs often hide in 
 After refactors or merges touch covered files, bring the formal model back in sync and separate stale-model drift from real code bugs:
 
 ```text
-/verify-gen --maintain --formal
+/agy-pstack-next:verify-gen --maintain --formal
 ```
 
 Whenever a stakeholder needs to inspect a TLA+ protocol or UI flow visually without reading TLA+ syntax, pair with [`/statechart`](../../skills/statechart/SKILL.md) to render checked Mermaid or Pele SVG statecharts showing shortest counterexample paths in user terms.
@@ -77,7 +77,7 @@ Pstack v2 never pushes to a remote repository unless you ask. `hooks/guard.mjs` 
 When you want a verified branch turned into a clean PR and driven to green CI, invoke `/pstack` (`ship` topology):
 
 ```text
-/pstack verify this branch, open a crisp PR with evidence in the body, and babysit CI and review comments until merge-ready.
+/agy-pstack-next:pstack verify this branch, open a crisp PR with evidence in the body, and babysit CI and review comments until merge-ready.
 ```
 
 In [`ship`](../../skills/pstack/topologies/ship.md), `/pstack` runs `ro-verify` and `/interrogate` pre-flight checks, orders commits cleanly, formats the PR briefing under `/technical-writing` rules, pushes with `PSTACK_ALLOW_PUSH=1`, and monitors checks and review threads using [`watch-pr`](../../skills/pstack/scripts/watch-pr) and [`bugbot-triage.md`](../../skills/pstack/references/bugbot-triage.md). Real defects route to `impl-fix` (`workspace: "share"`), false-positive bot comments get concise factual replies backed by evidence, and stacked PRs verify independently from bottom to top before landing.

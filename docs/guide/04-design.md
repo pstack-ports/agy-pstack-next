@@ -13,7 +13,7 @@ Accepting the first design an agent proposes locks in the first shape it thought
 Use `sketch` when settling public APIs, module boundaries, or data schemas before writing full implementations:
 
 ```text
-/crucible sketch three competing designs for the streaming import pipeline. prioritize caller ergonomics and backpressure safety.
+/agy-pstack-next:crucible sketch three competing designs for the streaming import pipeline. prioritize caller ergonomics and backpressure safety.
 ```
 
 Each `cand-*` produces caller usage code first, followed by concrete types, state transitions, failure matrices, and diff sketches. Peers critique each other's sketches by `#seq` citation on the board, and a cross-family `ro-judge` evaluates candidates against [`design-red-flags.md`](../../skills/crucible/references/design-red-flags.md) (plus an optional `ro-steward` boundary audit).
@@ -23,7 +23,7 @@ Each `cand-*` produces caller usage code first, followed by concrete types, stat
 Use `full` when only running code, tests, or benchmarks can settle an empirical trade-off:
 
 ```text
-/crucible full compare three cache eviction layouts in isolated worktrees and benchmark p99 lookup latency on the replay fixture.
+/agy-pstack-next:crucible full compare three cache eviction layouts in isolated worktrees and benchmark p99 lookup latency on the replay fixture.
 ```
 
 Each `cand-*` builds a working prototype with passing tests in its own `workspace: "share"` worktree.
@@ -50,7 +50,7 @@ When a winner emerges, `/crucible` leaves `cand-*` workers parked in `waiting` (
 Prose hides race conditions and deadlocks. Whenever a feature crosses async states, retries, leases, or offline sync, check the state graph first with [`/statechart`](../../skills/statechart/SKILL.md):
 
 ```text
-/statechart model the offline draft sync flow and check that an unsaved local edit is never overwritten by a stale server poll.
+/agy-pstack-next:statechart model the offline draft sync flow and check that an unsaved local edit is never overwritten by a stale server poll.
 ```
 
 `/statechart` runs TLC over a TLA+ spec in an isolated `/tmp` directory and renders a Mermaid (or Pele SVG) chart using domain labels. States that violate invariants carry `breaks` marks along with the shortest path to trigger them.
@@ -60,7 +60,7 @@ Prose hides race conditions and deadlocks. Whenever a feature crosses async stat
 For shared libraries, CLIs, or internal packages, ask `/pstack` to draft the caller-facing how-to or tutorial first under [`/technical-writing`](../../skills/technical-writing/SKILL.md) rules before implementing internals:
 
 ```text
-/pstack write the usage guide for the v2 config loader first with /technical-writing, pause for my review, then build the implementation to match it.
+/agy-pstack-next:pstack write the usage guide for the v2 config loader first with /technical-writing, pause for my review, then build the implementation to match it.
 ```
 
 Writing caller usage first exposes awkward flags and leaky types while changing them still costs ten lines of markdown.
@@ -70,7 +70,7 @@ Writing caller usage first exposes awkward flags and leaky types while changing 
 Once real code or a prototype exists, turn adversaries loose on it with [`/interrogate`](../../skills/interrogate/SKILL.md):
 
 ```text
-/interrogate stress-test this branch and map every downstream caller and migration hazard. report only reproducible bugs.
+/agy-pstack-next:interrogate stress-test this branch and map every downstream caller and migration hazard. report only reproducible bugs.
 ```
 
 `/interrogate` combines two complementary checks on the swarm board.
@@ -85,7 +85,7 @@ Once real code or a prototype exists, turn adversaries loose on it with [`/inter
 Pstack skips standalone abstract planning skills because untested plans rot on contact with code. Once `/crucible` or a prototype settles open questions, ask `/pstack` (`program` topology) to slice delivery into small, independently verifiable commits or stacked PRs:
 
 ```text
-/pstack slice the approved store design into a stacked PR plan where every step compiles, passes verification, and migrates one bounded caller group.
+/agy-pstack-next:pstack slice the approved store design into a stacked PR plan where every step compiles, passes verification, and migrates one bounded caller group.
 ```
 
 ## Match design rigor to blast radius

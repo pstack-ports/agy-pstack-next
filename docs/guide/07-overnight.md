@@ -18,7 +18,7 @@ An unverified loop only manufactures broken diffs faster. Confirm four prerequis
 A crisp autonomous handoff states the goal, the pass/fail finish predicate, branch isolation, push or merge boundaries, and a clean stop condition when genuinely blocked:
 
 ```text
-/pstack i am going to bed. migrate every caller from the legacy sync store to the async store on a fresh branch.
+/agy-pstack-next:pstack i am going to bed. migrate every caller from the legacy sync store to the async store on a fresh branch.
 done means zero legacy imports remain, the full integration and verify-app suites pass, and the legacy module is deleted.
 commit verified slices locally and do not push.
 /goal keep going until done, or stop and post exact blockers if an external constraint prevents completion.
@@ -47,23 +47,23 @@ flowchart TD
 
 Every completed phase records its merged commit SHA, verified invariant, and remaining slice list directly on the native swarm board (`board.jsonl`) with `#seq` citations. Failed experiments never pollute the target branch, and finished `share` worktrees are killed immediately after `git merge` so disk usage stays flat all night.
 
-If you need to pause a run before going offline or restarting Antigravity, tell the coordinator to pause safely. `program` lands or cleanly stashes active worktrees and posts a structured `#seq` resume checkpoint. A later turn or successor coordinator reconstructs exact program state via `read_board{since: 0}` and `git log` without redoing verified slices.
+If you need to pause a run before going offline or restarting Antigravity, tell the coordinator to pause safely. `program` lands or cleanly stashes active worktrees and posts a structured `#seq` resume checkpoint. A later turn or successor coordinator reconstructs exact program state by paging `read_board{since: <cursor>, limit: 100}` until reaching `head` alongside `git log` without redoing verified slices.
 
 ## Morning catch-up with `/ketchup`
 
 When you return in the morning, run [`/ketchup`](../../skills/ketchup/SKILL.md) first:
 
 ```text
-/ketchup
+/agy-pstack-next:ketchup
 ```
 
-`/ketchup` inspects `view.json`, `board.jsonl` `#seq` checkpoints, `git log`, and any open PRs in parallel across `ro-*` workers. It summarizes what landed, shows captured screenshots or metrics, and lists any decisions or blockers waiting on your call with `#seq` evidence pointers. Add `--plain` for a quick zero-jargon read on your phone, or `--video` for a short subtitled slide recap.
+`/ketchup` inspects `board.jsonl` `#seq` checkpoints, `members.json` (plus optional `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` runs), `git log`, and any open PRs in parallel across `ro-*` workers. It summarizes what landed, shows captured screenshots or metrics, and lists any decisions or blockers waiting on your call with `#seq` evidence pointers. Add `--plain` for a quick zero-jargon read on your phone, or `--video` for a short subtitled slide recap.
 
 ## Scale across multi-area programs
 
 When a migration or release spans more than eight workers or multiple independent subsystems, `program` scales hierarchically on the native swarm runtime.
 
-- **Topic channels.** `swarm{action: "channel"}` partitions high-traffic subsystems (`#storage`, `#api`, `#ui`) so workers only wake on messages relevant to their area.
+- **Topic channels (when supported by `swarm`).** When the live `swarm` tool declaration includes `"channel"` in `action`, `swarm{action: "channel"}` partitions high-traffic subsystems (`#storage`, `#api`, `#ui`) so workers wake only on messages relevant to their area. When `channel` is absent from the tool schema (such as in `agy` CLI `1.5.8`), `lead-<area>` sub-coordinators coordinate on the shared board using strict `@mention` doorbell discipline so unrelated workers stay asleep.
 - **Area leads (`lead-<area>`).** Each subsystem lead owns a stacked branch in `workspace: "share"`, coordinates its slice authors and `ro-verify` checks, and hands verified phase heads up to the root coordinator.
 - **Stacked PR queues (`program` + `ship`).** Ask `/pstack` to build a verified stack without merging (`"prepare stacked PRs and get CI green, i will merge in the morning"`) or, when explicitly authorized, land contiguous verified PRs bottom-up.
 
