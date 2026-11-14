@@ -4,8 +4,9 @@ description: >-
   Unifies live chat and swarm catch-up briefings (standard), zero-jargon
   plain-language restatements (--plain), subtitled slide walkthrough videos
   (--video), and cross-session transcript and swarm recall (--recall). Parallel
-  read-only ro-* gatherers inspect view.json, board.jsonl #seq deltas, prior
-  swarm boards, git log, and gh pr state. Use for /ketchup, "catch me up",
+  read-only ro-* gatherers inspect board.jsonl #seq deltas, members.json,
+  optional narrator swarm_view/view.json, prior swarm boards, git log, and gh pr
+  state. Use for /agy-pstack-next:ketchup, /ketchup, "catch me up",
   "ketchup --plain", "explain that in plain words", "ketchup --video", "recall
   my work on X", or "where did I leave off".
 ---
@@ -31,9 +32,9 @@ Keep the repository completely read-only in every mode. Rendering the MP4 into `
 
 Never trust stale prose in chat when live state can be checked. For small single-turn catch-ups, inspect directly. Whenever a swarm ran, multiple PRs or branches moved, or `--recall` spans prior sessions, spawn parallel read-only `ro-*` gatherers (`workspace: "inherit"`, enforced read-only by `hooks/guard.mjs`) using the `ro-*` model from `~/.gemini/config/rules/pstack-models.md` (or `inherit`):
 
-- **`ro-swarm` (live swarm and board delta).** Inspects `<appDataDir>/brain/<conversation-id>/.system_generated/swarm/` (`view.json` when present, `members.json` roster states and worktree paths, `swarm.json`, and `board.jsonl` `#seq` deltas since the human's last message) alongside `swarm{action: "status"}`. Verifies claimed worker completions against real commits and test runs.
+- **`ro-swarm` (live swarm and board delta).** Inspects `<appDataDir>/brain/<conversation-id>/.system_generated/swarm/` (`members.json` roster states and worktree paths, `swarm.json`, and `board.jsonl` `#seq` deltas since the human's last message) alongside `swarm{action: "status"}`. When `members.json` records a `narrator` member (`members.narrator.conversation_id`), also reads `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` if present. Because `swarm_narrator` is optional and absent in `agy` CLI sessions, `ketchup` falls back cleanly to `board.jsonl` and `members.json` whenever no `narrator` or `view.json` exists. Verifies claimed worker completions against real commits and test runs.
 - **`ro-repo` (live git, PR, and CI state).** Runs `git status --short`, `git branch`, `git log`, and `gh pr list` / `gh pr view` / `gh pr checks` to confirm branch cleanliness, review threads, merge readiness, and exact numbers behind any metric before reporting it.
-- **`ro-history` (cross-session transcripts, prior swarms, and shared record for `--recall`).** Orders `<appDataDir>/brain/*` directories strictly within the active workspace by real modification time (`ls -t`, default 7-day window unless another window is named). Filters matching topics first, reads `<appDataDir>/brain/<id>/.system_generated/logs/transcript.jsonl` (`transcript_full.jsonl` only on `truncated_fields` lines) and prior `<appDataDir>/brain/<id>/.system_generated/swarm/` (`view.json`, `members.json`, `board.jsonl`), and skips unrelated workspaces or eval noise. When `--recall` names a feature, module, or bug, also queries issue trackers, docs, chat, and error telemetry per [`../understand/references/source-playbook.md`](../understand/references/source-playbook.md) to surface reverts and recurring user reports.
+- **`ro-history` (cross-session transcripts, prior swarms, and shared record for `--recall`).** Orders `<appDataDir>/brain/*` directories strictly within the active workspace by real modification time (`ls -t`, default 7-day window unless another window is named). Filters matching topics first, reads `<appDataDir>/brain/<id>/.system_generated/logs/transcript.jsonl` (`transcript_full.jsonl` only on `truncated_fields` lines), prior `<appDataDir>/brain/<id>/.system_generated/swarm/` (`members.json` and `board.jsonl`), and `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when prior `members.json` includes a `narrator` entry, skipping unrelated workspaces or eval noise. When `--recall` names a feature, module, or bug, also queries issue trackers, docs, chat, and error telemetry per [`../understand/references/source-playbook.md`](../understand/references/source-playbook.md) to surface reverts and recurring user reports.
 
 Retire all `ro-*` gatherers via `swarm{action: "kill"}` once their `#seq` reports arrive.
 
@@ -53,7 +54,7 @@ Write in plain spoken English like one teammate catching up another. Say "the te
    - Draw a small Mermaid diagram (`<=6` boxes, `<=8` words per box, conversational labels rather than `Status: pass` tags) or `xychart-beta` chart when connections, PR stacks, or measured numbers read faster visually than in prose. Markdown tables are not visuals. Never draw an uncaptured screen, invent a number, or repeat a fact across visuals and bullets.
    - Give one short spoken-style bullet per thing the human asked for ("Checkout was timing out from an unindexed lookup and is fixed now"), naming whether it is done, running, failed, or unchecked, plus any bug caught and fixed along the way. Never mark an item done while a human decision still blocks it.
    - Add one line naming any remaining work the coordinator or swarm can finish autonomously without human input.
-3. **Action items (~30 words per item; never truncate or replace items with a count).**
+3. **Action items (~30 words per item, never truncate or replace items with a count).**
    - An action item is **strictly** a decision or step only the human can take (product tradeoff, approval checkpoint, permission to push or merge, missing credential). Work you can finish yourself is never an action item.
    - For a single-item call, write one bullet containing the call (`Approve`, `Merge`, `Pick`), your recommended pick, the PR or branch name and link, what changes for users, the evidence behind your pick, and the concrete risk (even when low, such as "Low risk, only button spacing changes").
    - When several items share one call (such as three PRs ready to merge), state the call and overall recommendation once, then list each item riskiest-first with its name and link, user impact, evidence, and risk.
@@ -72,7 +73,7 @@ Follow all gathering and action-item rules of Standard catch-up, replacing the s
 
 1. **Progressive slide design.** Plan one core takeaway and one visual point per slide from real screenshots, diffs, and verified numbers. Mutate one visual canvas progressively across slides using consistent colors, arrows, and highlights rather than cutting between unrelated layouts. Never render bullet lists, status tables, or disconnected boxes as slides.
 2. **Dedicated subtitle strip.** Place one conversational subtitle (`~10` words) in a fixed-height empty strip below the slide frame so subtitles never cover visual content. State what the picture means rather than reading out box labels.
-3. **Hold timing and verification.** Burn subtitles directly into slide frames (never screen-record). Hold each slide fully visible (excluding transition motion) for at least **1 second per 3 newly added words** (counting the subtitle plus new or changed slide labels; words inside embedded screenshots do not count). Before embedding, inspect one rendered frame per slide at chat size to verify subtitle legibility and measure frame holds directly, re-rendering any slide that clips or flashes too fast.
+3. **Hold timing and verification.** Burn subtitles directly into slide frames (never screen-record). Hold each slide fully visible (excluding transition motion) for at least **1 second per 3 newly added words** (counting the subtitle plus new or changed slide labels, while words inside embedded screenshots do not count). Before embedding, inspect one rendered frame per slide at chat size to verify subtitle legibility and measure frame holds directly, re-rendering any slide that clips or flashes too fast.
 4. **Reply layout.** Output the one-sentence opening line, the inline MP4 artifact, one line of remaining autonomous work, and the text **Action items** (matching option names shown in the video). If rendering fails, state that in one line and deliver the text Action items cleanly.
 
 ### 4. Cross-session recall (`/ketchup --recall`)

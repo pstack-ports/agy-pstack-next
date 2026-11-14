@@ -28,11 +28,12 @@ Break a change or design with executable reproductions and prove what happens ac
 
 Read the `adv-*` line in `~/.gemini/config/rules/pstack-models.md` (defaulting to two distinct model families when available, or `inherit`). Spawn parallel `adv-*` workers (`adv-logic`, `adv-boundary`, and optionally `adv-concurrency`) in `workspace: "share"`:
 
-- `hooks/guard.mjs` confines `adv-*` file writes strictly inside each worker's isolated `share` worktree and blocks `git push` unconditionally.
+- `hooks/guard.mjs` confines `adv-*` file writes strictly inside each worker's isolated `share` worktree and temp roots and blocks `git push` unconditionally. When global `~/.gemini/config/hooks.json` is not active, pass `<plugin-root>/roles/poteto-agent.md` in every `adv-*` brief and `<plugin-root>/roles/research.md` in `ro-blast` and `ro-verify` briefs.
+- Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved `SKILL.md` paths (such as `<plugin-root>/skills/control-ui/SKILL.md`, `<plugin-root>/skills/control-cli/SKILL.md`, and `<plugin-root>/skills/statechart/SKILL.md`) in worker briefs for `read_file` rather than telling workers to invoke plugin skills by name.
 - When the target includes uncommitted edits in the coordinator workspace, pass a patch path or `git diff` fetch instruction so each `adv-*` reproduces against the exact working state.
 - Assign distinct attack angles so workers do not crowd the same obvious branch:
-  - **`adv-logic`** attacks state invariants, off-by-one bounds, error recovery, partial-failure rollback, and idempotency.
-  - **`adv-boundary`** attacks untrusted inputs, auth and permission checks, resource leaks, timeouts, and UI or CLI flows (using [`/control-ui`](../control-ui/SKILL.md) or [`/control-cli`](../control-cli/SKILL.md) on worker-isolated ports when needed).
+  - **`adv-logic`** attacks state invariants, off-by-one bounds, error recovery, partial-failure rollback, and idempotency (reading `<plugin-root>/skills/statechart/SKILL.md` when modeling ordering or protocol races).
+  - **`adv-boundary`** attacks untrusted inputs, auth and permission checks, resource leaks, timeouts, and UI or CLI flows (reading the passed `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path on worker-isolated ports when needed).
 - Every `adv-*` worker writes and executes real failing tests, fuzz scripts, or CLI probes inside its own `share` worktree. Style opinions, naming critiques, and hypothetical future-code risks are banned.
 
 ### 2. Transitive blast-radius mapper (`ro-blast`, `workspace: "inherit"`)
@@ -72,7 +73,7 @@ Keep `adv-*` workers parked in `waiting` (zero token cost, `share` worktrees sti
    - An executed test, script, or command reproduces the failure against real code and violates the stated intent, **or**
    - For multi-version rollout skew, external migration order, or pure pre-code design specs where single-tree execution cannot run two deploys at once, an exact `file:line` state trace on both sides of the boundary proves the break.
 4. `ro-verify` merges duplicate root causes, drops unverified speculation, and records per-worker dropped counts with explicit reasons.
-5. After `ro-verify` posts its `#seq` audit (and only if no immediate `impl-fix` needs to cherry-pick a repro test from an `adv-*` worktree), call `swarm{action: "kill"}` on every `adv-*` worker, `ro-blast`, and `ro-verify`. Never merge throwaway `adv-*` exploit hacks into the coordinator branch.
+5. After `ro-verify` posts its `#seq` audit (and only if no immediate `impl-fix` needs to cherry-pick a repro test from an `adv-*` worktree), call `swarm{action: "kill"}` on every `adv-*` worker, `ro-blast`, and `ro-verify` while leaving built-in `monitor` and `narrator` alive unless the user asks. Never merge throwaway `adv-*` exploit hacks into the coordinator branch.
 
 ---
 

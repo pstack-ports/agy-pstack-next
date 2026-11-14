@@ -20,8 +20,8 @@
   ],
   "logo": "assets/logo.png",
   "suggestedPrompts": [
-    "/pstack reproduce this bug, fix the root cause in an isolated worktree, and verify the result",
-    "/understand walk me through how this subsystem works before we /crucible competing designs",
-    "/interrogate adversarially test the current branch diff and map its blast radius"
+    "/agy-pstack-next:setup-pstack configure per-role swarm models, global guard hooks, and autonomy gates",
+    "/agy-pstack-next:pstack reproduce this bug, fix the root cause in an isolated worktree, and verify the result",
+    "/agy-pstack-next:understand walk me through how this subsystem works and trace why its invariants are shaped this way"
   ]
 }

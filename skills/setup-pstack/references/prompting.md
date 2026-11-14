@@ -1,6 +1,6 @@
 # Word the prompt
 
-A strong prompt states the outcome and the falsifiable check for done. `/pstack` topologies and mesh skills supply the execution steps, so a few plain sentences beat a hand-written procedure.
+A strong prompt states the outcome and the falsifiable check for done. `/pstack` topologies and mesh skills supply the execution steps, so a few plain sentences beat a hand-written procedure. In the `agy` CLI (`1.5.8+`), invoke plugin skills as `/agy-pstack-next:<skill>` while leaving built-in commands such as `/goal` and `/schedule` unprefixed.
 
 ## Put in
 

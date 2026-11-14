@@ -26,7 +26,7 @@ Match the request to one of four execution contracts before slicing files:
 ### Feature slices (`impl-*`, `workspace: "share"`)
 
 - Subtract dead code and obsolete flags in touched files before adding new branches (`Subtract Before You Add`).
-- Give every `impl-*` brief the user's goal, exact owned file paths, forbidden paths, agreed domain types, behavioral test expectations (`Test Behavior, Not Implementation`), and exact verification command.
+- Give every `impl-*` brief the user's goal, exact owned file paths, forbidden paths, agreed domain types, behavioral test expectations (`Test Behavior, Not Implementation`), and exact verification command. Because workers do not mount plugin skills in `<skills>`, pass explicit resolved `SKILL.md` paths (such as `<plugin-root>/skills/control-ui/SKILL.md`, `<plugin-root>/skills/control-cli/SKILL.md`, or `<plugin-root>/skills/statechart/SKILL.md`) whenever a slice needs them, plus `<plugin-root>/roles/poteto-agent.md` when global `hooks.json` is not active.
 - Keep one coupled feature inside one `impl-1` worktree when splitting it would force speculative mocks across unfinished halves. Fan out across `impl-1` .. `impl-k` when modules, layers, or consumers partition cleanly.
 
 ### Caller-migrating refactors (`refactor`)
@@ -40,27 +40,27 @@ Match the request to one of four execution contracts before slicing files:
 
 - Scope the exact empirical fork the sketch exists to settle (interaction feel, layout density, frame timing, protocol behavior). If no decision is open, skip straight to `feature`.
 - Build inside an isolated scratch directory (`/tmp/proto-<slug>`) or disposable `cand-*` worktree using the lightest runnable stack without production abstractions. Put competing UI or interaction variants behind one live toggle so they can be compared side by side (`Exhaust the Design Space`).
-- Drive and capture evidence on the real target via `/control-ui` or `/control-cli`. Present screenshots or measured timings, tradeoffs, and a clear recommendation, then delete or retire the throwaway prototype before implementing the production slice cleanly under `feature`.
+- Drive and capture evidence on the real target using [../../control-ui/SKILL.md](../../control-ui/SKILL.md) or [../../control-cli/SKILL.md](../../control-cli/SKILL.md) (passing the resolved `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path in the worker brief rather than naming plugin skills). Present screenshots or measured timings, tradeoffs, and a clear recommendation, then delete or retire the throwaway prototype before implementing the production slice cleanly under `feature`.
 
-### Visual parity loops (`visual-parity` + `/control-ui`)
+### Visual parity loops (`visual-parity`)
 
-1. **Lock the visual baseline first.** Before editing any component or stylesheet, capture reference screenshots across every interactive state (default, hover, focus, empty, error, responsive breakpoints) using `/control-ui` ([../../control-ui/SKILL.md](../../control-ui/SKILL.md)). Store baseline hashes outside author write fences.
+1. **Lock the visual baseline first.** Before editing any component or stylesheet, capture reference screenshots across every interactive state (default, hover, focus, empty, error, responsive breakpoints) following [../../control-ui/SKILL.md](../../control-ui/SKILL.md). Store baseline hashes outside author write fences.
 2. **Hold strict anti-shortcut rules.** Workers must never overwrite baseline PNGs, loosen pixel-diff thresholds, crop regions, or alter the comparison script to pass. If a baseline capture looks broken, halt and ask the user rather than editing the reference.
-3. **Migrate primitives first, then fan out components.** Land shared tokens and base primitives as a blocking first commit. Then assign one component per `impl-*` worker (`workspace: "share"`), giving each worker its own ephemeral dev-server port and isolated browser `--user-data-dir` per `/control-ui` so parallel browser sessions never collide.
+3. **Migrate primitives first, then fan out components.** Land shared tokens and base primitives as a blocking first commit. Then assign one component per `impl-*` worker (`workspace: "share"`), passing the resolved `<plugin-root>/skills/control-ui/SKILL.md` path in each brief so every worker reads the isolation rules directly and runs its own ephemeral dev-server port and isolated browser `--user-data-dir` without colliding.
 4. **Loop to zero diff.** Each `impl-*` iterates on its component and reruns the automated image diff until pixel delta reaches zero (using `schedule` or `/goal` on large component sweeps).
 
 ## Phase 3. Integrate and run `sicko-*` surgical cleanup
 
 1. Fetch and merge each completed `impl-*` slice into your integration worktree (`git fetch <impl_cwd> <sha> && git merge --no-edit FETCH_HEAD`) while keeping `impl-*` workers parked in `waiting` until verification clears.
-2. Spawn `sicko-clean` (`workspace: "share"`) on the integrated tree. Enforced by `hooks/guard.mjs`, `sicko-*` can call `edit_file` only (`write_file` and `git push` are denied) to strip narrating comments, AI code slop, redundant try/catch guards on trusted paths, and unexamined lint suppressions, flagging any load-bearing constraint comments that should be encoded structurally instead.
+2. Spawn `sicko-clean` (`workspace: "share"`) on the integrated tree (passing `<plugin-root>/roles/comment-sicko.md` in its brief when global `hooks.json` is not active). Enforced by `hooks/guard.mjs`, `sicko-*` can call `edit_file` only (`write_file`, shell file redirects, and `git push` are denied) to strip narrating comments, AI code slop, redundant try/catch guards on trusted paths, and unexamined lint suppressions, flagging any load-bearing constraint comments that should be encoded structurally instead.
 3. Audit `sicko-clean`'s diff to confirm zero behavioral mutations, fetch and merge its commit into the integration tree, and retire `sicko-clean` with `swarm{action: "kill", name: "sicko-clean"}`.
 
 ## Phase 4. Independent `ro-verify` behavioral gate
 
 Maintain a ratio of **`1` `ro-verify` worker (`workspace: "inherit"`) per `2` to `4` `impl-*` authors**. Never let an author's self-test count as the final gate.
 
-1. Pass `ro-verify` the integrated worktree path, exact `HEAD` commit SHA, user goal, and required surface checks.
-2. `ro-verify` executes unit/integration suites, typecheck/lint gates, and live behavioral scenarios through `/control-ui` (web/Electron/IDE) or `/control-cli` (CLI/TUI) using isolated ports and temp state directories.
+1. Pass `ro-verify` the integrated worktree path, exact `HEAD` commit SHA, user goal, required surface checks, and resolved `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` paths (plus `<plugin-root>/roles/research.md` when global `hooks.json` is not active).
+2. `ro-verify` reads the passed `SKILL.md` path directly and executes unit/integration suites, typecheck/lint gates, and live behavioral scenarios for web/Electron/IDE or CLI/TUI surfaces using isolated ports and temp state directories.
 3. `ro-verify` posts `PASS`, `ISSUES`, or `BLOCKED` on the board (`#seq`) with exact commands and observed outputs. Any `ISSUES` finding routes back to the owning `impl-*` worker for a targeted fix and re-verification at the new SHA.
 4. For contested architectures, auth or security boundaries, or subtle state transitions, run `/interrogate` ([../../interrogate/SKILL.md](../../interrogate/SKILL.md)) before closing.
-5. Once `ro-verify` posts `PASS` at the integrated `HEAD` SHA, kill all `impl-*` workers via `swarm{action: "kill"}` (their commits are already merged locally). Stop at the clean local branch, or chain into [ship.md](ship.md) if the user asked to open or land a PR.
+5. Once `ro-verify` posts `PASS` at the integrated `HEAD` SHA, kill all task workers (`impl-*` and `ro-*`, leaving `monitor` and `narrator` alive unless asked) via `swarm{action: "kill"}` (their commits are already merged locally). Stop at the clean local branch, or chain into [ship.md](ship.md) if the user asked to open or land a PR.

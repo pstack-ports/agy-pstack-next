@@ -9,7 +9,7 @@ Every `/pstack` build, diagnosis, and optimization topology follows one core dis
 Give the symptom, any known failure artifact, and `"reproduce first"`:
 
 ```text
-/pstack this CLI emits duplicate summary lines when stdin closes mid-batch. reproduce first, fix the root cause, and prove the regression test passes.
+/agy-pstack-next:pstack this CLI emits duplicate summary lines when stdin closes mid-batch. reproduce first, fix the root cause, and prove the regression test passes.
 ```
 
 In [`diagnose`](../../skills/pstack/topologies/diagnose.md), parallel `ro-*` workers probe competing hypotheses across code, logs, CPU profiles, or heap snapshots first. Once a probe isolates the root cause, the coordinator warm-forks that investigator (`fork: "ro-winner"`) into `impl-fix` (`workspace: "share"`), writes a failing behavioral test first whenever a fast local test path exists, applies the root-cause fix, and hands verification to `ro-verify`.
@@ -17,7 +17,7 @@ In [`diagnose`](../../skills/pstack/topologies/diagnose.md), parallel `ro-*` wor
 For live leaks, CPU spins, or captured `.cpuprofile` and trace files where you want diagnosis before any code edits, add `"do not change code yet"`:
 
 ```text
-/pstack inspect /tmp/startup.cpuprofile, attribute the 1.8s stall to exact source lines, and report the bottleneck without changing code yet.
+/agy-pstack-next:pstack inspect /tmp/startup.cpuprofile, attribute the 1.8s stall to exact source lines, and report the bottleneck without changing code yet.
 ```
 
 ### Features, refactors, and visual parity (`build`)
@@ -25,7 +25,7 @@ For live leaks, CPU spins, or captured `.cpuprofile` and trace files where you w
 State the target behavior alongside invariants that must not change:
 
 ```text
-/pstack move query parsing into a single boundary module with zero behavior change. record baseline fixture outputs first and prove byte-identical output afterward.
+/agy-pstack-next:pstack move query parsing into a single boundary module with zero behavior change. record baseline fixture outputs first and prove byte-identical output afterward.
 ```
 
 In [`build`](../../skills/pstack/topologies/build.md), the coordinator slices disjoint file or module ownership across parallel `impl-*` (`workspace: "share"`) authors so two workers never touch the same file. Refactors migrate all callers and delete legacy APIs in the same wave rather than leaving compatibility shims behind. Visual parity tasks pair `impl-*` with [`/control-ui`](../../skills/control-ui/SKILL.md) to diff screenshots on ephemeral ports and isolated `--user-data-dir` profiles until layouts match.
@@ -35,7 +35,7 @@ In [`build`](../../skills/pstack/topologies/build.md), the coordinator slices di
 State the measured baseline, the target, and the fixture:
 
 ```text
-/pstack startup takes 1.8s on the 10k-file workspace fixture. lock a baseline noise floor, hillclimb cold-start latency below 600ms, and show the scoreboard.
+/agy-pstack-next:pstack startup takes 1.8s on the 10k-file workspace fixture. lock a baseline noise floor, hillclimb cold-start latency below 600ms, and show the scoreboard.
 ```
 
 In [`hillclimb`](../../skills/pstack/topologies/hillclimb.md), `ro-bench` locks a baseline median, range, and noise floor first, checking every number against physical limits and arithmetic sanity. Parallel `cand-*` (`workspace: "share"`) workers test orthogonal optimization levers, post `#seq` measurements to a live board scoreboard, discard sub-noise edits, and cherry-pick orthogonal wins onto the main branch.

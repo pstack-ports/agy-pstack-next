@@ -15,7 +15,7 @@ Pick any of `/understand`'s three modes through natural phrasing.
 Ask how a subsystem works right now:
 
 ```text
-/understand how do we deduplicate outbound webhooks, and can concurrent retries trigger an N+1 query?
+/agy-pstack-next:understand how do we deduplicate outbound webhooks, and can concurrent retries trigger an N+1 query?
 ```
 
 The mesh traces entry points, data types, state transitions, and subtle invariants, returning a senior-engineer walkthrough backed by exact `file:line` citations.
@@ -25,7 +25,7 @@ The mesh traces entry points, data types, state transitions, and subtle invarian
 Ask why something was built or constrained a specific way:
 
 ```text
-/understand why was the lease renewal cap fixed at five attempts, and does that constraint still hold?
+/agy-pstack-next:understand why was the lease renewal cap fixed at five attempts, and does that constraint still hold?
 ```
 
 Grounded in [`skills/understand/references/epistemics.md`](../../skills/understand/references/epistemics.md), the report separates direct primary evidence (commits, PR discussions, tickets, post-mortems) from inference, flags thin records explicitly, and reports null findings honestly when nobody wrote down the original reason.
@@ -35,10 +35,10 @@ Grounded in [`skills/understand/references/epistemics.md`](../../skills/understa
 Ask to build real mastery over a complex subsystem or diff rather than skimming a summary:
 
 ```text
-/understand walk me through how this branch changes transaction retries step by step, with diagrams, and check my understanding as we go.
+/agy-pstack-next:understand walk me through how this branch changes transaction retries step by step, with diagrams, and check my understanding as we go.
 ```
 
-It blends mechanism and history into progressive chunks with Mermaid diagrams and concrete mental-model checks, turning passive reading into active verification. You can also turn it on an agent's own work (`"/understand convince me your fix addresses the root cause rather than the symptom"`).
+It blends mechanism and history into progressive chunks with Mermaid diagrams and concrete mental-model checks, turning passive reading into active verification. You can also turn it on an agent's own work (`"/agy-pstack-next:understand convince me your fix addresses the root cause rather than the symptom"`).
 
 ## Warm fork from investigation straight to code
 
@@ -49,25 +49,25 @@ Once `/understand` (or `/pstack` in `diagnose` topology) pinpoints the exact roo
 When returning to a long-running swarm or resuming work from earlier in the week, run [`/ketchup`](../../skills/ketchup/SKILL.md):
 
 ```text
-/ketchup
+/agy-pstack-next:ketchup
 ```
 
-Parallel `ro-*` gatherers inspect active swarm `view.json` state, `board.jsonl` `#seq` deltas, prior `<appDataDir>/brain/*/.system_generated/swarm/` boards, `git log`, and open `gh pr` status without mutating anything. Every item waiting on your decision comes back with options, `#seq` evidence, and risk so you can decide from the briefing alone.
+Parallel `ro-*` gatherers inspect `board.jsonl` `#seq` deltas, `members.json` roster state (plus `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` is active in Antigravity 2.0), prior `<appDataDir>/brain/*/.system_generated/swarm/` boards, `git log`, and open `gh pr` status without mutating anything. Every item waiting on your decision comes back with options, `#seq` evidence, and risk so you can decide from the briefing alone.
 
 Pass `--plain` when you want a zero-jargon human summary of a dense technical thread, or `--video` when you want a short subtitled slide walkthrough of what changed:
 
 ```text
-/ketchup --plain
+/agy-pstack-next:ketchup --plain
 ```
 
 ```text
-/ketchup --video
+/agy-pstack-next:ketchup --video
 ```
 
 To take over an unfinished branch left by an earlier session and continue execution from its last verified state, hand the branch to `/pstack` (`program` topology):
 
 ```text
-/pstack pick up the in-flight parser migration branch, verify what already passes, and finish the remaining callers without redoing completed slices.
+/agy-pstack-next:pstack pick up the in-flight parser migration branch, verify what already passes, and finish the remaining callers without redoing completed slices.
 ```
 
 **Pitfall.** Never skip `/understand` on thorny subsystems assuming `"the author worker will read the code anyway"`. An author tasked with shipping a diff optimizes for the shortest edit that compiles. Five minutes of read-only `#seq` clue sharing prevents hours of fixing the wrong layer.

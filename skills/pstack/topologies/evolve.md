@@ -9,7 +9,7 @@ Before running behavioral trials, enforce clean customization structure on every
 1. **Follow Antigravity customization conventions.** Consult the built-in `agy-customizations` skill when creating or restructuring skills, hooks, or plugin manifests:
    - Every `skills/<name>/SKILL.md` begins with YAML frontmatter containing lowercase hyphenated `name` and a concrete third-person `description` stating both what the skill does and when to activate it.
    - Keep `SKILL.md` concise and procedural. Push dense lookup catalogs into `references/*.md` and deterministic automation into executable `scripts/*` files (progressive disclosure).
-2. **Keep only decision-changing prose.** Delete throat-clearing, motivational filler, em-dashes, and mid-sentence colons (`/technical-writing`). If removing a sentence cannot change a tool call, file boundary, or verification check, cut it.
+2. **Keep only decision-changing prose.** Delete throat-clearing, motivational filler, em-dashes, and mid-sentence colons per [../../technical-writing/SKILL.md](../../technical-writing/SKILL.md). If removing a sentence cannot change a tool call, file boundary, or verification check, cut it.
 3. **Prefer code guards over warning text.** Per `Encode Lessons in Structure` in [../references/principles.md](../references/principles.md), move enforceable invariants (forbidden tools, read-only role restrictions, worktree path confinement, push gates) into `hooks/guard.mjs` with unit tests in `hooks/guard.test.mjs` rather than repeating "NEVER do X" across prompts.
 4. **Run static plugin validation first.** Execute `agy plugin validate --strict --json .` and verify exit code `0` with `findings: []`, plus zero broken relative markdown links, before spending tokens on sandboxed behavioral trials.
 
@@ -24,22 +24,27 @@ Evaluate changes like controlled scientific experiments rather than anecdotal sp
    - Write natural, organic user prompts ("Users report duplicate webhook deliveries when Redis reconnects. Track it down and fix it.") with zero chain-eliciting meta prompts (never ask the trial agent which skills or principles it read).
    - Assign randomized, neutral labels (`run-oak`, `run-pine`) before handing trial outputs to `ro-judge` so the judge sees neither variant identity (`baseline` vs `candidate`) nor model names.
 
-## Phase 2. Run isolated `agy -p --sandbox` trials (`eval-runner-*`)
+## Phase 2. Run isolated headless `agy -p` trials (`impl-eval-*`)
 
-Fan out trial execution across parallel `eval-runner-*` workers (`workspace: "share"`):
+Fan out trial execution across parallel `impl-eval-*` workers (`workspace: "share"`, passing `<plugin-root>/roles/poteto-agent.md` in each brief when global `hooks.json` is not active):
 
-1. **Provision sanitized trial directories.** Each `eval-runner-<k>` creates clean, realistic project directories under `/tmp/<project-slug>-<neutral-id>` initialized as standalone git repositories with the target fixture code and either the baseline or candidate plugin/skill mounted.
-2. **Execute headless sandboxed runs.** Inside each staged workspace, `eval-runner-<k>` invokes Antigravity non-interactively in sandbox mode:
-   ```sh
-   agy -p "<organic_user_prompt>" --sandbox
-   ```
+1. **Provision sanitized trial clones and copy candidate skills directly.** Each `impl-eval-<k>` creates a clean, standalone git repository clone or fixture under `/tmp/<project-slug>-<id>` containing the target fixture code. Because `agy` has no `--plugin-dir` flag and skips external `../` symlinks during workspace discovery, copy candidate or baseline skill files directly into `/tmp/<project-slug>-<id>/.agents/skills/<name>/SKILL.md` (along with any companion `references/` or `scripts/` files) and never create external `../` symlinks. Account for any globally enabled plugin under `~/.gemini/config/plugins/` identically across both baseline and candidate arms.
+2. **Execute headless runs with `--mode auto` and match `--sandbox` to write needs.** Non-interactive `agy -p` runs have no interactive approval prompt, so always pass `--mode auto`. Because `--sandbox` mounts `.git` read-only, choose the command by whether the trial commits code:
+   - **Commit-producing trials** (bug fixes, features, refactors that stage or commit git changes) omit `--sandbox` inside the isolated `/tmp/<project-slug>-<id>` clone:
+     ```sh
+     agy -p "<organic_user_prompt>" --mode auto
+     ```
+   - **Read-only trials** (investigations, audits, plans, or reviews that make zero git commits) enable both flags:
+     ```sh
+     agy -p "<organic_user_prompt>" --sandbox --mode auto
+     ```
    When measuring cross-model robustness, run paired trials across the model families configured via `/setup-pstack` ([../../setup-pstack/SKILL.md](../../setup-pstack/SKILL.md)).
-3. **Collect objective trial artifacts.** Each `eval-runner-<k>` captures:
+3. **Collect objective trial artifacts.** Each `impl-eval-<k>` captures:
    - Exit code, wall-clock duration, and final stdout response.
-   - `git log -p` and `git status --short` inside the trial repo.
+   - `git log -p` and `git status --short` inside `/tmp/<project-slug>-<id>`.
    - Post-trial behavioral test suite results run against the trial repo.
    - The trial conversation's `transcript.jsonl` path so tool-call sequences and `read_file` chains can be audited directly.
-4. **Post neutral receipts (`#seq`).** Each `eval-runner-<k>` posts its neutral run ID, artifact paths, and test exit codes to the board without self-grading.
+4. **Post neutral receipts (`#seq`).** Each `impl-eval-<k>` posts its neutral run ID, artifact paths, and test exit codes to the board without self-grading.
 
 ## Phase 3. Blind grading by `ro-judge` and transcript chain audit
 
@@ -57,5 +62,5 @@ When holdout trials expose failures or regressions:
    - **Boundary slip.** A worker edited out-of-scope files or skipped verification because a rule lived only in buried prose instead of `hooks/guard.mjs` or brief structure.
    - **Context dilution.** Long reference prose drowned out the critical step.
    - **Over-constraint.** Rigid instructions forced unnecessary ceremony on simple tasks.
-2. **Iterate structurally without prompt overfitting.** Spawn `impl-evolve` (`workspace: "share"`, or combine with `/reflect` at [../../reflect/SKILL.md](../../reflect/SKILL.md)) to address the failure cluster at its structural root (sharpening `hooks/guard.mjs`, splitting bulky prose into `references/`, clarifying a topology step, or tightening frontmatter triggers). **Never** paste scenario-specific hints, fixture names, or narrow patches designed solely to pass one failed holdout prompt.
+2. **Iterate structurally without prompt overfitting.** Spawn `impl-evolve` (`workspace: "share"`, passing `<plugin-root>/skills/technical-writing/SKILL.md` in its brief, or combine with `/reflect` at [../../reflect/SKILL.md](../../reflect/SKILL.md)) to address the failure cluster at its structural root (sharpening `hooks/guard.mjs`, splitting bulky prose into `references/`, clarifying a topology step, or tightening frontmatter triggers). **Never** paste scenario-specific hints, fixture names, or narrow patches designed solely to pass one failed holdout prompt.
 3. **Re-verify on holdouts and land.** Re-run the blinded holdout suite to confirm the fix lifts the target cluster without regressing other scenarios (`Explain the Number`). Fetch and merge `impl-evolve`'s commit before `swarm{action: "kill"}`, re-run `agy plugin validate --strict --json .` and `node --test hooks/guard.test.mjs`, and report baseline vs candidate rubric scores, transcript findings, and structural changes landed.

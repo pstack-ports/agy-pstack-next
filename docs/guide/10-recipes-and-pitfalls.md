@@ -1,13 +1,13 @@
 # Recipes and pitfalls
 
-Copy-ready prompts for everyday Swarm-Centric Pstack v2 tasks, followed by the mistakes worth skipping once and for all. Swap in your own paths, fixtures, and finish predicates.
+Copy-ready prompts for everyday Swarm-Centric Pstack v2 tasks in the `agy` CLI (`1.5.8+`) and Antigravity 2.0, followed by the mistakes worth skipping once and for all. Swap in your own paths, fixtures, and finish predicates.
 
 ![An engineer tastes a finished dish while robots cook from a recipe box with workflow cards pinned above the counter.](./images/recipes.jpg)
 
 ## Understand a thorny subsystem and its history
 
 ```text
-/understand how does lease heartbeating work in worker-pool, and why did we switch away from advisory locks?
+/agy-pstack-next:understand how does lease heartbeating work in worker-pool, and why did we switch away from advisory locks?
 ```
 
 Parallel `ro-*` workers cross-check live code, `git blame`, PR discussions, and issue trackers simultaneously, separating cited evidence from inference.
@@ -15,7 +15,7 @@ Parallel `ro-*` workers cross-check live code, `git blame`, PR discussions, and 
 ## Restate a noisy bug thread before editing code
 
 ```text
-/pstack read this issue thread and restate the underlying failure in plain English. list what is proven vs assumed. do not change code yet.
+/agy-pstack-next:pstack read this issue thread and restate the underlying failure in plain English. list what is proven vs assumed. do not change code yet.
 ```
 
 Misreadings surface in one fast read-only turn instead of after three wrong patches.
@@ -23,7 +23,7 @@ Misreadings surface in one fast read-only turn instead of after three wrong patc
 ## Reproduce, root-cause, and fix with proof (`diagnose`)
 
 ```text
-/pstack webhook retries write duplicate audit rows when Postgres restarts. reproduce first, fix the root cause in an isolated worktree, and prove zero duplicates across 50 injected restarts.
+/agy-pstack-next:pstack webhook retries write duplicate audit rows when Postgres restarts. reproduce first, fix the root cause in an isolated worktree, and prove zero duplicates across 50 injected restarts.
 ```
 
 Parallel `ro-*` probes race competing hypotheses, `impl-fix` forks warm from the winner (`fork: "ro-winner"`), and `ro-verify` proves the fix live.
@@ -31,7 +31,7 @@ Parallel `ro-*` probes race competing hypotheses, `impl-fix` forks warm from the
 ## Compare competing designs before locking an API (`crucible`)
 
 ```text
-/crucible sketch three orthogonal designs for the plugin event bus. write caller usage first and audit against design red flags.
+/agy-pstack-next:crucible sketch three orthogonal designs for the plugin event bus. write caller usage first and audit against design red flags.
 ```
 
 Switch `sketch` to `full` whenever you want working prototypes benchmarked side by side in isolated `share` worktrees before `impl-synth` cherry-picks the best pieces.
@@ -39,7 +39,7 @@ Switch `sketch` to `full` whenever you want working prototypes benchmarked side 
 ## Model a race or protocol visually (`statechart`)
 
 ```text
-/statechart model our two-step checkout retry flow and prove a customer is never charged twice when the network drops mid-commit.
+/agy-pstack-next:statechart model our two-step checkout retry flow and prove a customer is never charged twice when the network drops mid-commit.
 ```
 
 TLC checks every reachable interleaving and renders user-readable Mermaid or Pele SVG charts with shortest counterexample paths.
@@ -47,7 +47,7 @@ TLC checks every reachable interleaving and renders user-readable Mermaid or Pel
 ## Stress-test a branch and map blast radius (`interrogate`)
 
 ```text
-/interrogate adversarially test this branch and map downstream callers and schema migration risks. report only reproducible bugs.
+/agy-pstack-next:interrogate adversarially test this branch and map downstream callers and schema migration risks. report only reproducible bugs.
 ```
 
 `adv-*` workers write executable exploit repros in isolated worktrees while `ro-blast` traces transitive callers, gated by `ro-verify`.
@@ -55,7 +55,7 @@ TLC checks every reachable interleaving and renders user-readable Mermaid or Pel
 ## Hillclimb a slow path scientifically (`hillclimb`)
 
 ```text
-/pstack cold bundle analysis takes 4.2s on monorepo-fixture. lock a noise floor with ro-bench, test parallel levers across cand-* worktrees, and get median runtime under 1.2s.
+/agy-pstack-next:pstack cold bundle analysis takes 4.2s on monorepo-fixture. lock a noise floor with ro-bench, test parallel levers across cand-* worktrees, and get median runtime under 1.2s.
 ```
 
 Every claimed win must clear noise across alternating runs and explain its physical limiter.
@@ -63,15 +63,15 @@ Every claimed win must clear noise across alternating runs and explain its physi
 ## Generate and maintain repo verification skills (`verify-gen`)
 
 ```text
-/verify-gen
+/agy-pstack-next:verify-gen
 ```
 
 ```text
-/verify-gen --formal prove the token bucket limiter never grants above burst capacity under concurrent callers
+/agy-pstack-next:verify-gen --formal prove the token bucket limiter never grants above burst capacity under concurrent callers
 ```
 
 ```text
-/verify-gen --maintain
+/agy-pstack-next:verify-gen --maintain
 ```
 
 Create behavioral E2E feature maps and formal invariant checks once, then run `--maintain` after refactors so drift never rots silently.
@@ -79,7 +79,7 @@ Create behavioral E2E feature maps and formal invariant checks once, then run `-
 ## Ship a PR and babysit CI (`ship`)
 
 ```text
-/pstack verify this branch, open a concise PR, and babysit CI and review threads until merge-ready. do not merge yet.
+/agy-pstack-next:pstack verify this branch, open a concise PR, and babysit CI and review threads until merge-ready. do not merge yet.
 ```
 
 Author pushes use `PSTACK_ALLOW_PUSH=1` only because you asked to open and update the PR, while `watch-pr` and `bugbot-triage.md` separate real defects from noisy bot comments.
@@ -87,22 +87,22 @@ Author pushes use `PSTACK_ALLOW_PUSH=1` only because you asked to open and updat
 ## Leave an autonomous program running overnight (`program`)
 
 ```text
-/pstack i am stepping away. convert every package under packages/* to strict boundary schemas. done means zero raw JSON.parse calls outside boundary modules and all package test suites green. commit locally per slice.
+/agy-pstack-next:pstack i am stepping away. convert every package under packages/* to strict boundary schemas. done means zero raw JSON.parse calls outside boundary modules and all package test suites green. commit locally per slice.
 /goal keep going until done or genuinely blocked.
 ```
 
 ## Catch up in seconds (`ketchup`)
 
 ```text
-/ketchup
+/agy-pstack-next:ketchup
 ```
 
 ```text
-/ketchup --plain
+/agy-pstack-next:ketchup --plain
 ```
 
 ```text
-/ketchup --video
+/agy-pstack-next:ketchup --video
 ```
 
 Get a structured `#seq` delta briefing, a zero-jargon plain-language summary, or a subtitled slide walkthrough without interrupting running workers.
@@ -110,13 +110,13 @@ Get a structured `#seq` delta briefing, a zero-jargon plain-language summary, or
 ## Encode repeated corrections into structure (`reflect`)
 
 ```text
-/reflect mine this session and encode checks so workers never bind hardcoded port 3000 in UI probes again.
+/agy-pstack-next:reflect mine this session and encode checks so workers never bind hardcoded port 3000 in UI probes again.
 ```
 
 ## Ask which workflow fits before starting (`setup-pstack`)
 
 ```text
-/setup-pstack what is the cleanest way to benchmark and migrate three competing serializer libraries?
+/agy-pstack-next:setup-pstack what is the cleanest way to benchmark and migrate three competing serializer libraries?
 ```
 
 ## Common pitfalls

@@ -2,23 +2,24 @@
 name: setup-pstack
 description: >-
   Configure per-prefix swarm role models, reasoning budgets, autonomy gates, and
-  quota hot-swapping in ~/.gemini/config/rules/pstack-models.md. Also recommends
+  quota hot-swapping in ~/.gemini/config/rules/pstack-models.md, and register
+  pstack-swarm-guard in global ~/.gemini/config/hooks.json. Also recommends
   pstack v2 skills and topologies, shapes prompts, and sets up standing /schedule
-  automations or personal -mode convention skills. Use for /setup-pstack,
-  "configure pstack models", "pstack budget", "pstack help", "which skill should
-  I use", or "automate me".
+  automations or personal -mode convention skills. Use for
+  /agy-pstack-next:setup-pstack, /setup-pstack, "configure pstack models",
+  "pstack budget", "pstack help", "which skill should I use", or "automate me".
 ---
 
 # Setup pstack
 
-Configure Swarm-Centric Pstack v2 models and autonomy rules, pick the right skill or topology for a task, or automate recurring workflows.
+Configure Swarm-Centric Pstack v2 models, global guard hooks, and autonomy rules, pick the right skill or topology for a task, or automate recurring workflows.
 
 ## Route by intent
 
 Infer which of the three workflows the user wants from their prompt:
 
-1. **Configure models, budget, and autonomy.** Default for `/setup-pstack`, model changes, cost tuning, or quota rules. Run Mode 1.
-2. **Pick a skill, topology, or prompt shape.** Triggered by "which skill", "how do I use pstack", or `/setup-pstack help`. Run Mode 2. Do not start executing engineering work on a help question because swarm runs spend real tokens. If the user asks to perform an engineering task directly, open [`../pstack/SKILL.md`](../pstack/SKILL.md) and execute it.
+1. **Configure models, guard hooks, budget, and autonomy.** Default for `/agy-pstack-next:setup-pstack` (or `/setup-pstack`), model changes, cost tuning, or quota rules. Run Mode 1.
+2. **Pick a skill, topology, or prompt shape.** Triggered by "which skill", "how do I use pstack", or `/agy-pstack-next:setup-pstack help`. Run Mode 2. Do not start executing engineering work on a help question because swarm runs spend real tokens. If the user asks to perform an engineering task directly, open [`../pstack/SKILL.md`](../pstack/SKILL.md) and execute it.
 3. **Automate recurring schedules or personal conventions.** Triggered by "automate me", "set up a cron check", "schedule a sweep", or creating a `<handle>-mode` skill. Run Mode 3.
 
 If the intent remains unclear, ask one `ask_question` prompt with those three choices before acting.
@@ -27,7 +28,7 @@ If the intent remains unclear, ask one `ask_question` prompt with those three ch
 
 ## Mode 1. Configure models, budgets, and autonomy
 
-Write `~/.gemini/config/rules/pstack-models.md` as an always-applied global rule that controls model assignment, autonomy gates, and quota fallback across every pstack swarm.
+Write `~/.gemini/config/rules/pstack-models.md` as an always-applied global rule (`trigger: always_on`) and register `pstack-swarm-guard` in global `~/.gemini/config/hooks.json` so native swarm workers enforce role capsules and tool boundaries across every pstack swarm.
 
 ### Step 1. Discover live models and quotas
 
@@ -44,7 +45,7 @@ Validate every model ID written to the rule against `inherit` or the live `model
 
 ### Step 2. Load current rule state
 
-Check whether `~/.gemini/config/rules/pstack-models.md` exists. If present, read its `# budget`, role lines, and gate settings as the current baseline. Drop any retired v1 role keys (such as `how explorer`, `why investigators`, `arena runners`, or `architect runners`) and list dropped keys so the user sees the cleanup.
+Check whether `~/.gemini/config/rules/pstack-models.md` exists. If present, read its `# budget`, role lines, and gate settings as the current baseline, and note whether `trigger: always_on` YAML frontmatter is missing so Step 4 restores it. Drop any retired v1 role keys (such as `how explorer`, `why investigators`, `arena runners`, or `architect runners`) and list dropped keys so the user sees the cleanup.
 
 ### Step 3. Choose budget preset, role prefixes, and autonomy gates
 
@@ -81,11 +82,14 @@ Preset behavior:
 
 ### Step 4. Write `~/.gemini/config/rules/pstack-models.md`
 
-Overwrite `~/.gemini/config/rules/pstack-models.md` cleanly as plain Markdown with no YAML frontmatter and total size well under 24 KB:
+Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` (unlike standalone `AGENTS.md` or `GEMINI.md` files). Without `trigger: always_on`, `agy` logs `CORTEX_MEMORY_TRIGGER_UNSPECIFIED` and drops the rule on every turn. Overwrite `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter and total size well under 24 KB:
 
 ```markdown
+---
+trigger: always_on
+---
 # pstack v2 swarm model and autonomy configuration.
-# Re-run /setup-pstack to update. Delete any line to fall back to skill defaults.
+# Re-run /agy-pstack-next:setup-pstack to update. Delete any line to fall back to skill defaults.
 # Values must be `inherit` or live model IDs from `swarm{action: "models", all: true}`.
 # budget: balanced
 coordinator: inherit
@@ -100,7 +104,60 @@ crucible checkpoint: none
 quota hotswap: auto (fallback: gemini-4-argon-medium, gemini-3.8-flash-high, gpt-oss-120b-medium)
 ```
 
-Tell the user the rule was saved and takes effect on new conversations, while `swarm{action: "model"}` can hot-swap live workers immediately in the active swarm.
+### Step 4b. Register `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`
+
+In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `hooks.json` bundles, whereas global `~/.gemini/config/hooks.json` runs across both root sessions and every swarm worker. Register `pstack-swarm-guard` globally so worker role capsules and tool confinement execute on every worker turn. Because `hooks/guard.mjs` stores `injected-capsules.json` and `member-map.json` in `<appDataDir>/plugin_data/agy-pstack-next` whether invoked from the plugin hook or `~/.gemini/config/hooks.json`, both registrations share deduplication state and never double-inject the coordinator.
+
+1. Read `~/.gemini/config/hooks.json` first if it exists and parse its top-level JSON object, preserving every existing hook entry (such as `herdr`). Start from `{}` only when `~/.gemini/config/hooks.json` does not exist.
+2. Resolve `<abs_guard_path>` to the canonical absolute filesystem path of `hooks/guard.mjs` (expand `$HOME` into a full path rather than writing `~` inside single quotes). Prefer `~/.gemini/config/plugins/agy-pstack-next/hooks/guard.mjs` when installed, and otherwise resolve `../../hooks/guard.mjs` relative to this `SKILL.md` file. Verify `<abs_guard_path>` exists on disk.
+3. Set `"pstack-swarm-guard"` on the parsed JSON object using this exact structure while leaving sibling keys untouched:
+
+```json
+{
+  "pstack-swarm-guard": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node '<abs_guard_path>'",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node '<abs_guard_path>'",
+        "timeout": 10
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "(invoke|define)_subagent|manage_subagents|send_message|run_workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '<abs_guard_path>'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "(edit|write)_file|run_command|call_mcp_tool|mcp_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '<abs_guard_path>'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+4. Write the merged JSON object back to `~/.gemini/config/hooks.json` with 2-space indentation.
+
+Tell the user that `~/.gemini/config/rules/pstack-models.md` and `~/.gemini/config/hooks.json` were saved and take effect on new conversations and newly spawned workers, while `swarm{action: "model"}` can hot-swap waiting workers immediately in the active swarm.
 
 ### Step 5. Offer project verification harnesses once
 
@@ -110,9 +167,11 @@ Inspect the workspace for an existing `verify-*` skill or automated E2E harness.
 
 ## Mode 2. Workflow and topology recommender
 
-Answer help questions concisely. Recommend the single best v2 skill or `/pstack` topology, explain why in two sentences, and include one copyable prompt in a code block adapted from [`references/recipes.md`](references/recipes.md) and [`references/prompting.md`](references/prompting.md). Provide a link to [`../../README.md`](../../README.md) or the matching chapter in `docs/guide/`.
+Answer help questions concisely. Recommend the single best v2 skill or `/pstack` topology, explain why in two sentences, and include one copyable prompt in a code block adapted from [`references/recipes.md`](references/recipes.md) and [`references/prompting.md`](references/prompting.md). Prefix plugin slash commands in CLI prompts with `/agy-pstack-next:<skill>` (for example `/agy-pstack-next:pstack`), while leaving built-in Antigravity commands such as `/goal` and `/schedule` unprefixed. Provide a link to [`../../README.md`](../../README.md) or the matching chapter in `docs/guide/`.
 
 ### The 13 pstack v2 skills
+
+In the `agy` CLI (`1.5.8+`), invoke any plugin skill as `/agy-pstack-next:<skill>` (shown concisely as `/<skill>` in the table below).
 
 | User goal | Skill |
 |---|---|
@@ -134,12 +193,12 @@ Answer help questions concisely. Recommend the single best v2 skill or `/pstack`
 
 `/pstack` selects and composes six topologies automatically from the task description (see [`../../docs/guide/02-pstack.md`](../../docs/guide/02-pstack.md)):
 
-- **`program`** ([`../pstack/topologies/program.md`](../pstack/topologies/program.md)). Multi-phase plans, `#area` channels, `lead-<area>` delegation, stacked branches, board checkpointing, session pickup, and safe pause or teardown.
+- **`program`** ([`../pstack/topologies/program.md`](../pstack/topologies/program.md)). Multi-phase plans, `#area` channels (when `swarm` exposes `channel`) or `lead-<area>` main-board delegation, stacked branches, board checkpointing, session pickup, and safe pause or teardown.
 - **`build`** ([`../pstack/topologies/build.md`](../pstack/topologies/build.md)). Disjoint `impl-*` slicing, caller-first refactors, visual parity loops with `/control-ui`, `sicko-*` cleanup, and `ro-verify` gates.
 - **`diagnose`** ([`../pstack/topologies/diagnose.md`](../pstack/topologies/diagnose.md)). Competing `ro-*` hypothesis probes, runtime/trace forensics, failing repro before fix, and warm `fork` into `impl-fix`.
 - **`hillclimb`** ([`../pstack/topologies/hillclimb.md`](../pstack/topologies/hillclimb.md)). `ro-bench` baseline and noise-floor lock, explain-the-number math checks, parallel `cand-*` lever trials, and compounding orthogonal wins.
 - **`ship`** ([`../pstack/topologies/ship.md`](../pstack/topologies/ship.md)). Pre-PR `/interrogate` and `ro-verify`, landing `share` commits locally, gated `PSTACK_ALLOW_PUSH=1` push when requested, and CI/review babysitting with `watch-pr`.
-- **`evolve`** ([`../pstack/topologies/evolve.md`](../pstack/topologies/evolve.md)). Holdout behavioral scenarios, sandboxed `agy -p --sandbox` runs, blind `ro-judge` grading, and skill or role-capsule iteration.
+- **`evolve`** ([`../pstack/topologies/evolve.md`](../pstack/topologies/evolve.md)). Holdout behavioral scenarios, isolated `agy -p --mode auto` runs (`--sandbox` on read-only trials), blind `ro-judge` grading, and skill or role-capsule iteration.
 
 ### Troubleshooting common swarm issues
 

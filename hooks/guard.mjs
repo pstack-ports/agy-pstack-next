@@ -11,8 +11,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LEGACY_SUBAGENT_TOOLS = new Set([
@@ -20,14 +20,23 @@ const LEGACY_SUBAGENT_TOOLS = new Set([
   "define_subagent",
   "manage_subagents",
   "send_message",
+  "run_workflow",
 ]);
 
-const SWARM_ALLOWED_MCP_TOOLS = new Set([
+const SWARM_BOARD_TOOLS = new Set([
   "post_message",
   "read_board",
   "swarm_wait",
   "swarm",
 ]);
+
+const PSTACK_SLASH_COMMAND_RE =
+  /(?:^|\s)\/(?:agy-pstack-next:)?(?:pstack|setup-pstack|understand|crucible|interrogate|reflect|ketchup|verify-gen|control-ui|control-cli|statechart|technical-writing|make-bot-ui)\b/i;
+
+const ROLE_CAPSULE_HEADING_RE = /(?:^|\r?\n|\\n)# [^\r\n\\]+ role capsule(?:\r?\n|\\n|$)/i;
+
+const ROLE_OVERRIDE_NOTICE =
+  "> **Role override.** Your active swarm role has changed. The role capsule below supersedes every earlier role capsule in this conversation history, including rules inherited through `fork`.\n\n";
 
 const MUTATING_MCP_PATTERN =
   /(^|_)(create|update|delete|remove|set|post|reply|resolve|merge|close|push|write|edit|append|restore|upload|generate|install|uninstall|send|modify|patch|drop|insert)(_|$)/i;
@@ -40,8 +49,6 @@ const MUTATING_GIT_SUBCOMMANDS = new Set([
   "cherry-pick",
   "reset",
   "clean",
-  "stash",
-  "tag",
   "am",
   "apply",
   "mv",
@@ -64,20 +71,30 @@ const GIT_GLOBAL_VALUE_FLAGS = new Set([
   "--config-env",
 ]);
 
-const MUTATING_FS_COMMANDS = new Set([
-  "rm",
+const HARD_BLOCKED_RO_FS_COMMANDS = new Set([
   "rmdir",
-  "mv",
-  "cp",
-  "chmod",
   "chown",
   "chgrp",
   "truncate",
   "dd",
   "patch",
   "ln",
-  "unlink",
   "install",
+]);
+
+const SICKO_BLOCKED_FS_COMMANDS = new Set([
+  "cp",
+  "mv",
+  "rm",
+  "rmdir",
+  "unlink",
+  "ln",
+  "install",
+  "mkdir",
+  "touch",
+  "truncate",
+  "dd",
+  "patch",
 ]);
 
 const NPM_INSTALL_SUBCOMMANDS = new Set([
@@ -108,6 +125,51 @@ const PIP_INSTALL_SUBCOMMANDS = new Set([
   "wheel",
 ]);
 
+const NODE_SINGLE_PATH_FS_APIS = new Set([
+  "writeFileSync",
+  "writeFile",
+  "appendFileSync",
+  "appendFile",
+  "unlinkSync",
+  "unlink",
+  "rmSync",
+  "rm",
+  "rmdirSync",
+  "rmdir",
+  "mkdirSync",
+  "mkdir",
+  "mkdtempSync",
+  "mkdtemp",
+  "chmodSync",
+  "chmod",
+  "chownSync",
+  "chown",
+  "truncateSync",
+  "truncate",
+  "createWriteStream",
+]);
+
+const NODE_TWO_PATH_FS_APIS = new Set([
+  "renameSync",
+  "rename",
+  "symlinkSync",
+  "symlink",
+  "linkSync",
+  "link",
+]);
+
+const NODE_COPY_FS_APIS = new Set([
+  "copyFileSync",
+  "copyFile",
+  "cpSync",
+  "cp",
+]);
+
+function normalizeToolName(rawName) {
+  const name = typeof rawName === "string" ? rawName : String(rawName || "");
+  return name.startsWith("default_api:") ? name.slice("default_api:".length) : name;
+}
+
 function readJsonObject(filePath) {
   try {
     if (!existsSync(filePath)) return {};
@@ -118,14 +180,12 @@ function readJsonObject(filePath) {
   }
 }
 
-function updateJsonKey(filePath, key, value) {
+function writeJsonAtomically(filePath, obj) {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const current = readJsonObject(filePath);
-  current[key] = value;
   const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   const tmpPath = join(dir, `.${basename(filePath)}.${suffix}.tmp`);
-  const serialized = JSON.stringify(current, null, 2) + "\n";
+  const serialized = JSON.stringify(obj, null, 2) + "\n";
   try {
     writeFileSync(tmpPath, serialized, "utf8");
     renameSync(tmpPath, filePath);
@@ -134,6 +194,29 @@ function updateJsonKey(filePath, key, value) {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
     } catch {}
     writeFileSync(filePath, serialized, "utf8");
+  }
+}
+
+function updateJsonKey(filePath, key, value) {
+  const current = readJsonObject(filePath);
+  if (current[key] === value) return;
+  current[key] = value;
+  writeJsonAtomically(filePath, current);
+}
+
+function updateJsonKeys(filePath, entries) {
+  const keys = Object.keys(entries);
+  if (keys.length === 0) return;
+  const current = readJsonObject(filePath);
+  let changed = false;
+  for (const key of keys) {
+    if (current[key] !== entries[key]) {
+      current[key] = entries[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeJsonAtomically(filePath, current);
   }
 }
 
@@ -158,6 +241,15 @@ function resolveAppDataDir(payload, env) {
     const match = candidate.match(/^(.*?[/\\]\.gemini[/\\]antigravity(?:-[a-zA-Z0-9_-]+)?)(?:[/\\]|$)/);
     if (match) return match[1];
   }
+  if (typeof env.ANTIGRAVITY_APP_DATA_DIR === "string" && env.ANTIGRAVITY_APP_DATA_DIR.length > 0) {
+    return env.ANTIGRAVITY_APP_DATA_DIR;
+  }
+  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.length > 0) {
+    const parent = dirname(env.PLUGIN_DATA);
+    if (basename(parent) === "plugin_data") {
+      return dirname(parent);
+    }
+  }
   return null;
 }
 
@@ -165,7 +257,9 @@ function resolveCacheDir(appDataDir, env) {
   if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.length > 0) {
     return env.PLUGIN_DATA;
   }
-  return appDataDir ? join(appDataDir, "pstack-swarm-guard") : join(tmpdir(), "pstack-swarm-guard");
+  return appDataDir
+    ? join(appDataDir, "plugin_data", "agy-pstack-next")
+    : join(tmpdir(), "pstack-swarm-guard");
 }
 
 function resolvePluginRoot(env) {
@@ -175,50 +269,197 @@ function resolvePluginRoot(env) {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function lookupMemberName(conversationId, appDataDir, cacheDir) {
-  if (typeof conversationId !== "string" || conversationId.length === 0) {
-    return null;
+function resolveOwnTranscriptPath(payload, appDataDir) {
+  if (typeof payload.transcriptPath === "string" && payload.transcriptPath.length > 0) {
+    return payload.transcriptPath;
   }
+  if (appDataDir && typeof payload.conversationId === "string" && payload.conversationId.length > 0) {
+    const stdPath = join(
+      appDataDir,
+      "brain",
+      payload.conversationId,
+      ".system_generated",
+      "logs",
+      "transcript.jsonl",
+    );
+    if (existsSync(stdPath)) return stdPath;
+    const flatPath = join(appDataDir, "brain", payload.conversationId, "transcript.jsonl");
+    if (existsSync(flatPath)) return flatPath;
+  }
+  return null;
+}
+
+function transcriptIsUnforkedUserRoot(transcriptPath, hasPriorInjectedCapsule) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return false;
+  try {
+    const content = readFileSync(transcriptPath, "utf8");
+    if (/\[swarm\] new board message|Your assignment \(recorded on the board/.test(content)) {
+      return false;
+    }
+    if (!hasPriorInjectedCapsule && ROLE_CAPSULE_HEADING_RE.test(content)) {
+      return false;
+    }
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parsed = JSON.parse(trimmed);
+      return Boolean(parsed && typeof parsed === "object" && parsed.type === "USER_INPUT");
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function transcriptContainsRoleCapsule(transcriptPath) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return false;
+  try {
+    const content = readFileSync(transcriptPath, "utf8");
+    if (ROLE_CAPSULE_HEADING_RE.test(content)) return true;
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.content === "string" &&
+          ROLE_CAPSULE_HEADING_RE.test(parsed.content)
+        ) {
+          return true;
+        }
+      } catch {}
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function extractMembersFromDoc(doc, targetConversationId) {
+  const workerEntries = {};
+  let matchedCoordinator = false;
+  const members = doc && typeof doc === "object" ? doc.members : null;
+  if (!members || typeof members !== "object") {
+    return { hasMembers: false, workerEntries, matchedCoordinator };
+  }
+  for (const [memberName, info] of Object.entries(members)) {
+    if (!info || typeof info !== "object") continue;
+    const cid = info.conversation_id || info.conversationId;
+    if (typeof cid !== "string" || cid.length === 0) continue;
+    if (memberName === "coordinator" || info.role === "coordinator") {
+      if (cid === targetConversationId) matchedCoordinator = true;
+      continue;
+    }
+    workerEntries[cid] = memberName;
+  }
+  return { hasMembers: true, workerEntries, matchedCoordinator };
+}
+
+function resolveWorkerOrCoordinatorFromSwarm(
+  conversationId,
+  payload,
+  appDataDir,
+  cacheDir,
+  hasPriorInjectedCapsule,
+) {
+  if (typeof conversationId !== "string" || conversationId.length === 0) {
+    return { workerName: null, isKnownCoordinator: false };
+  }
+
   const mapPath = join(cacheDir, "member-map.json");
   const cachedMap = readJsonObject(mapPath);
   const cachedName = cachedMap[conversationId];
   if (typeof cachedName === "string" && cachedName.length > 0 && cachedName !== "coordinator") {
-    return cachedName;
+    return { workerName: cachedName, isKnownCoordinator: false };
   }
-  if (!appDataDir) return null;
+
+  if (!appDataDir) {
+    return { workerName: null, isKnownCoordinator: false };
+  }
+
+  const candidateRoots = [payload.rootConversationId, payload.parentConversationId];
+  const checkedRoots = new Set();
+  for (const rootId of candidateRoots) {
+    if (typeof rootId !== "string" || rootId.length === 0 || rootId === conversationId || checkedRoots.has(rootId)) {
+      continue;
+    }
+    checkedRoots.add(rootId);
+    const membersPath = join(appDataDir, "brain", rootId, ".system_generated", "swarm", "members.json");
+    if (!existsSync(membersPath)) continue;
+    const { workerEntries, matchedCoordinator } = extractMembersFromDoc(
+      readJsonObject(membersPath),
+      conversationId,
+    );
+    updateJsonKeys(mapPath, workerEntries);
+    if (workerEntries[conversationId]) {
+      return { workerName: workerEntries[conversationId], isKnownCoordinator: false };
+    }
+    if (matchedCoordinator) {
+      return { workerName: null, isKnownCoordinator: true };
+    }
+  }
+
+  const ownMembersPath = join(appDataDir, "brain", conversationId, ".system_generated", "swarm", "members.json");
+  if (existsSync(ownMembersPath)) {
+    const { workerEntries } = extractMembersFromDoc(readJsonObject(ownMembersPath), conversationId);
+    updateJsonKeys(mapPath, workerEntries);
+    if (workerEntries[conversationId]) {
+      return { workerName: workerEntries[conversationId], isKnownCoordinator: false };
+    }
+    return { workerName: null, isKnownCoordinator: true };
+  }
+
+  const nonWorkerRootsPath = join(cacheDir, "non-worker-roots.json");
+  const nonWorkerRoots = readJsonObject(nonWorkerRootsPath);
+  if (nonWorkerRoots[conversationId]) {
+    return { workerName: null, isKnownCoordinator: false };
+  }
+
+  const ownTranscriptPath = resolveOwnTranscriptPath(payload, appDataDir);
+  if (transcriptIsUnforkedUserRoot(ownTranscriptPath, hasPriorInjectedCapsule)) {
+    return { workerName: null, isKnownCoordinator: false };
+  }
+
   const brainDir = join(appDataDir, "brain");
-  if (!existsSync(brainDir)) return null;
+  if (!existsSync(brainDir)) {
+    return { workerName: null, isKnownCoordinator: false };
+  }
 
   let entries = [];
   try {
     entries = readdirSync(brainDir, { withFileTypes: true });
   } catch {
-    return null;
+    return { workerName: null, isKnownCoordinator: false };
   }
 
+  const discoveredWorkers = {};
+  let matchedCoordinator = false;
   for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const membersPath = join(brainDir, entry.name, ".system_generated", "swarm", "members.json");
-    const doc = readJsonObject(membersPath);
-    const members = doc.members;
-    if (!members || typeof members !== "object") continue;
-    for (const [memberName, info] of Object.entries(members)) {
-      if (!info || typeof info !== "object") continue;
-      const cid = info.conversation_id || info.conversationId;
-      if (cid !== conversationId) continue;
-      if (memberName === "coordinator" || info.role === "coordinator") continue;
-      updateJsonKey(mapPath, conversationId, memberName);
-      return memberName;
+    if ((!entry.isDirectory() && !entry.isSymbolicLink()) || entry.name === conversationId || checkedRoots.has(entry.name)) {
+      continue;
     }
+    const membersPath = join(brainDir, entry.name, ".system_generated", "swarm", "members.json");
+    if (!existsSync(membersPath)) continue;
+    const extracted = extractMembersFromDoc(readJsonObject(membersPath), conversationId);
+    Object.assign(discoveredWorkers, extracted.workerEntries);
+    if (extracted.matchedCoordinator) matchedCoordinator = true;
   }
 
-  return null;
+  updateJsonKeys(mapPath, discoveredWorkers);
+  if (discoveredWorkers[conversationId]) {
+    return { workerName: discoveredWorkers[conversationId], isKnownCoordinator: false };
+  }
+  if (matchedCoordinator) {
+    return { workerName: null, isKnownCoordinator: true };
+  }
+
+  updateJsonKey(nonWorkerRootsPath, conversationId, true);
+  return { workerName: null, isKnownCoordinator: false };
 }
 
-function classifyMember(memberName) {
-  if (!memberName || memberName === "coordinator") {
-    return { kind: "coordinator", capsule: "roles/coordinator.md" };
-  }
+function classifyWorkerMember(memberName) {
   if (
     memberName === "narrator" ||
     memberName.startsWith("narrator-") ||
@@ -243,7 +484,81 @@ function classifyMember(memberName) {
   if (memberName.startsWith("sicko-")) {
     return { kind: "sicko", capsule: "roles/comment-sicko.md" };
   }
+  if (
+    memberName === "verifier" ||
+    memberName.startsWith("verifier-") ||
+    memberName.endsWith("-verifier") ||
+    memberName.startsWith("verify-")
+  ) {
+    return { kind: "readonly", capsule: "roles/research.md" };
+  }
   return { kind: "author", capsule: "roles/poteto-agent.md" };
+}
+
+function classifySession(payload, env, normalizedToolName = "") {
+  const appDataDir = resolveAppDataDir(payload, env);
+  const cacheDir = resolveCacheDir(appDataDir, env);
+  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
+  const injectedPath = join(cacheDir, "injected-capsules.json");
+  const injectedMap = readJsonObject(injectedPath);
+  const alreadyInjected =
+    conversationId.length > 0 &&
+    typeof injectedMap[conversationId] === "string" &&
+    injectedMap[conversationId].length > 0;
+
+  const { workerName, isKnownCoordinator } = resolveWorkerOrCoordinatorFromSwarm(
+    conversationId,
+    payload,
+    appDataDir,
+    cacheDir,
+    alreadyInjected,
+  );
+
+  if (workerName) {
+    const { kind, capsule } = classifyWorkerMember(workerName);
+    return {
+      sessionKind: "worker",
+      kind,
+      memberName: workerName,
+      capsule,
+      appDataDir,
+      cacheDir,
+      injectedMap,
+    };
+  }
+
+  const matchesSlashCommand =
+    typeof payload.lastUserInput === "string" && PSTACK_SLASH_COMMAND_RE.test(payload.lastUserInput);
+  const matchesSwarmBoardTool = SWARM_BOARD_TOOLS.has(normalizedToolName);
+  const forcedCoordinator = env.PSTACK_FORCE_COORDINATOR === "1";
+
+  if (
+    isKnownCoordinator ||
+    alreadyInjected ||
+    matchesSlashCommand ||
+    matchesSwarmBoardTool ||
+    forcedCoordinator
+  ) {
+    return {
+      sessionKind: "coordinator",
+      kind: "coordinator",
+      memberName: "coordinator",
+      capsule: "roles/coordinator.md",
+      appDataDir,
+      cacheDir,
+      injectedMap,
+    };
+  }
+
+  return {
+    sessionKind: "unmanaged",
+    kind: "unmanaged",
+    memberName: null,
+    capsule: null,
+    appDataDir,
+    cacheDir,
+    injectedMap,
+  };
 }
 
 function resolveRealTargetPath(targetPath, baseDir, depth = 0) {
@@ -284,16 +599,168 @@ function isStrictlyInside(targetPath, rootDir) {
   return rel.length > 0 && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel);
 }
 
-function isAllowedTempTarget(target) {
-  if (!target || !target.startsWith("/")) return false;
-  const clean = posix.normalize(target);
-  return (
-    clean === "/dev/null" ||
-    clean === "/tmp" ||
-    clean.startsWith("/tmp/") ||
-    clean === "/private/tmp" ||
-    clean.startsWith("/private/tmp/")
+function isInsideOrEqual(targetPath, rootDir) {
+  return targetPath === rootDir || isStrictlyInside(targetPath, rootDir);
+}
+
+function getCanonicalTempRoots(env) {
+  const roots = new Set(["/tmp", "/private/tmp"]);
+  for (const candidate of ["/tmp", "/private/tmp", env.TMPDIR, tmpdir()]) {
+    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    try {
+      roots.add(realpathSync(candidate));
+    } catch {
+      roots.add(resolve(candidate));
+    }
+  }
+  return [...roots];
+}
+
+function getSandboxContainerInTemp(realCwd, canonicalTempRoots) {
+  if (!realCwd) return null;
+  for (const tempRoot of canonicalTempRoots) {
+    if (!isStrictlyInside(realCwd, tempRoot)) continue;
+    const rel = relative(tempRoot, realCwd);
+    const parts = rel.split(/[\\/]/).filter(Boolean);
+    if (parts.length >= 2) {
+      return join(tempRoot, parts[0]);
+    }
+  }
+  return null;
+}
+
+function isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, options = {}) {
+  const { allowRootEqual = false, excludeRealCwd = false } = options;
+  if (!realTarget) return false;
+  if (excludeRealCwd && realCwd && isInsideOrEqual(realTarget, realCwd)) {
+    return false;
+  }
+  const sandboxContainer = getSandboxContainerInTemp(realCwd, canonicalTempRoots);
+  if (sandboxContainer && isInsideOrEqual(realTarget, sandboxContainer)) {
+    const sandboxTmp = join(sandboxContainer, "tmp");
+    if (!isInsideOrEqual(realTarget, sandboxTmp)) {
+      return false;
+    }
+  }
+  return canonicalTempRoots.some((root) =>
+    allowRootEqual ? isInsideOrEqual(realTarget, root) : isStrictlyInside(realTarget, root),
   );
+}
+
+function resolveShellTargetPath(rawToken, baseDir, env) {
+  if (typeof rawToken !== "string" || rawToken.length === 0) return null;
+  if (rawToken === "/dev/null") return "/dev/null";
+
+  let expanded = rawToken;
+  if (expanded === "~" || expanded.startsWith("~/")) {
+    const home = env.HOME || homedir();
+    expanded = expanded === "~" ? home : join(home, expanded.slice(2));
+  } else if (expanded.startsWith("~")) {
+    return null;
+  }
+
+  if (/^\$(?:TMPDIR|\{TMPDIR\})(?=\/|$)/.test(expanded)) {
+    const tmpVal = env.TMPDIR || tmpdir();
+    expanded = expanded.replace(/^\$(?:TMPDIR|\{TMPDIR\})/, tmpVal);
+  }
+
+  if (/[$`]/.test(expanded)) {
+    return null;
+  }
+
+  return resolveRealTargetPath(expanded, baseDir);
+}
+
+function preprocessHeredocs(command) {
+  const lines = command.split("\n");
+  const keptLines = [];
+  const unquotedBodies = [];
+  let lineIdx = 0;
+
+  while (lineIdx < lines.length) {
+    const line = lines[lineIdx];
+    keptLines.push(line);
+    const pendingHeredocs = [];
+    let inSingle = false;
+    let inDouble = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (ch === "\\" && !inSingle) {
+        i += 1;
+        continue;
+      }
+      if (ch === "'" && !inDouble) {
+        inSingle = !inSingle;
+        continue;
+      }
+      if (ch === '"' && !inSingle) {
+        inDouble = !inDouble;
+        continue;
+      }
+      if (!inSingle && !inDouble && ch === "#" && (i === 0 || " \t;|(&".includes(line[i - 1]))) {
+        break;
+      }
+      if (!inSingle && !inDouble && ch === "<" && line[i + 1] === "<" && line[i + 2] !== "<") {
+        let j = i + 2;
+        const stripTabs = line[j] === "-";
+        if (stripTabs) j += 1;
+        while (j < line.length && (line[j] === " " || line[j] === "\t")) j += 1;
+        let delim = "";
+        let quotedDelim = false;
+        let delimSingle = false;
+        let delimDouble = false;
+        while (j < line.length) {
+          const c = line[j];
+          if (!delimSingle && !delimDouble && " \t;|()&<>".includes(c)) break;
+          if (c === "\\" && !delimSingle) {
+            quotedDelim = true;
+            if (j + 1 < line.length) delim += line[j + 1];
+            j += 2;
+            continue;
+          }
+          if (c === "'" && !delimDouble) {
+            quotedDelim = true;
+            delimSingle = !delimSingle;
+            j += 1;
+            continue;
+          }
+          if (c === '"' && !delimSingle) {
+            quotedDelim = true;
+            delimDouble = !delimDouble;
+            j += 1;
+            continue;
+          }
+          delim += c;
+          j += 1;
+        }
+        if (delim.length > 0) {
+          pendingHeredocs.push({ delim, stripTabs, quotedDelim });
+        }
+        i = j - 1;
+      }
+    }
+
+    lineIdx += 1;
+    for (const h of pendingHeredocs) {
+      const bodyLines = [];
+      while (lineIdx < lines.length) {
+        const rawBodyLine = lines[lineIdx];
+        const cmpLine = h.stripTabs ? rawBodyLine.replace(/^\t+/, "") : rawBodyLine;
+        lineIdx += 1;
+        if (cmpLine === h.delim) break;
+        bodyLines.push(rawBodyLine);
+      }
+      if (!h.quotedDelim && bodyLines.length > 0) {
+        unquotedBodies.push(bodyLines.join("\n"));
+      }
+    }
+  }
+
+  return {
+    strippedCommand: keptLines.join("\n"),
+    unquotedBodies,
+  };
 }
 
 function extractCommandSubstitutions(command) {
@@ -400,7 +867,8 @@ function readNextShellToken(str, startIdx) {
   return { token, nextIdx: i };
 }
 
-function hasDisallowedOutputRedirect(command) {
+function extractOutputRedirectTargets(command) {
+  const targets = [];
   let i = 0;
   let inSingle = false;
   let inDouble = false;
@@ -425,6 +893,19 @@ function hasDisallowedOutputRedirect(command) {
       while (i < command.length && command[i] !== "\n") i += 1;
       continue;
     }
+    if (!inSingle && !inDouble && ch === "&" && command[i + 1] === ">") {
+      const opLen = command[i + 2] === ">" ? 3 : 2;
+      const { token, nextIdx } = readNextShellToken(command, i + opLen);
+      targets.push(token);
+      i = nextIdx;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === "<" && command[i + 1] === ">") {
+      const { token, nextIdx } = readNextShellToken(command, i + 2);
+      targets.push(token);
+      i = nextIdx;
+      continue;
+    }
     if (!inSingle && !inDouble && ch === ">") {
       if (command[i + 1] === "&") {
         const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
@@ -433,22 +914,19 @@ function hasDisallowedOutputRedirect(command) {
           continue;
         }
         const { token, nextIdx } = readNextShellToken(command, i + 2);
-        if (!isAllowedTempTarget(token)) return true;
+        targets.push(token);
         i = nextIdx;
         continue;
       }
-      let opLen = 1;
-      if (command[i + 1] === ">" || command[i + 1] === "|") {
-        opLen = 2;
-      }
+      const opLen = command[i + 1] === ">" || command[i + 1] === "|" ? 2 : 1;
       const { token, nextIdx } = readNextShellToken(command, i + opLen);
-      if (!isAllowedTempTarget(token)) return true;
+      targets.push(token);
       i = nextIdx;
       continue;
     }
     i += 1;
   }
-  return false;
+  return targets;
 }
 
 function tokenizeShellSegments(command) {
@@ -540,6 +1018,12 @@ function tokenizeShellSegments(command) {
           i = nextIdx;
           continue;
         }
+        if (ch === "<" && command[i + 1] === "<") {
+          const opLen = command[i + 2] === "-" ? 3 : 2;
+          const { nextIdx } = readNextShellToken(command, i + opLen);
+          i = nextIdx;
+          continue;
+        }
         if (ch === ">" && command[i + 1] === "&") {
           const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)/);
           if (fdMatch) {
@@ -550,7 +1034,7 @@ function tokenizeShellSegments(command) {
           i = nextIdx;
           continue;
         }
-        const opLen = command[i + 1] === ch || command[i + 1] === "|" || command[i + 1] === "&" ? 2 : 1;
+        const opLen = command[i + 1] === ch || command[i + 1] === "|" || command[i + 1] === "&" || command[i + 1] === ">" ? 2 : 1;
         const { nextIdx } = readNextShellToken(command, i + opLen);
         i = nextIdx;
         continue;
@@ -654,18 +1138,24 @@ function unwrapCommandSegment(tokens, inheritedEnv = {}) {
 }
 
 function collectInvocations(command, depth = 0) {
-  if (depth > 8 || !command) return { invocations: [], hasBadRedirect: false };
-  let hasBadRedirect = hasDisallowedOutputRedirect(command);
+  if (depth > 8 || !command) return { invocations: [], redirectTargets: [] };
+  const { strippedCommand, unquotedBodies } = preprocessHeredocs(command);
+  const redirectTargets = [...extractOutputRedirectTargets(strippedCommand)];
   const invocations = [];
   const scriptEnv = {};
 
-  for (const sub of extractCommandSubstitutions(command)) {
+  const substitutions = [...extractCommandSubstitutions(strippedCommand)];
+  for (const body of unquotedBodies) {
+    substitutions.push(...extractCommandSubstitutions(body));
+  }
+
+  for (const sub of substitutions) {
     const subRes = collectInvocations(sub, depth + 1);
-    if (subRes.hasBadRedirect) hasBadRedirect = true;
+    redirectTargets.push(...subRes.redirectTargets);
     invocations.push(...subRes.invocations);
   }
 
-  const rawSegments = tokenizeShellSegments(command);
+  const rawSegments = tokenizeShellSegments(strippedCommand);
   for (const seg of rawSegments) {
     const parsed = unwrapCommandSegment(seg, scriptEnv);
     if (!parsed.cmd) {
@@ -684,7 +1174,7 @@ function collectInvocations(command, depth = 0) {
         if (arg === "--") break;
         if (/^-[a-zA-Z]*c$/.test(arg) && i + 1 < parsed.args.length) {
           const inner = collectInvocations(parsed.args[i + 1], depth + 1);
-          if (inner.hasBadRedirect) hasBadRedirect = true;
+          redirectTargets.push(...inner.redirectTargets);
           for (const inv of inner.invocations) {
             invocations.push({ ...inv, env: { ...parsed.env, ...inv.env } });
           }
@@ -693,14 +1183,664 @@ function collectInvocations(command, depth = 0) {
       }
     } else if (parsed.cmd === "eval" && parsed.args.length > 0) {
       const inner = collectInvocations(parsed.args.join(" "), depth + 1);
-      if (inner.hasBadRedirect) hasBadRedirect = true;
+      redirectTargets.push(...inner.redirectTargets);
       for (const inv of inner.invocations) {
         invocations.push({ ...inv, env: { ...parsed.env, ...inv.env } });
       }
     }
   }
 
-  return { invocations, hasBadRedirect };
+  return { invocations, redirectTargets };
+}
+
+function extractPositionalPaths(args) {
+  const paths = [];
+  let afterDoubleDash = false;
+  for (const arg of args) {
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      continue;
+    }
+    paths.push(arg);
+  }
+  return paths;
+}
+
+function extractChmodTargets(args) {
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    if (arg === "--") {
+      i += 1;
+      break;
+    }
+    if (arg === "--reference") {
+      i += 2;
+      continue;
+    }
+    if (arg.startsWith("--reference=")) {
+      return args.slice(i + 1).filter((a) => a !== "--");
+    }
+    if (
+      ["-R", "-v", "-c", "-f", "-h", "-H", "-L", "-P", "--recursive", "--changes", "--silent", "--quiet", "--verbose"].includes(
+        arg,
+      ) ||
+      /^-[RvcfhHLP]+$/.test(arg)
+    ) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  if (i >= args.length) return [];
+  return args.slice(i + 1).filter((a) => a !== "--");
+}
+
+function extractCpOrMvSpec(args) {
+  let targetDir = null;
+  const positionals = [];
+  let afterDoubleDash = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (arg === "-t" || arg === "--target-directory") {
+        if (i + 1 >= args.length) return { valid: false, sources: [], destinations: [] };
+        targetDir = args[i + 1];
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--target-directory=")) {
+        targetDir = arg.slice("--target-directory=".length);
+        continue;
+      }
+      if (arg.startsWith("-t") && arg.length > 2) {
+        targetDir = arg.slice(2);
+        continue;
+      }
+      if (arg === "-S" || arg === "--suffix") {
+        i += 1;
+        continue;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+
+  if (targetDir !== null) {
+    if (positionals.length === 0) return { valid: false, sources: [], destinations: [] };
+    return { valid: true, sources: positionals, destinations: [targetDir] };
+  }
+  if (positionals.length < 2) {
+    return { valid: false, sources: [], destinations: [] };
+  }
+  return {
+    valid: true,
+    sources: positionals.slice(0, -1),
+    destinations: [positionals[positionals.length - 1]],
+  };
+}
+
+function extractLnSpec(args) {
+  let isSymbolic = false;
+  let targetDir = null;
+  const positionals = [];
+  let afterDoubleDash = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (arg === "--symbolic" || (!arg.startsWith("--") && /^-[a-zA-Z]*s/.test(arg))) {
+        isSymbolic = true;
+      }
+      if (arg === "-t" || arg === "--target-directory") {
+        if (i + 1 >= args.length) return { valid: false, isSymbolic, sources: [], linkPaths: [] };
+        targetDir = args[i + 1];
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--target-directory=")) {
+        targetDir = arg.slice("--target-directory=".length);
+        continue;
+      }
+      if (arg === "-S" || arg === "--suffix") {
+        i += 1;
+        continue;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+
+  if (targetDir !== null) {
+    if (positionals.length === 0) return { valid: false, isSymbolic, sources: [], linkPaths: [] };
+    return { valid: true, isSymbolic, sources: positionals, linkPaths: [targetDir], linkIsDir: true };
+  }
+  if (positionals.length === 1) {
+    return { valid: true, isSymbolic, sources: [positionals[0]], linkPaths: ["."], linkIsDir: true };
+  }
+  if (positionals.length >= 2) {
+    return {
+      valid: true,
+      isSymbolic,
+      sources: positionals.slice(0, -1),
+      linkPaths: [positionals[positionals.length - 1]],
+      linkIsDir: positionals.length > 2,
+    };
+  }
+  return { valid: false, isSymbolic, sources: [], linkPaths: [], linkIsDir: false };
+}
+
+function extractPatchTargets(args) {
+  const dirTargets = [];
+  const fileTargets = [];
+  const positionals = [];
+  let afterDoubleDash = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (arg === "-d" || arg === "--directory") {
+        if (i + 1 >= args.length) return { valid: false, dirTargets: [], fileTargets: [] };
+        dirTargets.push(args[i + 1]);
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--directory=")) {
+        dirTargets.push(arg.slice("--directory=".length));
+        continue;
+      }
+      if (arg.startsWith("-d") && arg.length > 2) {
+        dirTargets.push(arg.slice(2));
+        continue;
+      }
+      if (arg === "-o" || arg === "--output" || arg === "-r" || arg === "--reject-file") {
+        if (i + 1 >= args.length) return { valid: false, dirTargets: [], fileTargets: [] };
+        fileTargets.push(args[i + 1]);
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--output=")) {
+        fileTargets.push(arg.slice("--output=".length));
+        continue;
+      }
+      if (arg.startsWith("--reject-file=")) {
+        fileTargets.push(arg.slice("--reject-file=".length));
+        continue;
+      }
+      if (
+        ["-i", "--input", "-p", "--strip", "-F", "--fuzz", "-V", "--version-control", "-B", "--prefix", "-Y", "--basename-prefix", "-z", "--suffix", "-D", "--ifdef", "-g", "--get"].includes(
+          arg,
+        )
+      ) {
+        i += 1;
+        continue;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+
+  if (positionals.length >= 1) {
+    fileTargets.push(positionals[0]);
+  }
+  return { valid: true, dirTargets, fileTargets };
+}
+
+function extractSedInPlaceTargets(args) {
+  let hasInPlace = false;
+  let hasExplicitScript = false;
+  let afterDoubleDash = false;
+  const positionals = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash) {
+      if (arg === "-e" || arg === "--expression" || arg === "-f" || arg === "--file") {
+        hasExplicitScript = true;
+        i += 1;
+        continue;
+      }
+      if (
+        (arg.startsWith("-e") && arg.length > 2) ||
+        arg.startsWith("--expression=") ||
+        (arg.startsWith("-f") && arg.length > 2) ||
+        arg.startsWith("--file=")
+      ) {
+        hasExplicitScript = true;
+        continue;
+      }
+      if (arg === "-i") {
+        hasInPlace = true;
+        if (i + 1 < args.length && (args[i + 1] === "" || args[i + 1].startsWith("."))) {
+          i += 1;
+        }
+        continue;
+      }
+      if (arg === "--in-place" || arg.startsWith("--in-place=") || (!arg.startsWith("--") && /^-[a-zA-Z]*i/.test(arg))) {
+        hasInPlace = true;
+        if (!arg.startsWith("--") && arg.endsWith("i") && i + 1 < args.length && args[i + 1] === "") {
+          i += 1;
+        }
+        continue;
+      }
+      if (arg.startsWith("-") && arg.length > 1) {
+        continue;
+      }
+    }
+    positionals.push(arg);
+  }
+
+  if (!hasInPlace) return null;
+  return hasExplicitScript ? positionals : positionals.slice(1);
+}
+
+function extractPerlRubyInPlaceTargets(args) {
+  let hasInPlace = false;
+  let hasInlineScript = false;
+  let afterDoubleDash = false;
+  const positionals = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (!arg.startsWith("--") && /^-[a-zA-Z]*i/.test(arg)) {
+        hasInPlace = true;
+      }
+      if (arg === "-e" || arg === "-E" || (!arg.startsWith("--") && /^-[a-zA-Z.]*[eE]$/.test(arg))) {
+        hasInlineScript = true;
+        i += 1;
+        continue;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+
+  if (!hasInPlace) return null;
+  return hasInlineScript ? positionals : positionals.slice(1);
+}
+
+function parseCallArguments(code, openParenIdx) {
+  const args = [];
+  let current = "";
+  let depth = 1;
+  let i = openParenIdx + 1;
+  let quote = null;
+
+  while (i < code.length && depth > 0) {
+    const ch = code[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && i + 1 < code.length) {
+        current += code[i + 1];
+        i += 2;
+        continue;
+      }
+      if (quote.length === 3) {
+        if (code.slice(i, i + 3) === quote) {
+          current += code.slice(i + 1, i + 3);
+          quote = null;
+          i += 3;
+          continue;
+        }
+      } else if (ch === quote) {
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (code.slice(i, i + 3) === "'''" || code.slice(i, i + 3) === '"""') {
+      quote = code.slice(i, i + 3);
+      current += quote;
+      i += 3;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      current += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+      current += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth === 0) break;
+      current += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "," && depth === 1) {
+      args.push(current.trim());
+      current = "";
+      i += 1;
+      continue;
+    }
+    current += ch;
+    i += 1;
+  }
+
+  if (depth !== 0) return null;
+  if (current.trim().length > 0 || args.length > 0) {
+    args.push(current.trim());
+  }
+  return args;
+}
+
+function unescapeSimpleLiteral(inner, isRaw = false) {
+  if (isRaw) return inner;
+  let out = "";
+  for (let i = 0; i < inner.length; i += 1) {
+    if (inner[i] === "\\" && i + 1 < inner.length) {
+      const next = inner[i + 1];
+      if (next === "n") out += "\n";
+      else if (next === "r") out += "\r";
+      else if (next === "t") out += "\t";
+      else out += next;
+      i += 1;
+      continue;
+    }
+    out += inner[i];
+  }
+  return out;
+}
+
+function parseStaticJsString(expr) {
+  if (typeof expr !== "string") return { ok: false, value: "" };
+  const trimmed = expr.trim();
+  if (trimmed.length < 2) return { ok: false, value: "" };
+  const q = trimmed[0];
+  if (q !== "'" && q !== '"' && q !== "`") return { ok: false, value: "" };
+  if (trimmed[trimmed.length - 1] !== q) return { ok: false, value: "" };
+  const inner = trimmed.slice(1, -1);
+  for (let i = 0; i < inner.length; i += 1) {
+    if (inner[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (inner[i] === q) return { ok: false, value: "" };
+    if (q === "`" && inner[i] === "$" && inner[i + 1] === "{") {
+      return { ok: false, value: "" };
+    }
+  }
+  return { ok: true, value: unescapeSimpleLiteral(inner, false) };
+}
+
+function parseStaticPyString(expr) {
+  if (typeof expr !== "string") return { ok: false, value: "" };
+  let trimmed = expr.trim();
+  let isRaw = false;
+  let isFormat = false;
+  const prefixMatch = trimmed.match(/^([rRbBuUfF]{1,2})(?=['"])/);
+  if (prefixMatch) {
+    const p = prefixMatch[1].toLowerCase();
+    isRaw = p.includes("r");
+    isFormat = p.includes("f");
+    trimmed = trimmed.slice(prefixMatch[1].length);
+  }
+  let quote = "";
+  if (trimmed.startsWith("'''") && trimmed.endsWith("'''") && trimmed.length >= 6) {
+    quote = "'''";
+  } else if (trimmed.startsWith('"""') && trimmed.endsWith('"""') && trimmed.length >= 6) {
+    quote = '"""';
+  } else if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    if (trimmed.length >= 2) quote = trimmed[0];
+  }
+  if (!quote) return { ok: false, value: "" };
+  const inner = trimmed.slice(quote.length, trimmed.length - quote.length);
+  if (isFormat && /[{}]/.test(inner)) return { ok: false, value: "" };
+  if (quote.length === 1) {
+    for (let i = 0; i < inner.length; i += 1) {
+      if (inner[i] === "\\") {
+        i += 1;
+        continue;
+      }
+      if (inner[i] === quote) return { ok: false, value: "" };
+    }
+  }
+  return { ok: true, value: unescapeSimpleLiteral(inner, isRaw) };
+}
+
+function checkInlineNodeFs(code, allowReadOnlyTempPath) {
+  if (/\[[^\]]*(?:writeFile|appendFile|unlink|rm|rmdir|rename|copyFile|cp|mkdir|mkdtemp|chmod|chown|truncate|symlink|link|createWriteStream|openSync)/.test(code)) {
+    return "Dynamic fs mutation via inline Node script is blocked for read-only ro-* workers.";
+  }
+
+  if (
+    /\.\s*(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b(?!\s*\()/.test(
+      code,
+    ) ||
+    /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*(?::|\bas\b)/.test(
+      code,
+    )
+  ) {
+    return "Aliased fs mutation API in inline Node script is blocked for read-only ro-* workers.";
+  }
+
+  const callRe =
+    /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync|open)\s*\(/g;
+
+  let match;
+  while ((match = callRe.exec(code)) !== null) {
+    const fnName = match[1];
+    if ((fnName === "open" || fnName === "openSync") && !/\bfs\b|node:fs/.test(code)) {
+      continue;
+    }
+    const openParenIdx = match.index + match[0].length - 1;
+    const callArgs = parseCallArguments(code, openParenIdx);
+    if (!callArgs) {
+      return `Unparseable fs.${fnName} call in inline Node script is blocked for read-only ro-* workers.`;
+    }
+
+    if (fnName === "open" || fnName === "openSync") {
+      if (callArgs.length >= 2) {
+        const modeLit = parseStaticJsString(callArgs[1]);
+        if (modeLit.ok && (modeLit.value === "r" || modeLit.value === "rs")) {
+          continue;
+        }
+      } else {
+        continue;
+      }
+      const pathLit = parseStaticJsString(callArgs[0] || "");
+      if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: false, allowDevNull: true })) {
+        return `Inline Node fs.${fnName} write outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+      continue;
+    }
+
+    if (NODE_SINGLE_PATH_FS_APIS.has(fnName)) {
+      const pathLit = parseStaticJsString(callArgs[0] || "");
+      const allowRoot = fnName === "mkdirSync" || fnName === "mkdir";
+      const allowNull = fnName === "writeFileSync" || fnName === "writeFile" || fnName === "appendFileSync" || fnName === "appendFile" || fnName === "createWriteStream";
+      if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: allowRoot, allowDevNull: allowNull })) {
+        return `Inline Node fs.${fnName} outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+      continue;
+    }
+
+    if (NODE_COPY_FS_APIS.has(fnName)) {
+      const dstLit = parseStaticJsString(callArgs[1] || "");
+      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: true })) {
+        return `Inline Node fs.${fnName} destination outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+      continue;
+    }
+
+    if (NODE_TWO_PATH_FS_APIS.has(fnName)) {
+      const firstLit = parseStaticJsString(callArgs[0] || "");
+      const secondLit = parseStaticJsString(callArgs[1] || "");
+      if (
+        !firstLit.ok ||
+        !secondLit.ok ||
+        !allowReadOnlyTempPath(firstLit.value, { allowRootEqual: false, allowDevNull: false }) ||
+        !allowReadOnlyTempPath(secondLit.value, { allowRootEqual: true, allowDevNull: false })
+      ) {
+        return `Inline Node fs.${fnName} outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+    }
+  }
+
+  return null;
+}
+
+function splitPythonCallArgs(callArgs) {
+  const positionals = [];
+  const kwargs = {};
+  for (const arg of callArgs) {
+    const kwMatch = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*([\s\S]*)$/);
+    if (kwMatch) {
+      kwargs[kwMatch[1]] = kwMatch[2].trim();
+    } else {
+      positionals.push(arg);
+    }
+  }
+  return { positionals, kwargs };
+}
+
+function checkInlinePythonFs(code, allowReadOnlyTempPath) {
+  if (
+    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/.test(
+      code,
+    ) ||
+    /\bfrom\s+(?:os|posix|shutil|pathlib)\s+import\b[^\n;]*\bas\b/.test(code) ||
+    /(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|io\s*\.\s*)?open\b(?!\s*\()/.test(code)
+  ) {
+    return "Aliased filesystem mutation API in inline Python script is blocked for read-only ro-* workers.";
+  }
+
+  const pathMethodRe =
+    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|open)\s*\(/g;
+  let match;
+  while ((match = pathMethodRe.exec(code)) !== null) {
+    const method = match[1];
+    const openParenIdx = match.index + match[0].length - 1;
+    const methodArgs = parseCallArguments(code, openParenIdx);
+    if (!methodArgs) {
+      return `Unparseable .${method}() call in inline Python script is blocked for read-only ro-* workers.`;
+    }
+    if (method === "open") {
+      const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
+      const modeExpr = positionals[0] ?? kwargs.mode ?? null;
+      if (modeExpr === null) continue;
+      const modeLit = parseStaticPyString(modeExpr);
+      if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
+        continue;
+      }
+    }
+    const prefix = code.slice(0, match.index);
+    const ctorMatch = prefix.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
+    if (!ctorMatch) {
+      return `Inline Python Path.${method}() on non-literal receiver is blocked for read-only ro-* workers.`;
+    }
+    const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
+    const receiverLit = ctorArgs && ctorArgs.length === 1 ? parseStaticPyString(ctorArgs[0]) : { ok: false, value: "" };
+    const allowRoot = method === "mkdir";
+    if (!receiverLit.ok || !allowReadOnlyTempPath(receiverLit.value, { allowRootEqual: allowRoot, allowDevNull: false })) {
+      return `Inline Python Path.${method}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+    }
+    if (method === "rename" || method === "replace") {
+      const dstLit = parseStaticPyString(methodArgs[0] || "");
+      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: false })) {
+        return `Inline Python Path.${method}() target outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+    }
+  }
+
+  const openRe = /(?:^|[^\w.])(?:io\s*\.\s*|builtins\s*\.\s*)?open\s*\(/g;
+  while ((match = openRe.exec(code)) !== null) {
+    const openParenIdx = match.index + match[0].length - 1;
+    const openArgs = parseCallArguments(code, openParenIdx);
+    if (!openArgs) {
+      return "Unparseable open() call in inline Python script is blocked for read-only ro-* workers.";
+    }
+    const { positionals, kwargs } = splitPythonCallArgs(openArgs);
+    const modeExpr = positionals[1] ?? kwargs.mode ?? null;
+    if (modeExpr === null) continue;
+    const modeLit = parseStaticPyString(modeExpr);
+    if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
+      continue;
+    }
+    const pathExpr = positionals[0] ?? kwargs.file ?? "";
+    const pathLit = parseStaticPyString(pathExpr);
+    if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: false, allowDevNull: true })) {
+      return "Inline Python open() for write outside canonical temp roots is blocked for read-only ro-* workers.";
+    }
+  }
+
+  const hasFsImport = /\b(?:os|posix|shutil)\b/.test(code);
+  const osShutilRe =
+    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
+  while ((match = osShutilRe.exec(code)) !== null) {
+    const qualifier = match[1] || "";
+    const fnName = match[2];
+    const beforeChar = match.index > 0 ? code[match.index - 1] : "";
+    if (!qualifier && (beforeChar === "." || !hasFsImport)) {
+      continue;
+    }
+    const openParenIdx = match.index + match[0].length - 1;
+    const callArgs = parseCallArguments(code, openParenIdx);
+    if (!callArgs) {
+      return `Unparseable ${fnName}() call in inline Python script is blocked for read-only ro-* workers.`;
+    }
+    const { positionals } = splitPythonCallArgs(callArgs);
+    if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
+      if (!qualifier && !/\bshutil\b/.test(code)) continue;
+      const dstLit = parseStaticPyString(positionals[1] || "");
+      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: true })) {
+        return `Inline Python ${fnName}() destination outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+      continue;
+    }
+    if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
+      const srcLit = parseStaticPyString(positionals[0] || "");
+      const dstLit = parseStaticPyString(positionals[1] || "");
+      if (
+        !srcLit.ok ||
+        !dstLit.ok ||
+        !allowReadOnlyTempPath(srcLit.value, { allowRootEqual: false, allowDevNull: false }) ||
+        !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: false })
+      ) {
+        return `Inline Python ${fnName}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+      }
+      continue;
+    }
+    const pathLit = parseStaticPyString(positionals[0] || "");
+    const allowRoot = fnName === "mkdir" || fnName === "makedirs";
+    if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: allowRoot, allowDevNull: false })) {
+      return `Inline Python ${fnName}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+    }
+  }
+
+  return null;
 }
 
 function parseGitCommand(args) {
@@ -729,6 +1869,46 @@ function parseGitCommand(args) {
     return { subcmd: arg, subArgs: args.slice(i + 1) };
   }
   return { subcmd: "", subArgs: [] };
+}
+
+function isReadOnlyGitTagArgs(subArgs) {
+  if (subArgs.length === 0) return true;
+  let hasReadOnlyFlag = false;
+  for (let i = 0; i < subArgs.length; i += 1) {
+    const arg = subArgs[i];
+    if (arg === "--") break;
+    if (
+      ["-d", "--delete", "-a", "--annotate", "-s", "--sign", "-f", "--force", "-m", "--message", "-F", "--file", "-u", "--local-user", "--create-reflog"].includes(
+        arg,
+      ) ||
+      arg.startsWith("--message=") ||
+      arg.startsWith("--file=") ||
+      arg.startsWith("--local-user=") ||
+      (!arg.startsWith("--") && /^-[a-zA-Z]*[dasfmuF]/.test(arg))
+    ) {
+      return false;
+    }
+    if (
+      arg === "-l" ||
+      arg === "--list" ||
+      arg === "-v" ||
+      arg === "--verify" ||
+      arg === "--contains" ||
+      arg.startsWith("--contains=") ||
+      arg === "--points-at" ||
+      arg.startsWith("--points-at=")
+    ) {
+      hasReadOnlyFlag = true;
+      if (arg === "--contains" || arg === "--points-at") {
+        i += 1;
+      }
+    }
+  }
+  return hasReadOnlyFlag;
+}
+
+function isReadOnlyGitStashArgs(subArgs) {
+  return subArgs.length > 0 && (subArgs[0] === "list" || subArgs[0] === "show");
 }
 
 function isForcePushToProtectedBranch(subArgs) {
@@ -776,48 +1956,123 @@ function isForcePushToProtectedBranch(subArgs) {
   return false;
 }
 
-function isMutatingReadOnlyInvocation(inv) {
+function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath) {
   const { cmd, args } = inv;
   if (!cmd) return null;
 
-  if (MUTATING_FS_COMMANDS.has(cmd)) {
+  if (HARD_BLOCKED_RO_FS_COMMANDS.has(cmd)) {
     return `Filesystem mutation command '${cmd}' is blocked for read-only ro-* workers.`;
   }
 
-  if (cmd === "mkdir" || cmd === "touch") {
-    const paths = args.filter((a) => !a.startsWith("-"));
-    if (paths.length === 0 || paths.some((p) => !isAllowedTempTarget(p))) {
-      return `Filesystem command '${cmd}' outside /tmp is blocked for read-only ro-* workers.`;
+  if (cmd === "rm" || cmd === "unlink" || cmd === "touch" || cmd === "mkdir") {
+    const paths = extractPositionalPaths(args);
+    const allowRoot = cmd === "mkdir";
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: allowRoot, allowDevNull: false }))
+    ) {
+      return `Filesystem command '${cmd}' outside canonical temp roots is blocked for read-only ro-* workers.`;
     }
+    return null;
+  }
+
+  if (cmd === "chmod") {
+    const paths = extractChmodTargets(args);
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: false, allowDevNull: false }))
+    ) {
+      return "Filesystem command 'chmod' outside canonical temp roots is blocked for read-only ro-* workers.";
+    }
+    return null;
+  }
+
+  if (cmd === "cp") {
+    const cpSpec = extractCpOrMvSpec(args);
+    if (
+      !cpSpec.valid ||
+      cpSpec.destinations.some((d) => !allowReadOnlyTempPath(d, { allowRootEqual: true, allowDevNull: true }))
+    ) {
+      return "Filesystem command 'cp' targeting paths outside canonical temp roots is blocked for read-only ro-* workers.";
+    }
+    return null;
+  }
+
+  if (cmd === "mv") {
+    const mvSpec = extractCpOrMvSpec(args);
+    if (
+      !mvSpec.valid ||
+      mvSpec.sources.some((s) => !allowReadOnlyTempPath(s, { allowRootEqual: false, allowDevNull: false })) ||
+      mvSpec.destinations.some((d) => !allowReadOnlyTempPath(d, { allowRootEqual: true, allowDevNull: false }))
+    ) {
+      return "Filesystem command 'mv' outside canonical temp roots is blocked for read-only ro-* workers.";
+    }
+    return null;
   }
 
   if (cmd === "tee") {
-    const files = args.filter((a) => !a.startsWith("-"));
-    if (files.some((f) => !isAllowedTempTarget(f))) {
-      return "Command 'tee' targeting paths outside /dev/null or /tmp is blocked for read-only ro-* workers.";
+    const files = extractPositionalPaths(args);
+    if (files.some((f) => !allowReadOnlyTempPath(f, { allowRootEqual: false, allowDevNull: true }))) {
+      return "Command 'tee' targeting paths outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.";
     }
+    return null;
   }
 
-  if (cmd === "sed") {
-    for (const arg of args) {
+  if (cmd === "sed" && extractSedInPlaceTargets(args) !== null) {
+    return "In-place 'sed -i' is blocked for read-only ro-* workers.";
+  }
+
+  if ((cmd === "perl" || cmd === "ruby") && extractPerlRubyInPlaceTargets(args) !== null) {
+    return `In-place '${cmd} -i' is blocked for read-only ro-* workers.`;
+  }
+
+  if (cmd === "node" || cmd === "nodejs" || cmd === "bun") {
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
       if (arg === "--") break;
-      if (arg === "--in-place" || arg.startsWith("--in-place=") || /^-[a-zA-Z]*i/.test(arg)) {
-        return "In-place 'sed -i' is blocked for read-only ro-* workers.";
+      if ((arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") && i + 1 < args.length) {
+        const deny = checkInlineNodeFs(args[i + 1], allowReadOnlyTempPath);
+        if (deny) return deny;
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--eval=")) {
+        const deny = checkInlineNodeFs(arg.slice("--eval=".length), allowReadOnlyTempPath);
+        if (deny) return deny;
+      } else if (arg.startsWith("--print=")) {
+        const deny = checkInlineNodeFs(arg.slice("--print=".length), allowReadOnlyTempPath);
+        if (deny) return deny;
       }
     }
   }
 
-  if (cmd === "perl" || cmd === "ruby") {
-    for (const arg of args) {
-      if (arg === "--") break;
-      if (/^-[a-zA-Z]*i/.test(arg)) {
-        return `In-place '${cmd} -i' is blocked for read-only ro-* workers.`;
+  if (/^python(?:\d+(?:\.\d+)?)?$/.test(cmd)) {
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg === "--" || arg === "-m") break;
+      if ((arg === "-c" || /^-[A-Za-z]+c$/.test(arg)) && i + 1 < args.length) {
+        const deny = checkInlinePythonFs(args[i + 1], allowReadOnlyTempPath);
+        if (deny) return deny;
+        break;
       }
+      if (!arg.startsWith("-")) break;
     }
   }
 
   if (cmd === "git") {
     const { subcmd, subArgs } = parseGitCommand(args);
+    if (subcmd === "tag") {
+      if (!isReadOnlyGitTagArgs(subArgs)) {
+        return "Mutating git command 'git tag' is blocked for read-only ro-* workers.";
+      }
+      return null;
+    }
+    if (subcmd === "stash") {
+      if (!isReadOnlyGitStashArgs(subArgs)) {
+        return "Mutating git command 'git stash' is blocked for read-only ro-* workers.";
+      }
+      return null;
+    }
     if (MUTATING_GIT_SUBCOMMANDS.has(subcmd)) {
       return `Mutating git command 'git ${subcmd}' is blocked for read-only ro-* workers.`;
     }
@@ -886,6 +2141,131 @@ function isMutatingReadOnlyInvocation(inv) {
   return null;
 }
 
+function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase) {
+  const { cmd, args } = inv;
+  if (!cmd) return null;
+
+  if (cmd === "cp") {
+    const cpSpec = extractCpOrMvSpec(args);
+    if (
+      !cpSpec.valid ||
+      cpSpec.destinations.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: true }))
+    ) {
+      return "Command 'cp' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+    }
+  }
+
+  if (cmd === "mv") {
+    const mvSpec = extractCpOrMvSpec(args);
+    if (
+      !mvSpec.valid ||
+      mvSpec.sources.some((s) => !allowAuthorShellPath(s, { allowRootEqual: false, allowDevNull: false })) ||
+      mvSpec.destinations.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: true }))
+    ) {
+      return "Command 'mv' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+    }
+  }
+
+  if (cmd === "ln") {
+    const lnSpec = extractLnSpec(args);
+    if (
+      !lnSpec.valid ||
+      lnSpec.linkPaths.some((l) => !allowAuthorShellPath(l, { allowRootEqual: true, allowDevNull: false }))
+    ) {
+      return "Command 'ln' creating a link outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+    }
+    const resolvedLink = resolveForBase(lnSpec.linkPaths[0]);
+    const linkBaseDir = resolvedLink ? (lnSpec.linkIsDir ? resolvedLink : dirname(resolvedLink)) : null;
+    for (const src of lnSpec.sources) {
+      if (!lnSpec.isSymbolic) {
+        if (!allowAuthorShellPath(src, { allowRootEqual: false, allowDevNull: false })) {
+          return "Command 'ln' hardlinking a source outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+        }
+      } else if (linkBaseDir && !allowAuthorShellPath(src, { allowRootEqual: true, allowDevNull: false, customBaseDir: linkBaseDir })) {
+        return "Command 'ln -s' pointing outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+      }
+    }
+  }
+
+  if (cmd === "rm" || cmd === "unlink" || cmd === "rmdir") {
+    const paths = extractPositionalPaths(args);
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowAuthorShellPath(p, { allowRootEqual: false, allowDevNull: false }))
+    ) {
+      return `Command '${cmd}' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.`;
+    }
+  }
+
+  if (cmd === "patch") {
+    const patchSpec = extractPatchTargets(args);
+    if (
+      !patchSpec.valid ||
+      patchSpec.dirTargets.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: false })) ||
+      patchSpec.fileTargets.some((f) => !allowAuthorShellPath(f, { allowRootEqual: false, allowDevNull: true }))
+    ) {
+      return "Command 'patch' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+    }
+  }
+
+  if (cmd === "sed") {
+    const sedTargets = extractSedInPlaceTargets(args);
+    if (
+      sedTargets !== null &&
+      (sedTargets.length === 0 ||
+        sedTargets.some((t) => !allowAuthorShellPath(t, { allowRootEqual: false, allowDevNull: false })))
+    ) {
+      return "Command 'sed -i' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
+    }
+  }
+
+  if (cmd === "perl" || cmd === "ruby") {
+    const editTargets = extractPerlRubyInPlaceTargets(args);
+    if (
+      editTargets !== null &&
+      (editTargets.length === 0 ||
+        editTargets.some((t) => !allowAuthorShellPath(t, { allowRootEqual: false, allowDevNull: false })))
+    ) {
+      return `Command '${cmd} -i' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.`;
+    }
+  }
+
+  if (cmd === "tee") {
+    const files = extractPositionalPaths(args);
+    if (files.some((f) => !allowAuthorShellPath(f, { allowRootEqual: false, allowDevNull: true }))) {
+      return "Command 'tee' targeting a path outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.";
+    }
+  }
+
+  return null;
+}
+
+function checkSickoShellInvocation(inv) {
+  const { cmd, args } = inv;
+  if (!cmd) return null;
+
+  if (SICKO_BLOCKED_FS_COMMANDS.has(cmd)) {
+    return `Filesystem mutation command '${cmd}' is blocked for comment-sicko workers; use edit_file on existing files only.`;
+  }
+
+  if (cmd === "tee") {
+    const files = extractPositionalPaths(args);
+    if (files.some((f) => f !== "/dev/null")) {
+      return "Command 'tee' writing to files is blocked for comment-sicko workers.";
+    }
+  }
+
+  if (cmd === "sed" && extractSedInPlaceTargets(args) !== null) {
+    return "In-place 'sed -i' is blocked for comment-sicko workers; use edit_file only.";
+  }
+
+  if ((cmd === "perl" || cmd === "ruby") && extractPerlRubyInPlaceTargets(args) !== null) {
+    return `In-place '${cmd} -i' is blocked for comment-sicko workers; use edit_file only.`;
+  }
+
+  return null;
+}
+
 function extractMcpToolName(toolName, args) {
   if (toolName === "call_mcp_tool") {
     return String(args.ToolName || args.toolName || args.name || "");
@@ -897,30 +2277,32 @@ function extractMcpToolName(toolName, args) {
 }
 
 function handleSessionOrInvocation(payload, env) {
-  const appDataDir = resolveAppDataDir(payload, env);
-  const cacheDir = resolveCacheDir(appDataDir, env);
-  const memberName = lookupMemberName(payload.conversationId, appDataDir, cacheDir);
-  const { capsule } = classifyMember(memberName);
-
-  if (!capsule) {
+  const session = classifySession(payload, env, "");
+  if (session.sessionKind === "unmanaged" || !session.capsule) {
     return {};
   }
 
   const convKey = payload.conversationId || "__unknown__";
-  const injectedPath = join(cacheDir, "injected-capsules.json");
-  const injectedMap = readJsonObject(injectedPath);
-  if (injectedMap[convKey] === capsule) {
+  const injectedPath = join(session.cacheDir, "injected-capsules.json");
+  const injectedMap = session.injectedMap || readJsonObject(injectedPath);
+  const priorCapsule = injectedMap[convKey];
+  if (priorCapsule === session.capsule) {
     return {};
   }
 
   const pluginRoot = resolvePluginRoot(env);
-  const capsuleAbsPath = join(pluginRoot, capsule);
+  const capsuleAbsPath = join(pluginRoot, session.capsule);
   if (!existsSync(capsuleAbsPath)) {
     return {};
   }
 
-  const capsuleText = readFileSync(capsuleAbsPath, "utf8");
-  updateJsonKey(injectedPath, convKey, capsule);
+  const rawCapsuleText = readFileSync(capsuleAbsPath, "utf8");
+  const isUpgrade = typeof priorCapsule === "string" && priorCapsule.length > 0;
+  const hasForkCapsule =
+    !isUpgrade && transcriptContainsRoleCapsule(resolveOwnTranscriptPath(payload, session.appDataDir));
+  const capsuleText = isUpgrade || hasForkCapsule ? ROLE_OVERRIDE_NOTICE + rawCapsuleText : rawCapsuleText;
+
+  updateJsonKey(injectedPath, convKey, session.capsule);
 
   return {
     injectSteps: [
@@ -946,10 +2328,32 @@ function parseToolArgs(rawArgs) {
   return typeof rawArgs === "object" ? rawArgs : {};
 }
 
+function resolveWorkerConfinementRoots(payload, env) {
+  const hasValidCwd =
+    typeof payload.cwd === "string" && payload.cwd.length > 0 && existsSync(payload.cwd);
+  const realCwd = hasValidCwd ? realpathSync(payload.cwd) : null;
+  const fallbackBaseDir = realCwd || process.cwd();
+  const realArtifact =
+    typeof payload.artifactDirectoryPath === "string" &&
+    payload.artifactDirectoryPath.length > 0 &&
+    existsSync(payload.artifactDirectoryPath)
+      ? realpathSync(payload.artifactDirectoryPath)
+      : typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath.length > 0
+        ? resolveRealTargetPath(payload.artifactDirectoryPath, fallbackBaseDir)
+        : null;
+  const canonicalTempRoots = getCanonicalTempRoots(env);
+  return { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots };
+}
+
 function handlePreToolUse(payload, env) {
   const toolCall = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall : {};
-  const toolName = String(toolCall.name || "");
+  const toolName = normalizeToolName(toolCall.name);
   const args = parseToolArgs(toolCall.args);
+
+  const session = classifySession(payload, env, toolName);
+  if (session.sessionKind === "unmanaged") {
+    return { decision: "allow" };
+  }
 
   if (LEGACY_SUBAGENT_TOOLS.has(toolName)) {
     return {
@@ -958,30 +2362,73 @@ function handlePreToolUse(payload, env) {
     };
   }
 
-  const appDataDir = resolveAppDataDir(payload, env);
-  const cacheDir = resolveCacheDir(appDataDir, env);
-  const memberName = lookupMemberName(payload.conversationId, appDataDir, cacheDir);
-  const { kind } = classifyMember(memberName);
+  const { kind, memberName } = session;
+  const { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots } =
+    resolveWorkerConfinementRoots(payload, env);
 
   if (kind === "readonly") {
     if (toolName === "edit_file" || toolName === "write_file") {
-      return {
-        decision: "deny",
-        reason: `Read-only worker (${memberName || "ro-*"}) cannot call ${toolName}.`,
-      };
+      const rawTarget = args.Path ?? args.path ?? args.TargetFile ?? args.targetFile ?? args.file_path ?? "";
+      if (typeof rawTarget !== "string" || rawTarget.length === 0) {
+        return {
+          decision: "deny",
+          reason: `Read-only worker (${memberName || "ro-*"}) cannot call ${toolName} without a valid temp path.`,
+        };
+      }
+      const realTarget = resolveRealTargetPath(rawTarget, fallbackBaseDir);
+      if (
+        !realTarget ||
+        !isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, {
+          allowRootEqual: false,
+          excludeRealCwd: true,
+        })
+      ) {
+        return {
+          decision: "deny",
+          reason: `Read-only worker (${memberName || "ro-*"}) can only call ${toolName} inside canonical temp roots.`,
+        };
+      }
+      return { decision: "allow" };
     }
 
     if (toolName === "run_command") {
       const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-      const { invocations, hasBadRedirect } = collectInvocations(commandLine);
-      if (hasBadRedirect) {
-        return {
-          decision: "deny",
-          reason: "Output file redirection outside /dev/null or /tmp is blocked for read-only ro-* workers.",
-        };
+      const { invocations, redirectTargets } = collectInvocations(commandLine);
+
+      const allowReadOnlyTempPath = (rawToken, opts = {}) => {
+        const { allowRootEqual = false, allowDevNull = false } = opts;
+        const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, env);
+        if (!resolved) return false;
+        if (allowDevNull && resolved === "/dev/null") return true;
+        return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
+          allowRootEqual,
+          excludeRealCwd: true,
+        });
+      };
+
+      for (const redirectTarget of redirectTargets) {
+        if (!allowReadOnlyTempPath(redirectTarget, { allowRootEqual: false, allowDevNull: true })) {
+          return {
+            decision: "deny",
+            reason:
+              "Output file redirection outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.",
+          };
+        }
       }
+
       for (const inv of invocations) {
-        const denyReason = isMutatingReadOnlyInvocation(inv);
+        const mergedEnv = { ...env, ...inv.env };
+        const allowInvTempPath = (rawToken, opts = {}) => {
+          const { allowRootEqual = false, allowDevNull = false } = opts;
+          const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
+          if (!resolved) return false;
+          if (allowDevNull && resolved === "/dev/null") return true;
+          return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
+            allowRootEqual,
+            excludeRealCwd: true,
+          });
+        };
+        const denyReason = isMutatingReadOnlyInvocation(inv, allowInvTempPath);
         if (denyReason) {
           return { decision: "deny", reason: denyReason };
         }
@@ -990,7 +2437,7 @@ function handlePreToolUse(payload, env) {
 
     if (toolName === "call_mcp_tool" || toolName.startsWith("mcp_")) {
       const mcpToolName = extractMcpToolName(toolName, args);
-      if (!SWARM_ALLOWED_MCP_TOOLS.has(mcpToolName)) {
+      if (!SWARM_BOARD_TOOLS.has(mcpToolName)) {
         const normalized = mcpToolName.replace(/-/g, "_");
         if (MUTATING_MCP_PATTERN.test(normalized)) {
           return {
@@ -1017,19 +2464,9 @@ function handlePreToolUse(payload, env) {
     if (typeof rawTarget !== "string" || rawTarget.length === 0) {
       return { decision: "deny", reason: "Missing target file path." };
     }
-    if (typeof payload.cwd !== "string" || payload.cwd.length === 0 || !existsSync(payload.cwd)) {
+    if (!hasValidCwd || !realCwd) {
       return { decision: "deny", reason: "Missing or non-existent worker cwd for path confinement." };
     }
-
-    const realCwd = realpathSync(payload.cwd);
-    const realArtifact =
-      typeof payload.artifactDirectoryPath === "string" &&
-      payload.artifactDirectoryPath.length > 0 &&
-      existsSync(payload.artifactDirectoryPath)
-        ? realpathSync(payload.artifactDirectoryPath)
-        : typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath.length > 0
-          ? resolveRealTargetPath(payload.artifactDirectoryPath, realCwd)
-          : null;
 
     const realTarget = resolveRealTargetPath(rawTarget, realCwd);
     if (!realTarget) {
@@ -1038,8 +2475,15 @@ function handlePreToolUse(payload, env) {
 
     const insideCwd = isStrictlyInside(realTarget, realCwd);
     const insideArtifact = realArtifact ? isStrictlyInside(realTarget, realArtifact) : false;
+    const insideTemp =
+      kind === "author" || kind === "adversary"
+        ? isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, {
+            allowRootEqual: false,
+            excludeRealCwd: false,
+          })
+        : false;
 
-    if (!insideCwd && !insideArtifact) {
+    if (!insideCwd && !insideArtifact && !insideTemp) {
       return {
         decision: "deny",
         reason: `Path '${rawTarget}' escapes confined worker worktree '${realCwd}'.`,
@@ -1049,7 +2493,72 @@ function handlePreToolUse(payload, env) {
 
   if (toolName === "run_command") {
     const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-    const { invocations } = collectInvocations(commandLine);
+    const { invocations, redirectTargets } = collectInvocations(commandLine);
+
+    if (kind === "sicko") {
+      for (const redirectTarget of redirectTargets) {
+        if (redirectTarget !== "/dev/null") {
+          return {
+            decision: "deny",
+            reason:
+              "Shell file redirection outside /dev/null is blocked for comment-sicko workers; use edit_file on existing files only.",
+          };
+        }
+      }
+      for (const inv of invocations) {
+        const sickoDeny = checkSickoShellInvocation(inv);
+        if (sickoDeny) {
+          return { decision: "deny", reason: sickoDeny };
+        }
+      }
+    }
+
+    if (kind === "author" || kind === "adversary") {
+      const checkConfinedShellPath = (rawToken, mergedEnv, opts = {}) => {
+        const { allowRootEqual = false, allowDevNull = false, customBaseDir = null } = opts;
+        const activeBase = customBaseDir || realCwd;
+        if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$TMPDIR") && !rawToken.startsWith("${TMPDIR}")) {
+          return false;
+        }
+        const resolved = resolveShellTargetPath(rawToken, activeBase || fallbackBaseDir, mergedEnv);
+        if (!resolved) return false;
+        if (allowDevNull && resolved === "/dev/null") return true;
+        if (realCwd && (allowRootEqual ? isInsideOrEqual(resolved, realCwd) : isStrictlyInside(resolved, realCwd))) {
+          return true;
+        }
+        if (
+          realArtifact &&
+          (allowRootEqual ? isInsideOrEqual(resolved, realArtifact) : isStrictlyInside(resolved, realArtifact))
+        ) {
+          return true;
+        }
+        return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
+          allowRootEqual,
+          excludeRealCwd: false,
+        });
+      };
+
+      for (const redirectTarget of redirectTargets) {
+        if (!checkConfinedShellPath(redirectTarget, env, { allowRootEqual: false, allowDevNull: true })) {
+          return {
+            decision: "deny",
+            reason:
+              "Shell output redirection outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.",
+          };
+        }
+      }
+
+      for (const inv of invocations) {
+        const mergedEnv = { ...env, ...inv.env };
+        const allowInvPath = (rawToken, opts = {}) => checkConfinedShellPath(rawToken, mergedEnv, opts);
+        const resolveForBase = (rawToken) =>
+          resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
+        const authorDeny = checkAuthorShellConfinement(inv, allowInvPath, resolveForBase);
+        if (authorDeny) {
+          return { decision: "deny", reason: authorDeny };
+        }
+      }
+    }
 
     for (const inv of invocations) {
       if (inv.cmd !== "git") continue;

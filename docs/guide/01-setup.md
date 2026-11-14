@@ -1,10 +1,10 @@
 # Set up pstack
 
-In this page you install `agy-pstack-next`, map swarm worker prefixes to models, optionally bootstrap project verification skills, and run your first swarm task.
+In this page you install `agy-pstack-next` in the Antigravity CLI (`agy` `1.5.8+`) or Antigravity 2.0, map swarm worker prefixes to models, register the global swarm guard hook, optionally bootstrap project verification skills, and run your first swarm task.
 
 ## Install the plugin
 
-Install the plugin from the terminal with the Antigravity CLI:
+Install the plugin from the terminal with the `agy` CLI (`1.5.8+`):
 
 ```bash
 agy plugin install https://github.com/pstack-ports/agy-pstack-next
@@ -12,17 +12,22 @@ agy plugin install https://github.com/pstack-ports/agy-pstack-next
 
 Installing registers root [`hooks.json`](../../hooks.json), [`hooks/guard.mjs`](../../hooks/guard.mjs), the four role capsules under `roles/`, and all 13 skills automatically.
 
-## Configure swarm models and budgets
+In the `agy` CLI (`1.5.8+`), installed plugin slash commands use the `/agy-pstack-next:<skill>` namespace (for example `/agy-pstack-next:setup-pstack` and `/agy-pstack-next:pstack`). Drop the `agy-pstack-next:` prefix only when a skill is installed standalone under `.agents/skills/` or `~/.gemini/config/skills/`. Built-in Antigravity commands such as `/goal` and `/schedule` always stay unprefixed. Throughout this guide, prose refers to skills concisely as `/<skill>`, while copy-ready prompt blocks include `/agy-pstack-next:<skill>` so they paste cleanly into `agy`.
+
+## Configure swarm models, budgets, and global guard hooks
 
 Run the setup skill inside Antigravity:
 
 ```text
-/setup-pstack
+/agy-pstack-next:setup-pstack
 ```
 
-[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) queries `swarm{action: "models"}` to discover every model currently available in your Antigravity environment across Claude, Gemini, and GPT-OSS families, alongside `inherit` (which runs workers on your active session model). It asks for your budget preset and writes `~/.gemini/config/rules/pstack-models.md`.
+[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) queries `swarm{action: "models", all: true}` to discover every model currently available in your Antigravity environment across Claude, Gemini, and GPT-OSS families, alongside `inherit` (which runs workers on your active session model). It asks for your budget preset and performs two machine-local setup steps.
 
-Every swarm workflow reads that rule to pin models by role prefix.
+1. **Writes `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter.** Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` so every coordinator turn receives your model and autonomy settings automatically.
+2. **Registers `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`.** Root plugin [`hooks.json`](../../hooks.json) covers top-level sessions, whereas `agy` native `Swarm Worker` subagents do not inherit user-plugin hooks. `/setup-pstack` reads any existing `~/.gemini/config/hooks.json` object first (preserving entries such as `herdr`) and registers `pstack-swarm-guard` pointing to your absolute `hooks/guard.mjs` path. Both hook paths share `<appDataDir>/plugin_data/agy-pstack-next` state (`injected-capsules.json` and `member-map.json`), so swarm workers enforce capsules and tool confinement without duplicate injections in the root coordinator.
+
+Every swarm workflow reads `pstack-models.md` to pin models by role prefix.
 
 - **`coordinator`.** Plans slices, manages the board, and synthesizes results.
 - **`impl-*`, `cand-*`, `lead-*`.** Author code, prototypes, and sub-area slices in `workspace: "share"` worktrees.
@@ -42,7 +47,7 @@ Say yes on any project you work in regularly. `/verify-gen` interviews the codeb
 
 When your repository has concurrency, retries, leases, state machines, or parsers where unit tests miss interleavings, run [`/verify-gen --formal`](../../skills/verify-gen/SKILL.md) as well. It models or property-tests your highest-risk invariant and proves the check catches a real injected break. [Verify and ship](./06-verify-and-ship.md) covers both modes in detail.
 
-Start a fresh chat after writing `pstack-models.md` so new sessions pick up the updated rule.
+Start a fresh chat after updating `pstack-models.md` and `~/.gemini/config/hooks.json` so new sessions and newly spawned workers pick up both files.
 
 ## Keep token spend predictable
 
@@ -58,7 +63,7 @@ Parallel swarms trade tokens for wall-clock speed and independent verification. 
 Give `/pstack` a small, concrete change with an explicit invariant:
 
 ```text
-/pstack add a --json flag to this CLI command. plain-text output must stay byte-identical. verify both modes.
+/agy-pstack-next:pstack add a --json flag to this CLI command. plain-text output must stay byte-identical. verify both modes.
 ```
 
 `/pstack` matches the [`build`](../../skills/pstack/topologies/build.md) topology, implements the change in an isolated `impl-*` worktree, runs `ro-verify` against both CLI modes, merges the verified commit locally, and tears down its workers cleanly.

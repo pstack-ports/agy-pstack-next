@@ -37,7 +37,7 @@ Gather a compact seed anchor in 1 or 2 fast read-only commands before fanning ou
 
 ### 2. Spawn the `ro-*` mesh (`workspace: "inherit"`)
 
-Spawn parallel read-only workers via `swarm{action: "add", workspace: "inherit"}` using the `ro-*` model from `~/.gemini/config/rules/pstack-models.md` (default omit `model` for `inherit`). `hooks/guard.mjs` injects `roles/research.md` and enforces read-only file, command, and MCP access at runtime.
+Spawn parallel read-only workers via `swarm{action: "add", workspace: "inherit"}` using the `ro-*` model from `~/.gemini/config/rules/pstack-models.md` (default omit `model` for `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved paths such as `<plugin-root>/skills/understand/references/source-playbook.md`, `<plugin-root>/skills/understand/references/epistemics.md`, and relevant `<plugin-root>/skills/understand/references/sources/*.md` files in `ro-*` briefs for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is active, `hooks/guard.mjs` injects `roles/research.md` and enforces read-only file, command, and MCP access automatically. When global `hooks.json` is not active, also pass `<plugin-root>/roles/research.md` in each `ro-*` brief.
 
 Size the roster to the mode and available MCPs:
 
@@ -54,7 +54,7 @@ Instruct every `ro-*` worker to post high-signal clues immediately to the board 
 
 - When `ro-git` uncovers PR `#482` referencing ticket `ENG-910` and incident channel `#sev-checkout`, it posts a one-line clue and rings `@ro-tracker @ro-docs`.
 - Peers wake on the `@mention`, read the `#seq` clue, pivot their queries to those exact IDs and timestamps, and cite `#seq` in their findings rather than duplicating searches.
-- When target code contains defensive guards (retries, timeouts, null checks, clamps, feature flags, rate limits), every `ro-*` worker also applies [`references/sources/incident-postmortem.md`](references/sources/incident-postmortem.md).
+- When target code contains defensive guards (retries, timeouts, null checks, clamps, feature flags, rate limits), pass `<plugin-root>/skills/understand/references/sources/incident-postmortem.md` ([`references/sources/incident-postmortem.md`](references/sources/incident-postmortem.md)) in `ro-*` briefs so every scout checks incident history.
 
 ---
 
@@ -105,5 +105,5 @@ When an `/understand` investigation leads into a bug fix, refactor, or feature i
    ```json
    {"action": "add", "name": "impl-fix", "workspace": "share", "fork": "ro-code", "brief": "Implement the fix in your share worktree, add a behavioral regression test, verify it passes, commit locally, and report your commit SHA and pwd."}
    ```
-3. Because `impl-fix` uses the `impl-*` prefix, `hooks/guard.mjs` upgrades its injected role capsule to `roles/poteto-agent.md` on `PreInvocation` and grants write confinement inside its `share` worktree while preserving every file read, blame trace, and `#seq` clue `ro-code` already gathered.
-4. Once `impl-fix` finishes (or if no implementation follows), merge any verified work before calling `swarm{action: "kill"}` on `ro-code` and `impl-fix`.
+3. Because `impl-fix` uses the `impl-*` prefix, `hooks/guard.mjs` upgrades its injected role capsule to `roles/poteto-agent.md` on `PreInvocation` when global `hooks.json` is active (pass `<plugin-root>/roles/poteto-agent.md` and any needed `<plugin-root>/skills/<name>/SKILL.md` paths in `impl-fix`'s brief when global `hooks.json` is not active) and grants write confinement inside its `share` worktree while preserving every file read, blame trace, and `#seq` clue `ro-code` already gathered.
+4. Once `impl-fix` finishes (or if no implementation follows), merge any verified work before calling `swarm{action: "kill"}` on `ro-code` and `impl-fix` (leaving `monitor` and `narrator` alive unless asked).

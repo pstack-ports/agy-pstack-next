@@ -24,7 +24,7 @@ Skip grounding only for greenfield code with zero surrounding callers. Otherwise
 Pick the fidelity mode from the user's request or task risk:
 
 - **`sketch` mode (fast design exploration).** Default when settling module boundaries, public APIs, or data models before writing full bodies. Each `cand-*` worker (`workspace: "share"`) produces caller usage snippets first, concrete domain types and signatures (`not implemented` bodies allowed), a state transition table, a failure matrix (retry, crash halfway, concurrent actor, invalid input), a diff sketch showing touched files, and a draft rationale per [`references/rationale-template.md`](references/rationale-template.md).
-- **`full` mode (executable prototypes).** Default when comparing algorithms, UI ergonomics, refactoring strategies, or performance levers where paper sketches hide real friction. Each `cand-*` worker (`workspace: "share"`) builds a working implementation in its isolated worktree, runs real behavioral tests (plus benchmarks or [`/control-ui`](../control-ui/SKILL.md) / [`/control-cli`](../control-cli/SKILL.md) captures when relevant), commits cleanly on its local branch, and posts its commit SHA, worktree `pwd`, measured output, and rationale.
+- **`full` mode (executable prototypes).** Default when comparing algorithms, UI ergonomics, refactoring strategies, or performance levers where paper sketches hide real friction. Each `cand-*` worker (`workspace: "share"`) builds a working implementation in its isolated worktree, runs real behavioral tests (plus benchmarks or [`control-ui`](../control-ui/SKILL.md) and [`control-cli`](../control-cli/SKILL.md) captures when relevant), commits cleanly on its local branch, and posts its commit SHA, worktree `pwd`, measured output, and rationale.
 
 ### 3. Define a concrete grading rubric
 
@@ -40,7 +40,7 @@ Because every swarm brief on the board is public to all members, never attempt f
 - **`cand-b`** explores Axis B (for example, a deep stateful module owning lifecycle, caching, and idempotent transitions behind one narrow handle).
 - **`cand-c`** explores Axis C (for example, a subtractive extension of an existing boundary with zero new public modules).
 
-Spawn all `cand-*` workers with `workspace: "share"`. Assign models from the `cand-*` line in `~/.gemini/config/rules/pstack-models.md` (defaulting to multi-family diversity when available, or `inherit`).
+Spawn all `cand-*` workers with `workspace: "share"`. Assign models from the `cand-*` line in `~/.gemini/config/rules/pstack-models.md` (defaulting to multi-family diversity when available, or `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved paths in worker briefs (such as `<plugin-root>/skills/crucible/references/rationale-template.md`, `<plugin-root>/skills/statechart/SKILL.md`, `<plugin-root>/skills/control-ui/SKILL.md`, and `<plugin-root>/skills/control-cli/SKILL.md`) for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is not active, also pass `<plugin-root>/roles/poteto-agent.md` in `cand-*` and `impl-synth` briefs and `<plugin-root>/roles/research.md` in `ro-judge` and `ro-steward` briefs.
 
 ### Candidate design discipline
 
@@ -67,7 +67,7 @@ Wake `@cand-a @cand-b @cand-c` for one bounded critique turn when trade-offs are
 
 Spawn `ro-judge` (`workspace: "inherit"`, read-only) on a model from `ro-judge pool` in `~/.gemini/config/rules/pstack-models.md` whose model family differs from both the coordinator and winning contenders (`inherit` never judges).
 
-`ro-judge` inspects every candidate's worktree files and git diff directly, screens each candidate against every item in [`references/design-red-flags.md`](references/design-red-flags.md), grades the rubric criterion by criterion, and posts a `#seq` verdict naming:
+`ro-judge` inspects every candidate's worktree files and git diff directly, screens each candidate against every item in [`references/design-red-flags.md`](references/design-red-flags.md) (passed in `ro-judge`'s brief as `<plugin-root>/skills/crucible/references/design-red-flags.md`), grades the rubric criterion by criterion, and posts a `#seq` verdict naming:
 
 - Recommended base candidate (`cand-winner`) and why its core boundary ages best.
 - Specific donor artifacts (edge-case tests, benchmarks, type refinements, helper functions) worth porting from losing `cand-*` branches.
@@ -93,7 +93,7 @@ Check `crucible checkpoint` in `~/.gemini/config/rules/pstack-models.md` and whe
 
 1. Spawn `impl-synth` branched warmly from the winning candidate:
    ```json
-   {"action": "add", "name": "impl-synth", "workspace": "share", "fork": "cand-a", "brief": "Fetch cand-a HEAD, cherry-pick specified donor tests/helpers from cand-b and cand-c worktrees, unify under cand-a's mental model, write rationale per references/rationale-template.md, run full verification, commit, and report SHA and pwd."}
+   {"action": "add", "name": "impl-synth", "workspace": "share", "fork": "cand-a", "brief": "Fetch cand-a HEAD, cherry-pick specified donor tests/helpers from cand-b and cand-c worktrees, unify under cand-a's mental model, write rationale per <plugin-root>/skills/crucible/references/rationale-template.md, run full verification, commit, and report SHA and pwd."}
    ```
 2. Inside `impl-synth`, fetch the winning branch (`git fetch <winner_cwd> <winner_sha> && git checkout -B crucible-synth FETCH_HEAD`) and pull targeted tests or helpers from donor worktrees (`git fetch <donor_cwd> <donor_sha>` with `git cherry-pick --no-commit` or path checkout). Rewrite grafted pieces so names, types, and invariants fit one unified mental model rather than mechanical Franken-code.
 3. If Phase 2 ran in `sketch` mode and no checkpoint paused execution, `impl-synth` (or downstream `impl-*` slices under [`/pstack`](../pstack/SKILL.md) `build`) replaces `not implemented` bodies with production code and behavioral tests.
@@ -108,4 +108,4 @@ Check `crucible checkpoint` in `~/.gemini/config/rules/pstack-models.md` and whe
    ```bash
    git fetch <impl_synth_cwd> <impl_synth_sha> && git merge --no-edit FETCH_HEAD
    ```
-3. Only after `git status` and `git log -1` confirm the synthesized commit landed in the coordinator workspace, call `swarm{action: "kill"}` on `cand-a`, `cand-b`, `cand-c`, `ro-judge`, `ro-steward`, and `impl-synth`. Do not `git push` unless the user explicitly requested it.
+3. Only after `git status` and `git log -1` confirm the synthesized commit landed in the coordinator workspace, call `swarm{action: "kill"}` on `cand-a`, `cand-b`, `cand-c`, `ro-judge`, `ro-steward`, and `impl-synth` while leaving built-in `monitor` and `narrator` alive unless the user asks. Do not `git push` unless the user explicitly requested it.
