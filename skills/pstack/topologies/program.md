@@ -14,7 +14,7 @@ Declare the operating mode before spawning workers so every member holds the sam
 ## Multi-area `lead-<area>` delegation and optional channels
 
 1. **Size the hierarchy.** Stay flat (coordinator plus leaf workers) when `8` or fewer workers are active. When a program exceeds `8` concurrent workers or spans multiple coupled subsystems, spawn one `lead-<area>` worker (`workspace: "share"`) per subsystem. Check whether the live `swarm` tool declaration includes `"channel"` in `action`. When `"channel"` is available, create dedicated channels with `swarm{action: "channel"}` (such as `#auth`, `#storage`, `#ui`) and assign each `lead-<area>` and its leaf workers to that channel. When `"channel"` is absent, coordinate on the main board through `lead-<area>` coordinators with strict `@mention` discipline so leaf workers mention only `@lead-<area>` and never wake unrelated slices or `@all`.
-2. **Hold the three-tier ceiling.** Never nest deeper than coordinator, `lead-<area>`, and leaf workers (`impl-*`, `ro-*`, `adv-*`, `sicko-*`). Each `lead-<area>` manages roughly `4` to `8` leaf workers in its area (inside `#<area>` when channels exist, or on the main board via targeted `@lead-<area>` mentions when channels are absent), verifies slice diffs, merges passing leaf commits into its area branch, and posts a single consolidated `#seq` rollup back to `@coordinator`. Pass explicit resolved `<plugin-root>/skills/<name>/SKILL.md` paths (and `<plugin-root>/roles/<capsule>.md` paths when global `hooks.json` is not active) in `lead-<area>` and leaf briefs rather than naming plugin skills.
+2. **Hold the three-tier ceiling.** Never nest deeper than coordinator, `lead-<area>`, and leaf workers (`impl-*`, `ro-*`, `adv-*`, `sicko-*`). Each `lead-<area>` manages roughly `4` to `8` leaf workers in its area (inside `#<area>` when channels exist, or on the main board via targeted `@lead-<area>` mentions when channels are absent), verifies slice diffs, merges passing leaf commits into its area branch, and opens its consolidated `#seq` completion rollup with `@coordinator [done]`. Pass explicit resolved `<plugin-root>/skills/<name>/SKILL.md` paths (and `<plugin-root>/roles/<capsule>.md` paths when global `hooks.json` is not active) in `lead-<area>` and leaf briefs rather than naming plugin skills.
 3. **Run one canary unit first.** Before fanning out across dozens of similar modules or PRs, take one representative slice all the way through `impl-1`, `ro-verify`, and branch integration. Fix any flaw in the brief, harness, or file fence while the mistake costs one worker instead of twenty.
 4. **Enforce disjoint write fences.** Assign non-overlapping directories or files to every `impl-*` and `lead-*` brief per `Separate Before Serializing Shared State` in [../references/principles.md](../references/principles.md). Coordinator and `lead-*` own decomposition, boundary checks, and merge integration rather than hand-editing application files.
 
@@ -33,7 +33,7 @@ Treat the swarm board as the authoritative operational ledger. At the end of eve
 
 - Unit identifier and goal slice.
 - Exact commit SHA and `share` worktree path (`pwd`).
-- Verification commands run, `ro-verify` `#seq` citation, and verdict (`PASS`, `ISSUES`, or `BLOCKED`).
+- Verification commands run, `ro-verify` `#seq` citation (`@<target> [done]`), and verdict (`PASS`, `PASS+NOTES`, `ISSUES`, or `BLOCKED`).
 - Next pending unit or open dependency.
 
 ### Heartbeat supervision on long runs

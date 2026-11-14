@@ -26,7 +26,7 @@ Break a change or design with executable reproductions and prove what happens ac
 
 ### 1. Adversarial exploit hunters (`adv-*`, `workspace: "share"`)
 
-Read the `adv-*` line in `~/.gemini/config/rules/pstack-models.md` (defaulting to two distinct model families when available, or `inherit`). Spawn parallel `adv-*` workers (`adv-logic`, `adv-boundary`, and optionally `adv-concurrency`) in `workspace: "share"`:
+Apply the `adv-*` model setting from `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (read the file from disk only when absent from `<user_rules>`, defaulting to two distinct model families when available or `inherit`). Spawn parallel `adv-*` workers (`adv-logic`, `adv-boundary`, and optionally `adv-concurrency`) in `workspace: "share"`:
 
 - `hooks/guard.mjs` confines `adv-*` file writes strictly inside each worker's isolated `share` worktree and temp roots and blocks `git push` unconditionally. When global `~/.gemini/config/hooks.json` is not active, pass `<plugin-root>/roles/poteto-agent.md` in every `adv-*` brief and `<plugin-root>/roles/research.md` in `ro-blast` and `ro-verify` briefs.
 - Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved `SKILL.md` paths (such as `<plugin-root>/skills/control-ui/SKILL.md`, `<plugin-root>/skills/control-cli/SKILL.md`, and `<plugin-root>/skills/statechart/SKILL.md`) in worker briefs for `read_file` rather than telling workers to invoke plugin skills by name.

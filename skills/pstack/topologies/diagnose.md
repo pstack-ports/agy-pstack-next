@@ -59,7 +59,7 @@ Once one `ro-*` investigator (`ro-winner`) isolates and proves the root mechanis
 
 ## Phase 4. Independent `ro-verify` regression proof
 
-1. Once `impl-fix` commits cleanly and posts its commit SHA, worktree path, and failing-then-passing output (`#seq`), dispatch an independent `ro-verify` worker (`workspace: "inherit"`).
-2. `ro-verify` inspects the diff in `<impl_fix_cwd>`, verifies that the test fails without the fix (or checks `HEAD~1` vs `HEAD`), reruns the original surface reproduction plus surrounding test suites, and posts `PASS` or `ISSUES` (`#seq`).
-3. After `ro-verify` posts `PASS`, fetch and merge `impl-fix`'s commits into the coordinator worktree (`git fetch <impl_fix_cwd> <sha> && git merge --no-edit FETCH_HEAD`) **before** calling `swarm{action: "kill", name: "impl-fix"}` and retiring `ro-*` task workers (leaving `monitor` and `narrator` alive unless asked).
+1. Once `impl-fix` commits cleanly and opens its handoff post (`#seq`) with `@<target> [done]` plus its commit SHA, worktree path, and failing-then-passing output, dispatch an independent `ro-verify` worker (`workspace: "inherit"`).
+2. `ro-verify` inspects the diff in `<impl_fix_cwd>`, verifies that the test fails without the fix (or checks `HEAD~1` vs `HEAD`), reruns the original surface reproduction plus surrounding test suites, and opens its final report (`#seq`) with `@<target> [done]` followed immediately by `PASS` (or `PASS+NOTES` when non-blocking notes apply), `ISSUES`, or `BLOCKED` (an inconclusive check reports `BLOCKED` and never counts as `PASS`).
+3. After `ro-verify` posts `PASS` (or `PASS+NOTES`), fetch and merge `impl-fix`'s commits into the coordinator worktree (`git fetch <impl_fix_cwd> <sha> && git merge --no-edit FETCH_HEAD`) **before** calling `swarm{action: "kill", name: "impl-fix"}` and retiring `ro-*` task workers (leaving `monitor` and `narrator` alive unless asked).
 4. Include the broken behavior, proven root cause, minimal fix, and verbatim failing-before and passing-after reproduction output in your reply (or chain into [ship.md](ship.md) when a PR was requested).

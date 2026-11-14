@@ -63,7 +63,7 @@ When you return in the morning, run [`/ketchup`](../../skills/ketchup/SKILL.md) 
 
 When a migration or release spans more than eight workers or multiple independent subsystems, `program` scales hierarchically on the native swarm runtime.
 
-- **Topic channels (when supported by `swarm`).** When the live `swarm` tool declaration includes `"channel"` in `action`, `swarm{action: "channel"}` partitions high-traffic subsystems (`#storage`, `#api`, `#ui`) so workers wake only on messages relevant to their area. When `channel` is absent from the tool schema (such as in `agy` CLI `1.5.8`), `lead-<area>` sub-coordinators coordinate on the shared board using strict `@mention` doorbell discipline so unrelated workers stay asleep.
+- **Topic channels (when supported by `swarm`).** When the live `swarm` tool declaration includes `"channel"` in `action`, `swarm{action: "channel"}` partitions high-traffic subsystems (`#storage`, `#api`, `#ui`) so workers wake only on messages relevant to their area. When `channel` is absent from the tool schema (such as in `agy` CLI `1.5.8` and `1.5.9`), `lead-<area>` sub-coordinators coordinate on the shared board using strict `@mention` doorbell discipline so unrelated workers stay asleep.
 - **Area leads (`lead-<area>`).** Each subsystem lead owns a stacked branch in `workspace: "share"`, coordinates its slice authors and `ro-verify` checks, and hands verified phase heads up to the root coordinator.
 - **Stacked PR queues (`program` + `ship`).** Ask `/pstack` to build a verified stack without merging (`"prepare stacked PRs and get CI green, i will merge in the morning"`) or, when explicitly authorized, land contiguous verified PRs bottom-up.
 

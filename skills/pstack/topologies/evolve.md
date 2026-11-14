@@ -28,15 +28,15 @@ Evaluate changes like controlled scientific experiments rather than anecdotal sp
 
 Fan out trial execution across parallel `impl-eval-*` workers (`workspace: "share"`, passing `<plugin-root>/roles/poteto-agent.md` in each brief when global `hooks.json` is not active):
 
-1. **Provision sanitized trial clones and copy candidate skills directly.** Each `impl-eval-<k>` creates a clean, standalone git repository clone or fixture under `/tmp/<project-slug>-<id>` containing the target fixture code. Because `agy` has no `--plugin-dir` flag and skips external `../` symlinks during workspace discovery, copy candidate or baseline skill files directly into `/tmp/<project-slug>-<id>/.agents/skills/<name>/SKILL.md` (along with any companion `references/` or `scripts/` files) and never create external `../` symlinks. Account for any globally enabled plugin under `~/.gemini/config/plugins/` identically across both baseline and candidate arms.
-2. **Execute headless runs with `--mode auto` and match `--sandbox` to write needs.** Non-interactive `agy -p` runs have no interactive approval prompt, so always pass `--mode auto`. Because `--sandbox` mounts `.git` read-only, choose the command by whether the trial commits code:
+1. **Stage each trial arm's plugin pack and sanitized repo clone.** Each `impl-eval-<k>` creates a clean, standalone git repository clone or fixture under `/tmp/<project-slug>-<id>` containing the target fixture code, plus a neutral staged plugin tree under `/tmp/<pack-id>` (using neutral names such as `/tmp/pack-oak` and `/tmp/pack-pine` with zero banned blinding words) containing that arm's `roles/`, `hooks/`, and `skills/` directories and an empty state directory `/tmp/<state-id>` (such as `/tmp/state-oak` and `/tmp/state-pine`). Because `agy` has no `--plugin-dir` flag and skips external `../` symlinks during workspace discovery, also copy the arm's target skill files directly into `/tmp/<project-slug>-<id>/.agents/skills/<name>/SKILL.md` (along with any companion `references/`, `topologies/`, or `scripts/` files) and never create external `../` symlinks.
+2. **Execute headless runs with `PSTACK_PLUGIN_ROOT`, `PSTACK_CACHE_DIR`, and `--mode auto`.** `PSTACK_PLUGIN_ROOT=/tmp/<pack-id>` delegates global and plugin hook invocations across the trial coordinator and every spawned native swarm worker or helper to the staged `/tmp/<pack-id>/hooks/guard.mjs` and `/tmp/<pack-id>/roles/*.md` (and anchors `<plugin-root>/skills/` brief paths to the staged pack), while `PSTACK_CACHE_DIR=/tmp/<state-id>` isolates capsule deduplication state (`injected-capsules.json`, `member-map.json`, and `non-worker-roots.json`) per arm without restricting full swarm execution. Non-interactive `agy -p` runs have no interactive approval prompt, so always pass `--mode auto`. Because `--sandbox` mounts `.git` read-only, choose the command by whether the trial commits code:
    - **Commit-producing trials** (bug fixes, features, refactors that stage or commit git changes) omit `--sandbox` inside the isolated `/tmp/<project-slug>-<id>` clone:
      ```sh
-     agy -p "<organic_user_prompt>" --mode auto
+     PSTACK_PLUGIN_ROOT=/tmp/<pack-id> PSTACK_CACHE_DIR=/tmp/<state-id> agy -p "<organic_user_prompt>" --mode auto
      ```
    - **Read-only trials** (investigations, audits, plans, or reviews that make zero git commits) enable both flags:
      ```sh
-     agy -p "<organic_user_prompt>" --sandbox --mode auto
+     PSTACK_PLUGIN_ROOT=/tmp/<pack-id> PSTACK_CACHE_DIR=/tmp/<state-id> agy -p "<organic_user_prompt>" --sandbox --mode auto
      ```
    When measuring cross-model robustness, run paired trials across the model families configured via `/setup-pstack` ([../../setup-pstack/SKILL.md](../../setup-pstack/SKILL.md)).
 3. **Collect objective trial artifacts.** Each `impl-eval-<k>` captures:
@@ -44,7 +44,7 @@ Fan out trial execution across parallel `impl-eval-*` workers (`workspace: "shar
    - `git log -p` and `git status --short` inside `/tmp/<project-slug>-<id>`.
    - Post-trial behavioral test suite results run against the trial repo.
    - The trial conversation's `transcript.jsonl` path so tool-call sequences and `read_file` chains can be audited directly.
-4. **Post neutral receipts (`#seq`).** Each `impl-eval-<k>` posts its neutral run ID, artifact paths, and test exit codes to the board without self-grading.
+4. **Post neutral receipts (`#seq`).** Each `impl-eval-<k>` opens its completion post with `@coordinator [done]` (or `@ro-judge [done]`) followed by its neutral run ID, artifact paths, and test exit codes without self-grading.
 
 ## Phase 3. Blind grading by `ro-judge` and transcript chain audit
 

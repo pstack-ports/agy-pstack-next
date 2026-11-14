@@ -1,14 +1,72 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import fc from "fast-check";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const requireFromHere = createRequire(import.meta.url);
 const skip = !process.env.TLA2TOOLS && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+
+type Arbitrary<T> = {
+  map<U>(mapper: (value: T) => U): Arbitrary<U>;
+};
+
+type AsyncProperty = unknown;
+
+type FastCheck = {
+  integer(constraints: { min: number; max: number }): Arbitrary<number>;
+  nat(max: number): Arbitrary<number>;
+  boolean(): Arbitrary<boolean>;
+  constantFrom<const T extends readonly [unknown, ...unknown[]]>(...values: T): Arbitrary<T[number]>;
+  array<T>(
+    arb: Arbitrary<T>,
+    constraints?: { minLength?: number; maxLength?: number },
+  ): Arbitrary<T[]>;
+  uniqueArray<T>(
+    arb: Arbitrary<T>,
+    constraints?: { minLength?: number; maxLength?: number },
+  ): Arbitrary<T[]>;
+  shuffledSubarray<T>(
+    originalArray: readonly T[],
+    constraints?: { minLength?: number; maxLength?: number },
+  ): Arbitrary<T[]>;
+  tuple<T1, T2>(a: Arbitrary<T1>, b: Arbitrary<T2>): Arbitrary<[T1, T2]>;
+  record<T extends Record<string, Arbitrary<unknown>>>(
+    recordModel: T,
+  ): Arbitrary<{ [K in keyof T]: T[K] extends Arbitrary<infer V> ? V : never }>;
+  oneof<T extends readonly Arbitrary<unknown>[]>(
+    ...arbs: T
+  ): Arbitrary<T[number] extends Arbitrary<infer V> ? V : never>;
+  option<T>(arb: Arbitrary<T>, constraints?: { freq?: number }): Arbitrary<T | null>;
+  asyncProperty<T>(arb: Arbitrary<T>, predicate: (value: T) => Promise<void>): AsyncProperty;
+  assert(
+    property: AsyncProperty,
+    params?: { numRuns?: number; seed?: number; includeErrorInReport?: boolean },
+  ): Promise<void>;
+};
+
+async function loadFastCheck(): Promise<FastCheck | null> {
+  const specifier: string = "fast-check";
+  try {
+    const mod = (await import(specifier)) as { default?: FastCheck } & Partial<FastCheck>;
+    return (mod.default ?? mod) as FastCheck;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+  }
+  try {
+    const resolved = requireFromHere.resolve("fast-check");
+    const mod = (await import(pathToFileURL(resolved).href)) as {
+      default?: FastCheck;
+    } & Partial<FastCheck>;
+    return (mod.default ?? mod) as FastCheck;
+  } catch {
+    return null;
+  }
+}
 
 const PROTOTYPE_KEYS = ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"];
 const NAMES = [
@@ -40,84 +98,109 @@ const STEPS = ["you press play", ...PROTOTYPE_KEYS, "the connect fails [while of
 const GROUPS = ["paying", "a b", ...PROTOTYPE_KEYS];
 const COLORS = ["blue", "orange", "purple", "yellow"];
 
-const INT = fc.integer({ min: -3, max: 3 }).map(String);
-const STRING = fc.constantFrom(
-  String.raw`""`,
-  String.raw`"a b"`,
-  String.raw`"say \"hi\""`,
-  String.raw`"back\\slash"`,
-  String.raw`"tab\tstop"`,
-  String.raw`"two\nlines"`,
-  String.raw`"__proto__"`,
-);
-const values = (value: fc.Arbitrary<string>, maxLength = 4) =>
-  fc.uniqueArray(value, { minLength: 1, maxLength });
 const tuple = (items: string[]) => `<<${items.join(", ")}>>`;
 
 type Domain = string[] | { modelValues: number };
-const DOMAIN: fc.Arbitrary<Domain> = fc.oneof(
-  values(INT),
-  values(STRING),
-  values(fc.constantFrom("TRUE", "FALSE"), 2),
-  fc.integer({ min: 1, max: 4 }).map((modelValues) => ({ modelValues })),
-  values(fc.tuple(INT, STRING).map(([i, s]) => `[constructor |-> ${i}, __proto__ |-> ${s}]`)),
-  values(
-    fc
-      .uniqueArray(fc.tuple(INT, STRING), { maxLength: 2 })
-      .map((ps) => `{${ps.map(tuple).join(", ")}}`),
-  ),
-  values(fc.array(INT, { maxLength: 2 }).map(tuple)),
-);
-
-const ATOM = fc.record({ v: fc.nat(2), i: fc.nat(3), not: fc.boolean() });
 type Atom = { v: number; i: number; not: boolean };
+type ModelView = {
+  form: "string" | "parents" | "regions";
+  labels: string[];
+  regions: string[];
+  steps: (string | null)[] | null;
+  title: "A b c" | "constructor" | null;
+  groups: string[] | null;
+};
+type Model = {
+  module: "Model" | "prototype";
+  names: string[];
+  vars: { domain: Domain; init: number[] }[];
+  actions: { guard: Atom[]; set: { v: number; to: number[] }[] }[];
+  invariants: Atom[][];
+  deadlock: boolean;
+  initNext: boolean;
+  constraint: Atom | null;
+  actionConstraint: { v: number; from: number; to: number } | null;
+  property: {
+    form: number;
+    atoms: [Atom, Atom];
+    fairness: { strong: boolean; on: number | null } | null;
+  } | null;
+  view: ModelView | null;
+};
 
-const MODEL = fc.record({
-  module: fc.constantFrom("Model", "prototype"),
-  names: fc.shuffledSubarray(NAMES, { minLength: NAMES.length }),
-  vars: fc.array(
-    fc.record({ domain: DOMAIN, init: fc.array(fc.nat(3), { minLength: 1, maxLength: 2 }) }),
-    { minLength: 1, maxLength: 3 },
-  ),
-  actions: fc.array(
-    fc.record({
-      guard: fc.array(ATOM, { maxLength: 2 }),
-      set: fc.array(
-        fc.record({ v: fc.nat(2), to: fc.array(fc.nat(3), { minLength: 1, maxLength: 2 }) }),
-        { minLength: 1, maxLength: 2 },
-      ),
-    }),
-    { minLength: 1, maxLength: 6 },
-  ),
-  invariants: fc.array(fc.array(ATOM, { minLength: 1, maxLength: 2 }), { maxLength: 2 }),
-  deadlock: fc.boolean(),
-  initNext: fc.boolean(),
-  constraint: fc.option(ATOM, { freq: 2 }),
-  actionConstraint: fc.option(fc.record({ v: fc.nat(2), from: fc.nat(3), to: fc.nat(3) }), {
-    freq: 2,
-  }),
-  property: fc.option(
-    fc.record({
-      form: fc.nat(3),
-      atoms: fc.tuple(ATOM, ATOM),
-      fairness: fc.option(fc.record({ strong: fc.boolean(), on: fc.option(fc.nat(5)) })),
-    }),
-  ),
-  view: fc.option(
-    fc.record({
-      form: fc.constantFrom("string", "parents", "regions"),
-      labels: fc.uniqueArray(fc.constantFrom(...LABELS), { minLength: 1, maxLength: 4 }),
-      regions: fc.uniqueArray(fc.constantFrom("Session", ...LABELS), {
-        minLength: 1,
-        maxLength: 3,
+function makeModelArbitrary(fc: FastCheck): Arbitrary<Model> {
+  const int = fc.integer({ min: -3, max: 3 }).map(String);
+  const str = fc.constantFrom(
+    String.raw`""`,
+    String.raw`"a b"`,
+    String.raw`"say \"hi\""`,
+    String.raw`"back\\slash"`,
+    String.raw`"tab\tstop"`,
+    String.raw`"two\nlines"`,
+    String.raw`"__proto__"`,
+  );
+  const values = (value: Arbitrary<string>, maxLength = 4) =>
+    fc.uniqueArray(value, { minLength: 1, maxLength });
+  const domain: Arbitrary<Domain> = fc.oneof(
+    values(int),
+    values(str),
+    values(fc.constantFrom("TRUE", "FALSE"), 2),
+    fc.integer({ min: 1, max: 4 }).map((modelValues) => ({ modelValues })),
+    values(fc.tuple(int, str).map(([i, s]) => `[constructor |-> ${i}, __proto__ |-> ${s}]`)),
+    values(
+      fc
+        .uniqueArray(fc.tuple(int, str), { maxLength: 2 })
+        .map((ps) => `{${ps.map(tuple).join(", ")}}`),
+    ),
+    values(fc.array(int, { maxLength: 2 }).map(tuple)),
+  );
+  const atom: Arbitrary<Atom> = fc.record({ v: fc.nat(2), i: fc.nat(3), not: fc.boolean() });
+  return fc.record({
+    module: fc.constantFrom("Model", "prototype"),
+    names: fc.shuffledSubarray(NAMES, { minLength: NAMES.length }),
+    vars: fc.array(
+      fc.record({ domain, init: fc.array(fc.nat(3), { minLength: 1, maxLength: 2 }) }),
+      { minLength: 1, maxLength: 3 },
+    ),
+    actions: fc.array(
+      fc.record({
+        guard: fc.array(atom, { maxLength: 2 }),
+        set: fc.array(
+          fc.record({ v: fc.nat(2), to: fc.array(fc.nat(3), { minLength: 1, maxLength: 2 }) }),
+          { minLength: 1, maxLength: 2 },
+        ),
       }),
-      steps: fc.option(fc.array(fc.option(fc.constantFrom(...STEPS)), { maxLength: 6 })),
-      title: fc.option(fc.constantFrom("A b c", "constructor")),
-      groups: fc.option(fc.uniqueArray(fc.constantFrom(...GROUPS), { minLength: 1, maxLength: 3 })),
+      { minLength: 1, maxLength: 6 },
+    ),
+    invariants: fc.array(fc.array(atom, { minLength: 1, maxLength: 2 }), { maxLength: 2 }),
+    deadlock: fc.boolean(),
+    initNext: fc.boolean(),
+    constraint: fc.option(atom, { freq: 2 }),
+    actionConstraint: fc.option(fc.record({ v: fc.nat(2), from: fc.nat(3), to: fc.nat(3) }), {
+      freq: 2,
     }),
-  ),
-});
-type Model = typeof MODEL extends fc.Arbitrary<infer M> ? M : never;
+    property: fc.option(
+      fc.record({
+        form: fc.nat(3),
+        atoms: fc.tuple(atom, atom),
+        fairness: fc.option(fc.record({ strong: fc.boolean(), on: fc.option(fc.nat(5)) })),
+      }),
+    ),
+    view: fc.option(
+      fc.record({
+        form: fc.constantFrom("string", "parents", "regions"),
+        labels: fc.uniqueArray(fc.constantFrom(...LABELS), { minLength: 1, maxLength: 4 }),
+        regions: fc.uniqueArray(fc.constantFrom("Session", ...LABELS), {
+          minLength: 1,
+          maxLength: 3,
+        }),
+        steps: fc.option(fc.array(fc.option(fc.constantFrom(...STEPS)), { maxLength: 6 })),
+        title: fc.option(fc.constantFrom("A b c", "constructor")),
+        groups: fc.option(fc.uniqueArray(fc.constantFrom(...GROUPS), { minLength: 1, maxLength: 3 })),
+      }),
+    ),
+  });
+}
 type Case = {
   module: string;
   tla: string;
@@ -398,9 +481,14 @@ async function answer(c: Case) {
 test(
   "the compiler answers each rule as plain TLC does for generated models",
   { skip },
-  async () => {
+  async (t) => {
+    const fc = await loadFastCheck();
+    if (!fc) {
+      t.skip("install fast-check in skills/statechart/scripts to run generated-model differential checks");
+      return;
+    }
     await fc.assert(
-      fc.asyncProperty(MODEL.map(caseOf), async (c) => {
+      fc.asyncProperty(makeModelArbitrary(fc).map(caseOf), async (c) => {
         await answer(c);
       }),
       {

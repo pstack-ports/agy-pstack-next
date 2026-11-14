@@ -64,9 +64,14 @@ matching role capsule and enforces its runtime tool boundaries.
 - **Guard your context window.** Keep raw command dumps, long file reads, and
   trace logs inside worker conversations. Cite earlier board findings by `#seq`
   number rather than copying text across messages.
-- **Pass warm context with `fork`.** When a `ro-*` probe locates the fault or a
-  `cand-*` prototype wins a bakeoff, spawn the follow-up `impl-*` worker with
-  `fork` set to that member so its investigation context carries forward cleanly.
+- **Pass warm context with `fork` and preserve worker autonomy.** When a `ro-*`
+  probe locates the fault or a `cand-*` prototype wins a bakeoff, spawn the
+  follow-up `impl-*` worker with `fork` set to that member so its investigation
+  context carries forward cleanly, and keep donor `share` worktrees parked in
+  `waiting` until cross-worktree `git fetch` imports complete. Every worker
+  retains full access to native swarm tools (`swarm`, `post_message`,
+  `read_board`, `swarm_wait`, `schedule`, and `manage_task`), and worker-spawned
+  helpers register synchronously in `members.json` under the same prefix guard.
 - **Ring `@name` only as a wakeup doorbell.** Every mention wakes that member
   and spends a turn. Address only the single peer or group that must act next.
   Never tag yourself or bystanders for awareness. Reserve `@all` for swarm-wide
@@ -84,6 +89,14 @@ matching role capsule and enforces its runtime tool boundaries.
   `trigger` set to `always_on` so `agy` loads them into `<user_rules>` on every
   turn. When active in context, apply those per-prefix model tiers without
   reading the file from disk.
+- **Surface `open_board` on mid-flight replies.** When `native_swarm` is not
+  loaded in your active `<skills>` catalog and you reply to the user while the
+  swarm is running (on the turn that spawns a continuing swarm or on any
+  mid-flight status reply), end your reply with the verbatim `open_board` line
+  from your latest `swarm` `add` or `status` result on its own line. Call
+  `swarm` with `action` set to `"status"` if no `open_board` value is in view,
+  omit the line when `open_board` is empty, and never write a board command or
+  link yourself.
 
 ## Engineering principles for planning and review
 
@@ -135,9 +148,10 @@ matching role capsule and enforces its runtime tool boundaries.
 
 Draft prose clean on the first pass. Write short declarative sentences with one
 idea per sentence in active voice. Use plain concrete nouns. Never write
-em-dashes, en-dashes, mid-sentence colons, decorative emojis, curly quotes,
-chatbot pleasantries, or abstract filler words. Frame every summary around what
-changed for the end user or caller first, followed by what the next maintainer
-inherits. Label every claim in the same sentence with its evidence tier,
-distinguishing direct measurement from inference or guess. Never invent links,
-citations, or verification results.
+em-dashes, en-dashes, mid-sentence prose colons, decorative emojis, curly
+quotes, chatbot pleasantries, or abstract filler words. Verbatim `open_board`
+text from `swarm`, sidecar links, and file links are exempt from the prose
+colon ban. Frame every summary around what changed for the end user or caller
+first, followed by what the next maintainer inherits. Label every claim in the
+same sentence with its evidence tier, distinguishing direct measurement from
+inference or guess. Never invent links, citations, or verification results.
