@@ -21,7 +21,7 @@ Parallel swarm workers (`impl-*`, `cand-*`, `adv-*`, and `ro-verify`) share one 
 
 1. **Ephemeral app ports.** Start dev servers and local APIs on OS-assigned or worker-unique ports (`--port 0` or an explicit free port) and parse the bound URL from startup output instead of assuming `3000`, `4173`, or `5173`.
 2. **Isolated `--user-data-dir` and CDP port.** Launch every Chromium or Electron instance with `--user-data-dir=/tmp/ui-profile-<worker>-<run>` and `--remote-debugging-port=0` (reading `DevToolsActivePort` in that profile directory or the `ws://127.0.0.1:<port>` stderr line). Concurrent workers never share cookies, IndexedDB, service workers, or debug sockets.
-3. **Scoped `/tmp` artifact directories.** Write screenshots, ARIA snapshots, traces, and temporary probe scripts to `/tmp/ui-artifacts-<worker>-<run>/`. Hook guards block `ro-*` workers from writing inside the repository tree, so `/tmp` keeps probes portable across all roles.
+3. **Scoped `/tmp` artifact directories.** Write ephemeral browser profiles, ARIA dumps, traces, scratch screenshots, and temporary probe scripts to `/tmp/ui-artifacts-<worker>-<run>/` (saving or copying milestone `.png`, `.jpg`, `.jpeg`, or `.webp` screenshots into `<appDataDir>/brain/<conversation-id>/` outside `.system_generated/` when posting Swarm UI timeline proofs). Hook guards block `ro-*` workers from writing inside the repository tree, while allowing `/tmp` probes and brain-directory screenshot files.
 4. **Exact PID teardown.** Record the exact PIDs of dev servers and browser instances started by this worker and kill only those PIDs on exit, then remove the disposable profile directory while retaining proof artifacts needed for `#seq` board reports.
 
 ## Setup Pattern
@@ -89,7 +89,19 @@ Replace `<app-root-selector>` with a stable landmark or `data-*` root from the c
 3. Execute a single structural action (click, fill, keypress, drag, scroll, navigate, or resize).
 4. Wait on an observable DOM or network state transition rather than a fixed sleep.
 5. Capture a fresh snapshot or screenshot and verify the expected state change.
-6. Record before-and-after artifact paths when reporting `#seq` proof on the swarm board.
+6. Record before-and-after artifact paths when reporting `#seq` proof on the swarm board, adding standalone `Screenshot: <abs_path> | <what changed, at most 10 words>` lines from `<appDataDir>/brain/<conversation-id>/` when Swarm UI timeline proofs are requested.
+
+## Swarm UI Timeline Screenshots
+
+Keep `/tmp/ui-artifacts-<worker>-<run>/` for ephemeral browser profiles, ARIA dumps, traces, and probe scripts. When capturing visual timeline proofs for the Swarm UI Overview (`swarm_pane`), workers (`impl-*`, `cand-*`, and `ro-verify`) save or copy full-window `.png`, `.jpg`, `.jpeg`, or `.webp` screenshots into their own `<appDataDir>/brain/<conversation-id>/` artifact directory (excluding `.system_generated/`). The Swarm UI reads timeline images only from each worker's brain folder, and `hooks/guard.mjs` allows read-only screenshot writes and screenshot subdirectories inside a worker's own brain directory.
+
+1. Keep the same screen, viewport size, and theme across shots. Capture the full window with no crops or diff composites.
+2. Save or copy each milestone `.png`, `.jpg`, `.jpeg`, or `.webp` file under `<appDataDir>/brain/<conversation-id>/` outside `.system_generated/`.
+3. Flag each step on its own line in your board post:
+
+```text
+Screenshot: <abs_path> | <what changed, at most 10 words>
+```
 
 ## Raw CDP Capabilities
 
