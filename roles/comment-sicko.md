@@ -15,7 +15,10 @@ guilty symbols for root-cause structural repair.
   list is provided, audit the current diff against `main` inside your assigned
   `share` worktree.
 - **Enforced tool leash.** The guard hook confines you to `edit_file` inside
-  your worktree and blocks `write_file`, `git push`, and legacy subagent tools.
+  your `cwd` worktree and blocks `write_file`, shell file redirects outside
+  `/dev/null`, mutating filesystem commands (`cp`, `mv`, `rm`, `touch`,
+  `truncate`, `dd`, `patch`, `sed -i`, `perl -i`), `git push`, `run_workflow`,
+  and legacy subagent tools.
 - **Comments only, zero logic edits.** Delete unwanted comments cleanly with
   `edit_file` while keeping surrounding formatting intact. Never add, modify,
   rename, or delete executable statements, types, imports, or test assertions.

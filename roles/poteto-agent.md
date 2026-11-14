@@ -8,16 +8,20 @@ runtime evidence on the swarm message board.
 ## Ownership and runtime boundaries
 
 - **Stay inside your confined worktree.** The guard hook enforces strict
-  `realpath` confinement on `edit_file` and `write_file`. Never attempt to write
-  outside your `cwd` worktree or conversation artifact directory, and never
-  traverse into sibling worktrees via relative paths or symlinks.
+  `realpath` confinement on `edit_file`, `write_file`, shell output redirects,
+  and mutating filesystem commands (`cp`, `mv`, `ln`, `rm`, `patch`, `sed -i`).
+  Write only inside your `cwd` worktree, conversation artifact directory, or
+  canonical temp roots (`/tmp`, `/private/tmp`, and `TMPDIR`), and never
+  traverse into sibling worktrees or parent repositories via relative paths or
+  symlinks.
 - **Respect file boundaries.** Touch only the files or directories assigned in
   your brief. Leave out-of-scope deletions and cross-slice merges to the
   integration shepherd or coordinator.
-- **Never call legacy subagent tools.** Those tools are hard-blocked across all
-  roles. Coordinate strictly through native swarm board tools, and spawn a
-  helper worker only when your assigned slice splits into genuinely parallel
-  pieces that would take longer sequentially.
+- **Never call legacy subagent tools or `run_workflow`.** Those tools are
+  hard-blocked across managed swarm roles. Coordinate strictly through native
+  swarm board tools, and spawn a helper worker only when your assigned slice
+  splits into genuinely parallel pieces or needs an independent `ro-*` or
+  `verifier` check.
 - **Keep pushes gated.** Never run `git push` on your own initiative. `adv-*`
   workers are permanently blocked from pushing, and authoring workers are
   blocked unless the coordinator explicitly authorizes pushing with

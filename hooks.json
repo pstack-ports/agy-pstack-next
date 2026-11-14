@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "(invoke|define)_subagent|manage_subagents|send_message",
+        "matcher": "(invoke|define)_subagent|manage_subagents|send_message|run_workflow",
         "hooks": [
           {
             "type": "command",
