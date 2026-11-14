@@ -40,7 +40,7 @@ Because every swarm brief on the board is public to all members, never attempt f
 - **`cand-b`** explores Axis B (for example, a deep stateful module owning lifecycle, caching, and idempotent transitions behind one narrow handle).
 - **`cand-c`** explores Axis C (for example, a subtractive extension of an existing boundary with zero new public modules).
 
-Spawn all `cand-*` workers with `workspace: "share"`. Assign models from the `cand-*` line in `~/.gemini/config/rules/pstack-models.md` (defaulting to multi-family diversity when available, or `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved paths in worker briefs (such as `<plugin-root>/skills/crucible/references/rationale-template.md`, `<plugin-root>/skills/statechart/SKILL.md`, `<plugin-root>/skills/control-ui/SKILL.md`, and `<plugin-root>/skills/control-cli/SKILL.md`) for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is not active, also pass `<plugin-root>/roles/poteto-agent.md` in `cand-*` and `impl-synth` briefs and `<plugin-root>/roles/research.md` in `ro-judge` and `ro-steward` briefs.
+Spawn all `cand-*` workers with `workspace: "share"`. Assign models from the `cand-*` setting in `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (reading the file from disk only when absent from `<user_rules>`, defaulting to multi-family diversity when available or `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved paths in worker briefs (such as `<plugin-root>/skills/crucible/references/rationale-template.md`, `<plugin-root>/skills/statechart/SKILL.md`, `<plugin-root>/skills/control-ui/SKILL.md`, and `<plugin-root>/skills/control-cli/SKILL.md`) for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is not active, also pass `<plugin-root>/roles/poteto-agent.md` in `cand-*` and `impl-synth` briefs and `<plugin-root>/roles/research.md` in `ro-judge` and `ro-steward` briefs.
 
 ### Candidate design discipline
 
@@ -85,7 +85,7 @@ Read the candidate diffs and `#seq` verdicts from `ro-judge` (and `ro-steward`) 
 
 ### Optional human checkpoint
 
-Check `crucible checkpoint` in `~/.gemini/config/rules/pstack-models.md` and whether the user asked for a checkpoint (`with checkpoint` or `stop before implementing`). When active, present the chosen base, planned donor grafts, and [`references/rationale-template.md`](references/rationale-template.md) summary, and pause for sign-off before running `impl-synth` or filling in `sketch` bodies.
+Apply the `crucible checkpoint` setting from `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (reading the file from disk only when absent from `<user_rules>`), alongside whether the user asked for a checkpoint (`with checkpoint` or `stop before implementing`). When active, present the chosen base, planned donor grafts, and [`references/rationale-template.md`](references/rationale-template.md) summary, and pause for sign-off before running `impl-synth` or filling in `sketch` bodies.
 
 ### Graft and verify in `impl-synth`
 

@@ -70,6 +70,9 @@ function runGuard(payload, envOverrides = {}) {
   delete env.ANTIGRAVITY_APP_DATA_DIR;
   delete env.PLUGIN_DATA;
   delete env.PLUGIN_ROOT;
+  delete env.PSTACK_PLUGIN_ROOT;
+  delete env.PSTACK_CACHE_DIR;
+  delete env.PSTACK_GUARD_DELEGATED;
   delete env.PSTACK_ALLOW_PUSH;
   delete env.PSTACK_FORCE_COORDINATOR;
   for (const [k, v] of Object.entries(envOverrides)) {
@@ -458,6 +461,14 @@ describe("Session classification (worker, coordinator, unmanaged) and O(1) looku
         );
         assert.equal(out.decision, "allow");
       }
+      const unmanagedAfterBoardTool = runGuard(
+        {
+          hookEventName: "SessionStart",
+          conversationId: "spontaneous-swarm-root",
+        },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.deepEqual(unmanagedAfterBoardTool, {});
 
       writeSwarmMembers(sb.appDataDir, "own-swarm-coord", {
         coordinator: { conversation_id: "own-swarm-coord", role: "coordinator" },
@@ -1353,6 +1364,565 @@ describe("sicko-* Guard and git push Gate", () => {
       assert.equal(runPush("coord-id", "git push origin main").decision, "allow");
       assert.equal(runPush("coord-id", "git push --force origin feat-stack").decision, "allow");
     } finally {
+      sb.cleanup();
+    }
+  });
+});
+
+describe("agy 1.5.9 audit fixes: shell vars, evolve isolation, numbered verifiers, B4 confinement, M2/M3/T1, and swarm capacity", () => {
+  test("B1+M2+B4 expands per-segment shell vars and redirects while anchoring canonicalTempRoots to outer env", () => {
+    const sb = makeSandbox();
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-1", {
+        "ro-cli": { conversation_id: "ro-id", role: "worker" },
+        "impl-cli": { conversation_id: "impl-id", role: "worker" },
+        "adv-cli": { conversation_id: "adv-id", role: "worker" },
+      });
+
+      const runCmd = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            cwd: sb.worktree,
+            toolCall: { id: "v1", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const allowedCommands = [
+        'RUN_DIR="/tmp/cli-${WORKER_NAME:-local}-$$-$(date +%s)"; mkdir -p "$RUN_DIR/home" "$RUN_DIR/tmp" "$RUN_DIR/artifacts" && echo ok > "$RUN_DIR/artifacts/help.txt"',
+        'RUN_ID="run-42"; mkdir -p "/tmp/verify-app-$RUN_ID" "/tmp/statechart-${WORKER_NAME:-local}-${RUN_ID:-$$}"',
+        'RUN_DIR="/tmp/cli-$(date -u +%Y%m%d)-$(uuidgen)"; mkdir -p "$RUN_DIR" && echo x > "$RUN_DIR/out.txt"',
+        "HOME=/tmp/h echo hi > ~/out.txt",
+        "export HOME=/tmp/h; echo ok > ~/ok.txt",
+      ];
+
+      for (const convId of ["ro-id", "impl-id", "adv-id"]) {
+        for (const cmd of allowedCommands) {
+          assert.equal(runCmd(convId, cmd).decision, "allow", `expected allow for ${convId}: ${cmd}`);
+        }
+      }
+
+      const deniedCommands = [
+        `export TMPDIR=${sb.outsideDir}; echo x > $TMPDIR/pwn.txt`,
+        `TMPDIR=${sb.outsideDir} mkdir -p $TMPDIR/pwn`,
+        "echo x > $UNSET_VAR/pwn.txt",
+        "echo x > $(id)/pwn.txt",
+        `RUN_DIR="${sb.outsideDir}"; echo x > "$RUN_DIR/pwn.txt"`,
+      ];
+
+      for (const convId of ["ro-id", "impl-id", "adv-id"]) {
+        for (const cmd of deniedCommands) {
+          assert.equal(runCmd(convId, cmd).decision, "deny", `expected deny for ${convId}: ${cmd}`);
+        }
+      }
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("B2 isolates evolve trials via PSTACK_PLUGIN_ROOT delegation and PSTACK_CACHE_DIR", () => {
+    const sb = makeSandbox();
+    try {
+      const stagedPlugin = join(sb.root, "pack-oak");
+      const stagedCache = join(sb.root, "state-oak");
+      mkdirSync(join(stagedPlugin, "hooks"), { recursive: true });
+      mkdirSync(join(stagedPlugin, "roles"), { recursive: true });
+      writeFileSync(join(stagedPlugin, "roles", "coordinator.md"), "staged-oak-coord\n", "utf8");
+      writeFileSync(
+        join(stagedPlugin, "hooks", "guard.mjs"),
+        `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ delegatedFrom: "pack-oak", delegatedFlag: process.env.PSTACK_GUARD_DELEGATED }) + "\\n");\n`,
+        "utf8",
+      );
+
+      const delegatedOut = runGuard(
+        { hookEventName: "SessionStart", conversationId: "oak-conv" },
+        { PSTACK_PLUGIN_ROOT: stagedPlugin, PSTACK_CACHE_DIR: stagedCache },
+      );
+      assert.deepEqual(delegatedOut, { delegatedFrom: "pack-oak", delegatedFlag: "1" });
+
+      writeSwarmMembers(sb.appDataDir, "coord-evolve", {
+        "ro-oak": { conversation_id: "ro-oak-id", role: "worker" },
+      });
+      const stagedRolesOnly = join(sb.root, "pack-pine");
+      mkdirSync(join(stagedRolesOnly, "roles"), { recursive: true });
+      writeFileSync(join(stagedRolesOnly, "roles", "research.md"), "pine-research-capsule\n", "utf8");
+
+      const isolatedSessionOut = runGuard(
+        { hookEventName: "SessionStart", conversationId: "ro-oak-id" },
+        {
+          PSTACK_APPDATA_DIR: sb.appDataDir,
+          PSTACK_PLUGIN_ROOT: stagedRolesOnly,
+          PSTACK_CACHE_DIR: stagedCache,
+        },
+      );
+      assert.deepEqual(isolatedSessionOut, {
+        injectSteps: [{ systemMessage: { systemMessage: "pine-research-capsule\n" } }],
+      });
+      assert.equal(existsSync(join(stagedCache, "injected-capsules.json")), true);
+      assert.equal(existsSync(join(stagedCache, "member-map.json")), true);
+      assert.equal(existsSync(join(sb.appDataDir, "plugin_data", "agy-pstack-next", "injected-capsules.json")), false);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("B3 maps numbered *-verifier-k copies to readonly while keeping impl-verifier-k and sicko-verifier-k roles", () => {
+    const sb = makeSandbox();
+    try {
+      const researchCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "research.md"), "utf8");
+      const agentCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "poteto-agent.md"), "utf8");
+      const sickoCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "comment-sicko.md"), "utf8");
+
+      writeSwarmMembers(sb.appDataDir, "coord-b3", {
+        "api-verifier-1": { conversation_id: "api-v1", role: "worker" },
+        "api-verifier-2": { conversation_id: "api-v2", role: "worker" },
+        "impl-verifier-1": { conversation_id: "impl-v1", role: "worker" },
+        "sicko-verifier-1": { conversation_id: "sicko-v1", role: "worker" },
+      });
+
+      for (const id of ["api-v1", "api-v2"]) {
+        const sOut = runGuard(
+          { hookEventName: "SessionStart", conversationId: id },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        );
+        assert.deepEqual(sOut, { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] });
+
+        const wOut = runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: id,
+            cwd: sb.worktree,
+            toolCall: { id: "t1", name: "write_file", args: { Path: join(sb.worktree, "x.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        );
+        assert.equal(wOut.decision, "deny");
+      }
+
+      assert.deepEqual(
+        runGuard({ hookEventName: "SessionStart", conversationId: "impl-v1" }, { PSTACK_APPDATA_DIR: sb.appDataDir }),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard({ hookEventName: "SessionStart", conversationId: "sicko-v1" }, { PSTACK_APPDATA_DIR: sb.appDataDir }),
+        { injectSteps: [{ systemMessage: { systemMessage: sickoCapsule } }] },
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("B4 enforces git, download/archive, find, and temp script confinement while preserving swarm capacity", () => {
+    const sb = makeSandbox();
+    const slashTmpDir = mkdtempSync("/tmp/pstack-b4-");
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-b4", {
+        "ro-verify": { conversation_id: "ro-id", role: "worker" },
+        "impl-1": { conversation_id: "impl-id", role: "worker" },
+        "adv-1": { conversation_id: "adv-id", role: "worker" },
+        "sicko-1": { conversation_id: "sicko-id", role: "worker" },
+      });
+
+      const badJs = join(slashTmpDir, "bad.mjs");
+      const okJs = join(slashTmpDir, "ok.mjs");
+      const badPy = join(slashTmpDir, "bad.py");
+      const okPy = join(slashTmpDir, "ok.py");
+      const badSh = join(slashTmpDir, "bad.sh");
+      const okSh = join(slashTmpDir, "ok.sh");
+      const perlScript = join(slashTmpDir, "probe.pl");
+      const codemodJs = join(slashTmpDir, "codemod.mjs");
+      const outsidePy = join(slashTmpDir, "outside.py");
+
+      writeFileSync(badJs, "import fs from 'node:fs'; fs.writeFileSync('README.md', 'pwn');\n", "utf8");
+      writeFileSync(
+        okJs,
+        `import fs from 'node:fs'; import path from 'node:path'; const runDir = '${slashTmpDir}'; fs.writeFileSync(path.join(runDir, 'after.png'), 'ok'); fs.writeFileSync(\`/tmp/ui-\${id}/shot.png\`, 'ok');\n`,
+        "utf8",
+      );
+      writeFileSync(badPy, "from pathlib import Path\nPath('README.md').write_text('pwn')\n", "utf8");
+      writeFileSync(
+        okPy,
+        `import os, tempfile\nrun_dir = tempfile.mkdtemp(prefix='ui-')\nopen(os.path.join(run_dir, 'out.txt'), 'w').write('ok')\nopen(f'/tmp/ui-{id}/snap.txt', 'w').write('ok')\n`,
+        "utf8",
+      );
+      writeFileSync(badSh, "#!/bin/sh\nrm -f README.md\n", "utf8");
+      writeFileSync(okSh, `#!/bin/sh\necho ok > ${join(slashTmpDir, "sh-ok.txt")}\n`, "utf8");
+      writeFileSync(perlScript, "print 'hi';\n", "utf8");
+      writeFileSync(
+        codemodJs,
+        "import fs from 'node:fs'; for (const f of files) { fs.writeFileSync(f, 'updated'); }\n",
+        "utf8",
+      );
+      writeFileSync(
+        outsidePy,
+        `from pathlib import Path\nPath('${join(sb.outsideDir, "pwn.txt")}').write_text('x')\n`,
+        "utf8",
+      );
+
+      const runCmd = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            cwd: sb.worktree,
+            toolCall: { id: "b4", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const roAllowed = [
+        "git fetch origin",
+        "git notes list",
+        "git replace -l",
+        "git submodule status",
+        "git symbolic-ref HEAD",
+        "curl https://example.com",
+        `curl -o ${join(slashTmpDir, "dl.json")} https://example.com`,
+        "wget --spider https://example.com",
+        `wget -P ${slashTmpDir} https://example.com/a.txt`,
+        "tar -tf archive.tar",
+        `tar -xf archive.tar -C ${slashTmpDir}`,
+        "unzip -l archive.zip",
+        `unzip archive.zip -d ${slashTmpDir}`,
+        `rsync -n -a src/ ${sb.outsideDir}/`,
+        `find ${slashTmpDir} -delete`,
+        `node ${okJs}`,
+        `python3 ${okPy}`,
+        `sh ${okSh}`,
+        `node -e "import fs from 'node:fs'; fs.writeFileSync(\\\`/tmp/ui-\${id}/after.png\\\`, 'ok')"`,
+        "python3 -c \"open(f'/tmp/ui-{id}/snap.txt', 'w').write('ok')\"",
+      ];
+      for (const cmd of roAllowed) {
+        assert.equal(runCmd("ro-id", cmd).decision, "allow", `expected ro allow: ${cmd}`);
+      }
+
+      const roDenied = [
+        "git pull",
+        "git update-ref HEAD HEAD~1",
+        "git fetch origin main:refs/heads/x",
+        "git fetch -p",
+        "git fetch --force",
+        "git notes add -m x",
+        "git replace HEAD~1 HEAD",
+        "git submodule update",
+        "git symbolic-ref HEAD refs/heads/x",
+        "truncate -s 0 README.md",
+        "dd if=/dev/zero of=README.md count=1",
+        "install src.txt README.md",
+        "curl -o README.md https://example.com",
+        "curl -O https://example.com/a.txt",
+        "wget https://example.com/a.txt",
+        "wget -O README.md https://example.com",
+        "tar -xf archive.tar",
+        "tar -cf out.tar src/",
+        "unzip archive.zip",
+        "rsync -a src/ dst/",
+        "rsync -a src/ user@host:dst/",
+        "find . -delete",
+        "find . -fprint out.txt",
+        "find . -exec rm {} ;",
+        `node ${join(slashTmpDir, "nonexistent.mjs")}`,
+        `node ${badJs}`,
+        `python3 ${badPy}`,
+        `sh ${badSh}`,
+        `perl ${perlScript}`,
+      ];
+      for (const cmd of roDenied) {
+        assert.equal(runCmd("ro-id", cmd).decision, "deny", `expected ro deny: ${cmd}`);
+      }
+
+      const authorAllowed = [
+        `git fetch ${sb.siblingWorktree} abc1234 && git cherry-pick abc1234`,
+        `git -C ${sb.siblingWorktree} status --short`,
+        `git -C ${join(slashTmpDir, "trial")} init && git -C ${join(slashTmpDir, "trial")} add . && git -C ${join(slashTmpDir, "trial")} commit -m init`,
+        `node ${codemodJs}`,
+        "node -e \"const fs = require('fs'); for (const f of files) fs.writeFileSync(f, 'x')\"",
+        "python3 -c \"from pathlib import Path\nfor p in paths:\n  Path(p).write_text('x')\"",
+        `mkdir -p ${join(slashTmpDir, "d")} && touch ${join(slashTmpDir, "d", "f")}`,
+        `curl -o ${join(slashTmpDir, "a.json")} https://example.com`,
+      ];
+      for (const convId of ["impl-id", "adv-id"]) {
+        for (const cmd of authorAllowed) {
+          assert.equal(runCmd(convId, cmd).decision, "allow", `expected ${convId} allow: ${cmd}`);
+        }
+      }
+
+      const authorDenied = [
+        `git -C ${sb.outsideDir} commit -m pwn`,
+        `mkdir -p ${join(sb.outsideDir, "pwn")}`,
+        `touch ${join(sb.outsideDir, "pwn.txt")}`,
+        `chmod +x ${join(sb.outsideDir, "pwn.sh")}`,
+        `truncate -s 0 ${join(sb.outsideDir, "pwn.txt")}`,
+        `dd if=/dev/zero of=${join(sb.outsideDir, "pwn.bin")} count=1`,
+        `install README.md ${join(sb.outsideDir, "README.md")}`,
+        `curl -o ${join(sb.outsideDir, "pwn.txt")} https://example.com`,
+        `wget -P ${sb.outsideDir} https://example.com/a.txt`,
+        `tar -xf a.tar -C ${sb.outsideDir}`,
+        `unzip a.zip -d ${sb.outsideDir}`,
+        `rsync -a src/ ${sb.outsideDir}/`,
+        `find ${sb.outsideDir} -delete`,
+        `find ${sb.outsideDir} -exec rm {} ;`,
+        `node -e "require('fs').writeFileSync('${join(sb.outsideDir, "pwn.txt")}', 'x')"`,
+        `python3 -c "from pathlib import Path; Path('../../outside/x').write_text('x')"`,
+        `python3 ${outsidePy}`,
+      ];
+      for (const convId of ["impl-id", "adv-id"]) {
+        for (const cmd of authorDenied) {
+          assert.equal(runCmd(convId, cmd).decision, "deny", `expected ${convId} deny: ${cmd}`);
+        }
+      }
+
+      for (const sickoOk of ["git add app.mjs", "git commit -m 'strip comments'", "git status --short"]) {
+        assert.equal(runCmd("sicko-id", sickoOk).decision, "allow", `expected sicko allow: ${sickoOk}`);
+      }
+      for (const sickoBad of [
+        "git checkout -- .",
+        "git restore app.mjs",
+        "git reset --hard HEAD",
+        "git clean -fd",
+        "git pull",
+        `git -C ${sb.outsideDir} status`,
+        "chmod +x app.mjs",
+        "curl -o app.mjs https://example.com",
+        "wget https://example.com/a.txt",
+        "tar -xf a.tar",
+        "unzip a.zip",
+        "rsync -a a b",
+        "find . -delete",
+        `node ${okJs}`,
+        `node -e "require('fs').writeFileSync('${join(slashTmpDir, "x.txt")}', 'x')"`,
+        `python3 -c "open('${join(slashTmpDir, "x.txt")}', 'w').write('x')"`,
+      ]) {
+        assert.equal(runCmd("sicko-id", sickoBad).decision, "deny", `expected sicko deny: ${sickoBad}`);
+      }
+    } finally {
+      rmSync(slashTmpDir, { recursive: true, force: true });
+      sb.cleanup();
+    }
+  });
+
+  test("M2+M3+T1 fixes node array literals, python Path aliases, transcript step filtering, forkStep, and swarm.json anchor", () => {
+    const sb = makeSandbox();
+    try {
+      const researchCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "research.md"), "utf8");
+      const agentCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "poteto-agent.md"), "utf8");
+      const coordCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "coordinator.md"), "utf8");
+
+      writeSwarmMembers(sb.appDataDir, "coord-m", {
+        "ro-m": { conversation_id: "ro-m-id", role: "worker" },
+        "impl-fork": { conversation_id: "impl-fork-id", role: "worker" },
+      });
+
+      const runRo = (CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-m-id",
+            cwd: sb.worktree,
+            toolCall: { id: "m2", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        );
+
+      for (const okCmd of [
+        "node -e \"console.log(['arm64']); console.log(['blink']); const x = ['rm'];\"",
+        "node -e \"function f() { return ['rm']; }\"",
+        "python3 -c \"from pathlib import Path as P, PurePath as PP; print(P('.'), PP('a'))\"",
+      ]) {
+        assert.equal(runRo(okCmd).decision, "allow", `expected M2 allow: ${okCmd}`);
+      }
+
+      for (const badCmd of [
+        "node -e \"const fs = require('fs'); fs['rmSync']('README.md')\"",
+        "node -e \"require('fs')['rm']('README.md', () => {})\"",
+        "node -e \"const fs = require('fs'); const fn = 'rmSync'; fs[fn]('README.md')\"",
+        "python3 -c \"from os import remove as r; r('hooks.json')\"",
+        "python3 -c \"import shutil as s; s.rmtree('skills')\"",
+      ]) {
+        assert.equal(runRo(badCmd).decision, "deny", `expected M2 deny: ${badCmd}`);
+      }
+
+      const readFileTranscript = join(
+        sb.appDataDir,
+        "brain",
+        "read-file-user-conv",
+        ".system_generated",
+        "logs",
+        "transcript.jsonl",
+      );
+      writeTranscriptLines(readFileTranscript, [
+        { step_index: 0, type: "USER_INPUT", content: "Read roles/coordinator.md" },
+        { step_index: 1, type: "TOOL_OUTPUT", content: "# Coordinator role capsule\n..." },
+      ]);
+      writeSwarmMembers(sb.appDataDir, "decoy-swarm", {
+        "ro-decoy": { conversation_id: "read-file-user-conv", role: "worker" },
+      });
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "read-file-user-conv",
+            transcriptPath: readFileTranscript,
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+
+      const forkTranscript = join(
+        sb.appDataDir,
+        "brain",
+        "impl-fork-id",
+        ".system_generated",
+        "logs",
+        "transcript.jsonl",
+      );
+      writeTranscriptLines(forkTranscript, [
+        { step_index: 0, type: "USER_INPUT", content: "Help me refactor this repo" },
+        {
+          step_index: 1,
+          type: "USER_INPUT",
+          content: "You are @impl-fork. Everything before this turn is @coordinator's memory.",
+        },
+      ]);
+      const forkSessionOut = runGuard(
+        {
+          hookEventName: "SessionStart",
+          conversationId: "impl-fork-id",
+          transcriptPath: forkTranscript,
+        },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.deepEqual(forkSessionOut, {
+        injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }],
+      });
+
+      const spannerCoordDir = join(sb.appDataDir, "brain", "spanner-coord", ".system_generated", "swarm");
+      mkdirSync(spannerCoordDir, { recursive: true });
+      writeFileSync(
+        join(spannerCoordDir, "swarm.json"),
+        JSON.stringify({ backend: "spanner", coordinator_conversation_id: "spanner-coord" }),
+        "utf8",
+      );
+      const spannerCoordOut = runGuard(
+        { hookEventName: "SessionStart", conversationId: "spanner-coord" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.deepEqual(spannerCoordOut, {
+        injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }],
+      });
+
+      const spannerWorkerTranscript = join(
+        sb.appDataDir,
+        "brain",
+        "spanner-worker",
+        ".system_generated",
+        "logs",
+        "transcript.jsonl",
+      );
+      writeTranscriptLines(spannerWorkerTranscript, [
+        { step_index: 0, type: "SYSTEM_MESSAGE", content: "[swarm] new board message #1" },
+      ]);
+      runGuard(
+        {
+          hookEventName: "SessionStart",
+          conversationId: "spanner-worker",
+          transcriptPath: spannerWorkerTranscript,
+        },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      const nonWorkerPath = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "non-worker-roots.json");
+      const nonWorkerDoc = existsSync(nonWorkerPath) ? JSON.parse(readFileSync(nonWorkerPath, "utf8")) : {};
+      assert.equal(nonWorkerDoc["spanner-worker"], undefined);
+      assert.equal(researchCapsule.length > 0, true);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("regression #18: source/., preload flags, shebang-less /tmp execs, scriptEnv subshell/conditional/for scoping, and ro-* harness literals", () => {
+    const sb = makeSandbox();
+    const slashTmpDir = mkdtempSync("/tmp/pstack-reg18-");
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-reg18", {
+        "ro-v": { conversation_id: "ro-id", role: "worker" },
+        "impl-v": { conversation_id: "impl-id", role: "worker" },
+        "sicko-v": { conversation_id: "sicko-id", role: "worker" },
+      });
+
+      const malSh = join(slashTmpDir, "mal.sh");
+      const malJs = join(slashTmpDir, "mal.mjs");
+      const malPy = join(slashTmpDir, "mal_mod.py");
+      const malNoExt = join(slashTmpDir, "mal_noext");
+      const binFile = join(slashTmpDir, "bin_noext");
+      const outsideTarget = join(sb.outsideDir, "pwn.txt");
+      writeFileSync(malSh, `curl -o ${outsideTarget} https://example.com\n`, "utf8");
+      writeFileSync(malJs, "require('fs').writeFileSync('README.md', 'pwn');\n", "utf8");
+      writeFileSync(malPy, "from pathlib import Path\nPath('README.md').write_text('pwn')\n", "utf8");
+      writeFileSync(malNoExt, "rm -f README.md\n", "utf8");
+      writeFileSync(binFile, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01]));
+
+      const runCmd = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            cwd: sb.worktree,
+            toolCall: { id: "r18", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      for (const convId of ["ro-id", "impl-id", "sicko-id"]) {
+        assert.equal(runCmd(convId, `source ${malSh}`).decision, "deny", `source denied on ${convId}`);
+        assert.equal(runCmd(convId, `. ${malSh}`).decision, "deny", `. denied on ${convId}`);
+      }
+
+      for (const roDeny of [
+        `node --import ${malJs} -e "1"`,
+        `node -r ${malJs} -e "1"`,
+        `node --require=${malJs} -e "1"`,
+        `NODE_OPTIONS="--import ${malJs}" node -e "1"`,
+        `PYTHONPATH=${slashTmpDir} python3 -m mal_mod`,
+        malNoExt,
+        binFile,
+        `A=${sb.worktree}; (A=${slashTmpDir}); echo pwn > $A/README.md`,
+        `A=${sb.worktree}; false && A=${slashTmpDir}; echo pwn > $A/README.md`,
+        `A=${sb.worktree}; true || A=${slashTmpDir}; echo pwn > $A/README.md`,
+        `A=${slashTmpDir}; for A in ${sb.worktree}; do echo pwn > $A/README.md; done`,
+        `A=${slashTmpDir}; read A; echo pwn > $A/README.md`,
+        `echo x | A=${slashTmpDir}; echo pwn > $A/README.md`,
+        "node -e \"const { link: fn } = require('fs'); fn('a', 'b')\"",
+      ]) {
+        assert.equal(runCmd("ro-id", roDeny).decision, "deny", `expected ro deny: ${roDeny}`);
+      }
+
+      assert.equal(
+        runCmd("impl-id", `A=${sb.outsideDir}; (A=${slashTmpDir}); echo pwn > $A/pwn.txt`).decision,
+        "deny",
+      );
+      assert.equal(
+        runCmd("impl-id", `A=${sb.outsideDir}; false && A=${slashTmpDir}; echo pwn > $A/pwn.txt`).decision,
+        "deny",
+      );
+      assert.equal(
+        runCmd("impl-id", `A=${slashTmpDir}; for A in ${sb.outsideDir}; do echo pwn > $A/pwn.txt; done`).decision,
+        "deny",
+      );
+
+      for (const roAllow of [
+        "python3 -c \"import os; run_dir = f'/tmp/cli-{os.getpid()}'; open(os.path.join(run_dir, 'out.txt'), 'w').write('ok')\"",
+        "python3 -c \"import os; run_dir = f'/tmp/cli-{os.getpid()}'; open(f'{run_dir}/out.txt', 'w').write('ok')\"",
+        "node -e \"const fs = require('node:fs'); const runDir = `/tmp/ui-artifacts-${Date.now()}`; fs.writeFileSync(`${runDir}/aria.json`, '{}')\"",
+        "node -e \"console.log(pkg['platform'], pkg['arm64'], pkg['blink'])\"",
+        "node -e \"const item = { from: f, link: raw }; console.log(item)\"",
+      ]) {
+        assert.equal(runCmd("ro-id", roAllow).decision, "allow", `expected ro allow: ${roAllow}`);
+      }
+    } finally {
+      rmSync(slashTmpDir, { recursive: true, force: true });
       sb.cleanup();
     }
   });

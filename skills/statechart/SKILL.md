@@ -18,7 +18,7 @@ Swarm workers do not mount installed plugin skills in `<skills>`, so coordinator
 
 ## Run
 
-Work in an isolated per-worker scratch folder outside the repository, such as `/tmp/statechart-${WORKER_NAME:-local}-${RUN_ID}`, so parallel swarm workers never overwrite each other's `.tla`, `.cfg`, or `--out` files. Write a TLA+ spec and config, then run the script below.
+Work in an isolated per-worker scratch folder outside the repository, such as `/tmp/statechart-${WORKER_NAME:-local}-${RUN_ID:-$$}`, so parallel swarm workers never overwrite each other's `.tla`, `.cfg`, or `--out` files. Write a TLA+ spec and config, then run the script below.
 
 ```sh
 <skill dir>/scripts/statechart SPEC.tla [--config FILE] [--view FILE] [--out DIR]

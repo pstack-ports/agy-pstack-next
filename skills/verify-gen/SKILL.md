@@ -35,7 +35,7 @@ Have `ro-surface` and `ro-harness` answer five questions from the codebase and a
 - **Run.** Locate the documented local startup command, migrations, seed fixtures, auth setup, and readiness signal. Ready means usable from an empty data directory, not merely an open socket.
 - **Drive.** Reuse checked-in Playwright, Cypress, PTY, or HTTP harnesses first. Otherwise pair with [`control-ui`](../control-ui/SKILL.md) for browser and CDP surfaces or [`control-cli`](../control-cli/SKILL.md) for interactive terminals, passing the resolved `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path in `ro-harness` and `impl-verify` briefs.
 - **Observe.** List concrete proof artifacts such as ARIA snapshots, screenshots, terminal transcripts, exit codes, HTTP payloads, and stored database or filesystem state.
-- **Isolate.** Determine how parallel swarm workers avoid collisions via ephemeral ports (`--port 0`), disposable data directories (`/tmp/verify-<app>-$RUN_ID`), isolated browser `--user-data-dir` paths, and per-run tmux or PTY session names. If two instances cannot run side by side safely, state that lock constraint explicitly in the generated skill.
+- **Isolate.** Determine how parallel swarm workers avoid collisions via ephemeral ports (`--port 0`), disposable data directories (`/tmp/verify-<app>-${RUN_ID:-$$}`), isolated browser `--user-data-dir` paths, and per-run tmux or PTY session names. If two instances cannot run side by side safely, state that lock constraint explicitly in the generated skill.
 
 If the checkout fails to build or start on `HEAD`, report the exact failure or fix startup first before generating a skill. Never encode broken startup workarounds as normal steps.
 

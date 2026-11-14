@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -8,11 +9,12 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LEGACY_SUBAGENT_TOOLS = new Set([
@@ -35,6 +37,8 @@ const PSTACK_SLASH_COMMAND_RE =
 
 const ROLE_CAPSULE_HEADING_RE = /(?:^|\r?\n|\\n)# [^\r\n\\]+ role capsule(?:\r?\n|\\n|$)/i;
 
+const FORK_MEMORY_MARKER_RE = /Everything before this turn is @[A-Za-z0-9_-]+'s memory/;
+
 const ROLE_OVERRIDE_NOTICE =
   "> **Role override.** Your active swarm role has changed. The role capsule below supersedes every earlier role capsule in this conversation history, including rules inherited through `fork`.\n\n";
 
@@ -42,8 +46,11 @@ const MUTATING_MCP_PATTERN =
   /(^|_)(create|update|delete|remove|set|post|reply|resolve|merge|close|push|write|edit|append|restore|upload|generate|install|uninstall|send|modify|patch|drop|insert)(_|$)/i;
 
 const MUTATING_GIT_SUBCOMMANDS = new Set([
+  "add",
+  "stage",
   "commit",
   "push",
+  "pull",
   "merge",
   "rebase",
   "cherry-pick",
@@ -59,6 +66,7 @@ const MUTATING_GIT_SUBCOMMANDS = new Set([
   "restore",
   "init",
   "clone",
+  "update-ref",
 ]);
 
 const GIT_GLOBAL_VALUE_FLAGS = new Set([
@@ -75,11 +83,8 @@ const HARD_BLOCKED_RO_FS_COMMANDS = new Set([
   "rmdir",
   "chown",
   "chgrp",
-  "truncate",
-  "dd",
   "patch",
   "ln",
-  "install",
 ]);
 
 const SICKO_BLOCKED_FS_COMMANDS = new Set([
@@ -95,6 +100,9 @@ const SICKO_BLOCKED_FS_COMMANDS = new Set([
   "truncate",
   "dd",
   "patch",
+  "chmod",
+  "chown",
+  "chgrp",
 ]);
 
 const NPM_INSTALL_SUBCOMMANDS = new Set([
@@ -254,6 +262,9 @@ function resolveAppDataDir(payload, env) {
 }
 
 function resolveCacheDir(appDataDir, env) {
+  if (typeof env.PSTACK_CACHE_DIR === "string" && env.PSTACK_CACHE_DIR.length > 0) {
+    return env.PSTACK_CACHE_DIR;
+  }
   if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.length > 0) {
     return env.PLUGIN_DATA;
   }
@@ -263,6 +274,9 @@ function resolveCacheDir(appDataDir, env) {
 }
 
 function resolvePluginRoot(env) {
+  if (typeof env.PSTACK_PLUGIN_ROOT === "string" && env.PSTACK_PLUGIN_ROOT.length > 0) {
+    return env.PSTACK_PLUGIN_ROOT;
+  }
   if (typeof env.PLUGIN_ROOT === "string" && env.PLUGIN_ROOT.length > 0) {
     return env.PLUGIN_ROOT;
   }
@@ -289,44 +303,57 @@ function resolveOwnTranscriptPath(payload, appDataDir) {
   return null;
 }
 
+function isSystemRoleCapsuleStep(parsed) {
+  if (!parsed || typeof parsed !== "object") return false;
+  if (parsed.type !== "SYSTEM_MESSAGE" && parsed.source !== "SYSTEM_SDK") {
+    return false;
+  }
+  return typeof parsed.content === "string" && ROLE_CAPSULE_HEADING_RE.test(parsed.content);
+}
+
 function transcriptIsUnforkedUserRoot(transcriptPath, hasPriorInjectedCapsule) {
   if (!transcriptPath || !existsSync(transcriptPath)) return false;
   try {
     const content = readFileSync(transcriptPath, "utf8");
-    if (/\[swarm\] new board message|Your assignment \(recorded on the board/.test(content)) {
+    if (
+      /\[swarm\] new board message|Your assignment \(recorded on the board/.test(content) ||
+      FORK_MEMORY_MARKER_RE.test(content)
+    ) {
       return false;
     }
-    if (!hasPriorInjectedCapsule && ROLE_CAPSULE_HEADING_RE.test(content)) {
-      return false;
-    }
+    let sawFirstStep = false;
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const parsed = JSON.parse(trimmed);
-      return Boolean(parsed && typeof parsed === "object" && parsed.type === "USER_INPUT");
+      if (!parsed || typeof parsed !== "object") return false;
+      if (!sawFirstStep) {
+        if (parsed.type !== "USER_INPUT") return false;
+        sawFirstStep = true;
+      }
+      if (typeof parsed.content === "string" && FORK_MEMORY_MARKER_RE.test(parsed.content)) {
+        return false;
+      }
+      if (!hasPriorInjectedCapsule && isSystemRoleCapsuleStep(parsed)) {
+        return false;
+      }
     }
+    return sawFirstStep;
   } catch {
     return false;
   }
-  return false;
 }
 
 function transcriptContainsRoleCapsule(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) return false;
   try {
     const content = readFileSync(transcriptPath, "utf8");
-    if (ROLE_CAPSULE_HEADING_RE.test(content)) return true;
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
         const parsed = JSON.parse(trimmed);
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          typeof parsed.content === "string" &&
-          ROLE_CAPSULE_HEADING_RE.test(parsed.content)
-        ) {
+        if (isSystemRoleCapsuleStep(parsed)) {
           return true;
         }
       } catch {}
@@ -357,6 +384,20 @@ function extractMembersFromDoc(doc, targetConversationId) {
   return { hasMembers: true, workerEntries, matchedCoordinator };
 }
 
+function anchorMatchesCoordinator(anchorPath, targetConversationId, ownerDirId) {
+  if (!existsSync(anchorPath)) return false;
+  const doc = readJsonObject(anchorPath);
+  const explicitCoord =
+    doc.coordinator_conversation_id ||
+    doc.coordinatorConversationId ||
+    doc.coordinator_id ||
+    doc.coordinatorId;
+  if (typeof explicitCoord === "string" && explicitCoord.length > 0) {
+    return explicitCoord === targetConversationId;
+  }
+  return ownerDirId === targetConversationId;
+}
+
 function resolveWorkerOrCoordinatorFromSwarm(
   conversationId,
   payload,
@@ -381,13 +422,24 @@ function resolveWorkerOrCoordinatorFromSwarm(
 
   const candidateRoots = [payload.rootConversationId, payload.parentConversationId];
   const checkedRoots = new Set();
+  let hasAnchorWithoutMembers = false;
   for (const rootId of candidateRoots) {
     if (typeof rootId !== "string" || rootId.length === 0 || rootId === conversationId || checkedRoots.has(rootId)) {
       continue;
     }
     checkedRoots.add(rootId);
-    const membersPath = join(appDataDir, "brain", rootId, ".system_generated", "swarm", "members.json");
-    if (!existsSync(membersPath)) continue;
+    const swarmDir = join(appDataDir, "brain", rootId, ".system_generated", "swarm");
+    const membersPath = join(swarmDir, "members.json");
+    if (!existsSync(membersPath)) {
+      const anchorPath = join(swarmDir, "swarm.json");
+      if (existsSync(anchorPath)) {
+        if (anchorMatchesCoordinator(anchorPath, conversationId, rootId)) {
+          return { workerName: null, isKnownCoordinator: true };
+        }
+        hasAnchorWithoutMembers = true;
+      }
+      continue;
+    }
     const { workerEntries, matchedCoordinator } = extractMembersFromDoc(
       readJsonObject(membersPath),
       conversationId,
@@ -401,13 +453,19 @@ function resolveWorkerOrCoordinatorFromSwarm(
     }
   }
 
-  const ownMembersPath = join(appDataDir, "brain", conversationId, ".system_generated", "swarm", "members.json");
+  const ownSwarmDir = join(appDataDir, "brain", conversationId, ".system_generated", "swarm");
+  const ownMembersPath = join(ownSwarmDir, "members.json");
   if (existsSync(ownMembersPath)) {
     const { workerEntries } = extractMembersFromDoc(readJsonObject(ownMembersPath), conversationId);
     updateJsonKeys(mapPath, workerEntries);
     if (workerEntries[conversationId]) {
       return { workerName: workerEntries[conversationId], isKnownCoordinator: false };
     }
+    return { workerName: null, isKnownCoordinator: true };
+  }
+
+  const ownAnchorPath = join(ownSwarmDir, "swarm.json");
+  if (anchorMatchesCoordinator(ownAnchorPath, conversationId, conversationId)) {
     return { workerName: null, isKnownCoordinator: true };
   }
 
@@ -440,8 +498,19 @@ function resolveWorkerOrCoordinatorFromSwarm(
     if ((!entry.isDirectory() && !entry.isSymbolicLink()) || entry.name === conversationId || checkedRoots.has(entry.name)) {
       continue;
     }
-    const membersPath = join(brainDir, entry.name, ".system_generated", "swarm", "members.json");
-    if (!existsSync(membersPath)) continue;
+    const swarmDir = join(brainDir, entry.name, ".system_generated", "swarm");
+    const membersPath = join(swarmDir, "members.json");
+    if (!existsSync(membersPath)) {
+      const anchorPath = join(swarmDir, "swarm.json");
+      if (existsSync(anchorPath)) {
+        if (anchorMatchesCoordinator(anchorPath, conversationId, entry.name)) {
+          matchedCoordinator = true;
+        } else {
+          hasAnchorWithoutMembers = true;
+        }
+      }
+      continue;
+    }
     const extracted = extractMembersFromDoc(readJsonObject(membersPath), conversationId);
     Object.assign(discoveredWorkers, extracted.workerEntries);
     if (extracted.matchedCoordinator) matchedCoordinator = true;
@@ -455,7 +524,9 @@ function resolveWorkerOrCoordinatorFromSwarm(
     return { workerName: null, isKnownCoordinator: true };
   }
 
-  updateJsonKey(nonWorkerRootsPath, conversationId, true);
+  if (!hasAnchorWithoutMembers) {
+    updateJsonKey(nonWorkerRootsPath, conversationId, true);
+  }
   return { workerName: null, isKnownCoordinator: false };
 }
 
@@ -484,10 +555,11 @@ function classifyWorkerMember(memberName) {
   if (memberName.startsWith("sicko-")) {
     return { kind: "sicko", capsule: "roles/comment-sicko.md" };
   }
+  const baseMemberName = memberName.replace(/-\d+$/, "");
   if (
-    memberName === "verifier" ||
+    baseMemberName === "verifier" ||
     memberName.startsWith("verifier-") ||
-    memberName.endsWith("-verifier") ||
+    baseMemberName.endsWith("-verifier") ||
     memberName.startsWith("verify-")
   ) {
     return { kind: "readonly", capsule: "roles/research.md" };
@@ -495,7 +567,7 @@ function classifyWorkerMember(memberName) {
   return { kind: "author", capsule: "roles/poteto-agent.md" };
 }
 
-function classifySession(payload, env, normalizedToolName = "") {
+function classifySession(payload, env) {
   const appDataDir = resolveAppDataDir(payload, env);
   const cacheDir = resolveCacheDir(appDataDir, env);
   const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
@@ -529,14 +601,12 @@ function classifySession(payload, env, normalizedToolName = "") {
 
   const matchesSlashCommand =
     typeof payload.lastUserInput === "string" && PSTACK_SLASH_COMMAND_RE.test(payload.lastUserInput);
-  const matchesSwarmBoardTool = SWARM_BOARD_TOOLS.has(normalizedToolName);
   const forcedCoordinator = env.PSTACK_FORCE_COORDINATOR === "1";
 
   if (
     isKnownCoordinator ||
     alreadyInjected ||
     matchesSlashCommand ||
-    matchesSwarmBoardTool ||
     forcedCoordinator
   ) {
     return {
@@ -647,24 +717,146 @@ function isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, opt
   );
 }
 
-function resolveShellTargetPath(rawToken, baseDir, env) {
+function replaceSafeRuntimeTokens(input) {
+  return input
+    .replace(/\$\{\$\}|\$\$/g, "0")
+    .replace(/\$\{(?:PPID|RANDOM|BASHPID)\}|\$(?:PPID|RANDOM|BASHPID)(?![A-Za-z0-9_])/g, "0")
+    .replace(
+      /\$\(\s*date\s+(?:-u\s+)?(?:\+[A-Za-z0-9_%:.-]+|"\+[A-Za-z0-9_%:.-]+"|'\+[A-Za-z0-9_%:.-]+')\s*\)/g,
+      "0",
+    )
+    .replace(/\$\(\s*uuidgen\s*\)/g, "0");
+}
+
+function findMatchingBrace(str, openBraceIdx) {
+  let depth = 1;
+  let i = openBraceIdx + 1;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < str.length && depth > 0) {
+    const ch = str[i];
+    if (ch === "\\" && !inSingle) {
+      i += 2;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      i += 1;
+      continue;
+    }
+    if (!inSingle && !inDouble) {
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+function expandShellVarsOnce(input, envState) {
+  let out = "";
+  let changed = false;
+  let i = 0;
+
+  while (i < input.length) {
+    const ch = input[i];
+    if (ch === "\\" && i + 1 < input.length && (input[i + 1] === "$" || input[i + 1] === "`" || input[i + 1] === "~")) {
+      out += input.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch !== "$") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (input[i + 1] === "{") {
+      const closeIdx = findMatchingBrace(input, i + 1);
+      if (closeIdx < 0) return { ok: false, value: "", changed: false };
+      const body = input.slice(i + 2, closeIdx);
+      const paramMatch = body.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([\s\S]*))?$/);
+      if (!paramMatch) return { ok: false, value: "", changed: false };
+      const [, varName, op, fallbackVal = ""] = paramMatch;
+      const rawVal = typeof envState[varName] === "string" ? envState[varName] : undefined;
+
+      if (!op) {
+        if (rawVal === undefined) return { ok: false, value: "", changed: false };
+        out += rawVal;
+      } else if (op === ":-" || op === ":=") {
+        const chosen = rawVal !== undefined && rawVal.length > 0 ? rawVal : fallbackVal;
+        if (op === ":=" && (rawVal === undefined || rawVal.length === 0)) {
+          envState[varName] = chosen;
+        }
+        out += chosen;
+      } else {
+        const chosen = rawVal !== undefined ? rawVal : fallbackVal;
+        if (op === "=" && rawVal === undefined) {
+          envState[varName] = chosen;
+        }
+        out += chosen;
+      }
+      changed = true;
+      i = closeIdx + 1;
+      continue;
+    }
+
+    const bareMatch = input.slice(i + 1).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+    if (bareMatch) {
+      const varName = bareMatch[1];
+      const rawVal = typeof envState[varName] === "string" ? envState[varName] : undefined;
+      if (rawVal === undefined) return { ok: false, value: "", changed: false };
+      out += rawVal;
+      changed = true;
+      i += 1 + varName.length;
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return { ok: true, value: out, changed };
+}
+
+function resolveShellTargetPath(rawToken, baseDir, mergedEnv = {}, options = {}) {
+  const { requireAbsoluteAfterExpand = false } = options;
   if (typeof rawToken !== "string" || rawToken.length === 0) return null;
   if (rawToken === "/dev/null") return "/dev/null";
 
+  const envState = mergedEnv && typeof mergedEnv === "object" ? { ...mergedEnv } : {};
   let expanded = rawToken;
-  if (expanded === "~" || expanded.startsWith("~/")) {
-    const home = env.HOME || homedir();
+  if (expanded.startsWith("\\~")) {
+    expanded = expanded.slice(1);
+  } else if (expanded === "~" || expanded.startsWith("~/")) {
+    const home = envState.HOME || homedir();
     expanded = expanded === "~" ? home : join(home, expanded.slice(2));
   } else if (expanded.startsWith("~")) {
     return null;
   }
 
-  if (/^\$(?:TMPDIR|\{TMPDIR\})(?=\/|$)/.test(expanded)) {
-    const tmpVal = env.TMPDIR || tmpdir();
-    expanded = expanded.replace(/^\$(?:TMPDIR|\{TMPDIR\})/, tmpVal);
+  for (let pass = 0; pass < 4; pass += 1) {
+    expanded = replaceSafeRuntimeTokens(expanded);
+    if (!expanded.includes("$")) break;
+    const step = expandShellVarsOnce(expanded, envState);
+    if (!step.ok) return null;
+    expanded = step.value;
+    if (!step.changed) break;
   }
+  expanded = replaceSafeRuntimeTokens(expanded);
 
-  if (/[$`]/.test(expanded)) {
+  if (!expanded || /[$`]/.test(expanded)) {
+    return null;
+  }
+  if (requireAbsoluteAfterExpand && !isAbsolute(expanded)) {
     return null;
   }
 
@@ -763,6 +955,28 @@ function preprocessHeredocs(command) {
   };
 }
 
+function scanBalancedDollarSub(str, dollarIdx) {
+  let depth = 1;
+  let j = dollarIdx + 2;
+  let subSingle = false;
+  let subDouble = false;
+  while (j < str.length && depth > 0) {
+    const c = str[j];
+    if (c === "\\" && !subSingle) {
+      j += 2;
+      continue;
+    }
+    if (c === "'" && !subDouble) subSingle = !subSingle;
+    else if (c === '"' && !subSingle) subDouble = !subDouble;
+    else if (!subSingle && !subDouble) {
+      if (c === "(") depth += 1;
+      else if (c === ")") depth -= 1;
+    }
+    j += 1;
+  }
+  return depth === 0 ? j : -1;
+}
+
 function extractCommandSubstitutions(command) {
   const subs = [];
   let i = 0;
@@ -786,27 +1000,10 @@ function extractCommandSubstitutions(command) {
       continue;
     }
     if (!inSingle && ch === "$" && command[i + 1] === "(") {
-      let depth = 1;
-      let j = i + 2;
-      let subSingle = false;
-      let subDouble = false;
-      while (j < command.length && depth > 0) {
-        const c = command[j];
-        if (c === "\\" && !subSingle) {
-          j += 2;
-          continue;
-        }
-        if (c === "'" && !subDouble) subSingle = !subSingle;
-        else if (c === '"' && !subSingle) subDouble = !subDouble;
-        else if (!subSingle && !subDouble) {
-          if (c === "(") depth += 1;
-          else if (c === ")") depth -= 1;
-        }
-        j += 1;
-      }
-      if (depth === 0) {
-        subs.push(command.slice(i + 2, j - 1));
-        i = j;
+      const endIdx = scanBalancedDollarSub(command, i);
+      if (endIdx > 0) {
+        subs.push(command.slice(i + 2, endIdx - 1));
+        i = endIdx;
         continue;
       }
     }
@@ -831,7 +1028,8 @@ function extractCommandSubstitutions(command) {
   return subs;
 }
 
-function readNextShellToken(str, startIdx) {
+function readNextShellToken(str, startIdx, options = {}) {
+  const { preserveLiteralEscapes = false } = options;
   let i = startIdx;
   while (i < str.length && (str[i] === " " || str[i] === "\t")) {
     i += 1;
@@ -840,35 +1038,243 @@ function readNextShellToken(str, startIdx) {
   let token = "";
   let inSingle = false;
   let inDouble = false;
+  let sawAnyChar = false;
 
   while (i < str.length) {
     const ch = str[i];
     if (!inSingle && !inDouble && " \t\r\n|&;()<>".includes(ch)) {
       break;
     }
+    if (!inSingle && ch === "$" && str[i + 1] === "(") {
+      const endIdx = scanBalancedDollarSub(str, i);
+      if (endIdx > 0) {
+        token += str.slice(i, endIdx);
+        sawAnyChar = true;
+        i = endIdx;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "$" && str[i + 1] === "{") {
+      const closeIdx = findMatchingBrace(str, i + 1);
+      if (closeIdx > 0) {
+        token += str.slice(i, closeIdx + 1);
+        sawAnyChar = true;
+        i = closeIdx + 1;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "`") {
+      let j = i + 1;
+      while (j < str.length) {
+        if (str[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (str[j] === "`") break;
+        j += 1;
+      }
+      if (j < str.length) {
+        token += str.slice(i, j + 1);
+        sawAnyChar = true;
+        i = j + 1;
+        continue;
+      }
+    }
     if (ch === "\\" && !inSingle) {
-      if (i + 1 < str.length) token += str[i + 1];
+      if (i + 1 < str.length) {
+        const next = str[i + 1];
+        if (preserveLiteralEscapes && (next === "$" || next === "`" || (!sawAnyChar && next === "~"))) {
+          token += "\\" + next;
+        } else {
+          token += next;
+        }
+      }
+      sawAnyChar = true;
       i += 2;
       continue;
     }
     if (ch === "'" && !inDouble) {
       inSingle = !inSingle;
+      if (preserveLiteralEscapes && !sawAnyChar && str[i + 1] === "~") {
+        token += "\\~";
+        sawAnyChar = true;
+        i += 2;
+        continue;
+      }
+      sawAnyChar = true;
       i += 1;
       continue;
     }
     if (ch === '"' && !inSingle) {
       inDouble = !inDouble;
+      if (preserveLiteralEscapes && !sawAnyChar && str[i + 1] === "~") {
+        token += "\\~";
+        sawAnyChar = true;
+        i += 2;
+        continue;
+      }
+      sawAnyChar = true;
+      i += 1;
+      continue;
+    }
+    if (preserveLiteralEscapes && inSingle && (ch === "$" || ch === "`")) {
+      token += "\\" + ch;
+      sawAnyChar = true;
       i += 1;
       continue;
     }
     token += ch;
+    sawAnyChar = true;
     i += 1;
   }
   return { token, nextIdx: i };
 }
 
-function extractOutputRedirectTargets(command) {
+function splitRawShellSegments(command) {
+  const items = [];
+  let start = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let atTokenBoundary = true;
+  let connectorBefore = "";
+  let i = 0;
+
+  const pushSlice = (endIdx, connectorAfter = "") => {
+    const sub = command.slice(start, endIdx);
+    if (sub.trim().length > 0) {
+      items.push({ type: "segment", text: sub, connectorBefore, connectorAfter });
+    }
+  };
+
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "\\" && !inSingle) {
+      if (command[i + 1] !== "\n") atTokenBoundary = false;
+      i += 2;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      atTokenBoundary = false;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      atTokenBoundary = false;
+      i += 1;
+      continue;
+    }
+    if (!inSingle && ch === "$" && command[i + 1] === "(") {
+      const endIdx = scanBalancedDollarSub(command, i);
+      if (endIdx > 0) {
+        atTokenBoundary = false;
+        i = endIdx;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "$" && command[i + 1] === "{") {
+      const closeIdx = findMatchingBrace(command, i + 1);
+      if (closeIdx > 0) {
+        atTokenBoundary = false;
+        i = closeIdx + 1;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "`") {
+      let j = i + 1;
+      while (j < command.length) {
+        if (command[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (command[j] === "`") break;
+        j += 1;
+      }
+      if (j < command.length) {
+        atTokenBoundary = false;
+        i = j + 1;
+        continue;
+      }
+    }
+    if (!inSingle && !inDouble) {
+      if (ch === " " || ch === "\t" || ch === "\r") {
+        atTokenBoundary = true;
+        i += 1;
+        continue;
+      }
+      if (ch === "#" && atTokenBoundary) {
+        while (i < command.length && command[i] !== "\n") i += 1;
+        continue;
+      }
+      if (ch === "(" || ch === ")") {
+        pushSlice(i, ch);
+        items.push({ type: "paren", dir: ch });
+        i += 1;
+        start = i;
+        connectorBefore = ch;
+        atTokenBoundary = true;
+        continue;
+      }
+      if (ch === "\n" || ch === ";") {
+        pushSlice(i, ch);
+        i += 1;
+        start = i;
+        connectorBefore = ch;
+        atTokenBoundary = true;
+        continue;
+      }
+      if (ch === "&" && command[i + 1] === ">") {
+        const opLen = command[i + 2] === ">" ? 3 : 2;
+        const { nextIdx } = readNextShellToken(command, i + opLen);
+        i = nextIdx;
+        atTokenBoundary = true;
+        continue;
+      }
+      if (ch === ">" && command[i + 1] === "&") {
+        const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
+        if (fdMatch) {
+          i += 2 + fdMatch[0].length;
+          atTokenBoundary = true;
+          continue;
+        }
+        const { nextIdx } = readNextShellToken(command, i + 2);
+        i = nextIdx;
+        atTokenBoundary = true;
+        continue;
+      }
+      if (ch === "<" && command[i + 1] === "&") {
+        const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
+        if (fdMatch) {
+          i += 2 + fdMatch[0].length;
+          atTokenBoundary = true;
+          continue;
+        }
+        const { nextIdx } = readNextShellToken(command, i + 2);
+        i = nextIdx;
+        atTokenBoundary = true;
+        continue;
+      }
+      if (ch === "|" || ch === "&") {
+        const op = command[i + 1] === ch ? ch + ch : ch;
+        pushSlice(i, op);
+        i += op.length;
+        start = i;
+        connectorBefore = op;
+        atTokenBoundary = true;
+        continue;
+      }
+    }
+    atTokenBoundary = false;
+    i += 1;
+  }
+  pushSlice(command.length, "");
+  return items;
+}
+
+function extractOutputRedirectTargets(command, activeEnv = {}) {
   const targets = [];
+  const envSnapshot = { ...activeEnv };
   let i = 0;
   let inSingle = false;
   let inDouble = false;
@@ -889,20 +1295,49 @@ function extractOutputRedirectTargets(command) {
       i += 1;
       continue;
     }
+    if (!inSingle && ch === "$" && command[i + 1] === "(") {
+      const endIdx = scanBalancedDollarSub(command, i);
+      if (endIdx > 0) {
+        i = endIdx;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "$" && command[i + 1] === "{") {
+      const closeIdx = findMatchingBrace(command, i + 1);
+      if (closeIdx > 0) {
+        i = closeIdx + 1;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "`") {
+      let j = i + 1;
+      while (j < command.length) {
+        if (command[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (command[j] === "`") break;
+        j += 1;
+      }
+      if (j < command.length) {
+        i = j + 1;
+        continue;
+      }
+    }
     if (!inSingle && !inDouble && ch === "#" && (i === 0 || " \t\r\n;|(&".includes(command[i - 1]))) {
       while (i < command.length && command[i] !== "\n") i += 1;
       continue;
     }
     if (!inSingle && !inDouble && ch === "&" && command[i + 1] === ">") {
       const opLen = command[i + 2] === ">" ? 3 : 2;
-      const { token, nextIdx } = readNextShellToken(command, i + opLen);
-      targets.push(token);
+      const { token, nextIdx } = readNextShellToken(command, i + opLen, { preserveLiteralEscapes: true });
+      targets.push({ target: token, env: envSnapshot });
       i = nextIdx;
       continue;
     }
     if (!inSingle && !inDouble && ch === "<" && command[i + 1] === ">") {
-      const { token, nextIdx } = readNextShellToken(command, i + 2);
-      targets.push(token);
+      const { token, nextIdx } = readNextShellToken(command, i + 2, { preserveLiteralEscapes: true });
+      targets.push({ target: token, env: envSnapshot });
       i = nextIdx;
       continue;
     }
@@ -913,14 +1348,14 @@ function extractOutputRedirectTargets(command) {
           i += 2 + fdMatch[0].length;
           continue;
         }
-        const { token, nextIdx } = readNextShellToken(command, i + 2);
-        targets.push(token);
+        const { token, nextIdx } = readNextShellToken(command, i + 2, { preserveLiteralEscapes: true });
+        targets.push({ target: token, env: envSnapshot });
         i = nextIdx;
         continue;
       }
       const opLen = command[i + 1] === ">" || command[i + 1] === "|" ? 2 : 1;
-      const { token, nextIdx } = readNextShellToken(command, i + opLen);
-      targets.push(token);
+      const { token, nextIdx } = readNextShellToken(command, i + opLen, { preserveLiteralEscapes: true });
+      targets.push({ target: token, env: envSnapshot });
       i = nextIdx;
       continue;
     }
@@ -929,9 +1364,8 @@ function extractOutputRedirectTargets(command) {
   return targets;
 }
 
-function tokenizeShellSegments(command) {
-  const segments = [];
-  let current = [];
+function tokenizeSingleSegment(segment) {
+  const tokens = [];
   let token = "";
   let hasTokenChars = false;
   let inSingle = false;
@@ -940,29 +1374,21 @@ function tokenizeShellSegments(command) {
 
   const flushToken = () => {
     if (hasTokenChars) {
-      current.push(token);
+      tokens.push(token);
       token = "";
       hasTokenChars = false;
     }
   };
 
-  const flushSegment = () => {
-    flushToken();
-    if (current.length > 0) {
-      segments.push(current);
-      current = [];
-    }
-  };
-
-  while (i < command.length) {
-    const ch = command[i];
+  while (i < segment.length) {
+    const ch = segment[i];
     if (ch === "\\" && !inSingle) {
-      if (i + 1 < command.length && command[i + 1] === "\n") {
+      if (i + 1 < segment.length && segment[i + 1] === "\n") {
         i += 2;
         continue;
       }
       hasTokenChars = true;
-      if (i + 1 < command.length) token += command[i + 1];
+      if (i + 1 < segment.length) token += segment[i + 1];
       i += 2;
       continue;
     }
@@ -978,6 +1404,41 @@ function tokenizeShellSegments(command) {
       i += 1;
       continue;
     }
+    if (!inSingle && ch === "$" && segment[i + 1] === "(") {
+      const endIdx = scanBalancedDollarSub(segment, i);
+      if (endIdx > 0) {
+        hasTokenChars = true;
+        token += segment.slice(i, endIdx);
+        i = endIdx;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "$" && segment[i + 1] === "{") {
+      const closeIdx = findMatchingBrace(segment, i + 1);
+      if (closeIdx > 0) {
+        hasTokenChars = true;
+        token += segment.slice(i, closeIdx + 1);
+        i = closeIdx + 1;
+        continue;
+      }
+    }
+    if (!inSingle && ch === "`") {
+      let j = i + 1;
+      while (j < segment.length) {
+        if (segment[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (segment[j] === "`") break;
+        j += 1;
+      }
+      if (j < segment.length) {
+        hasTokenChars = true;
+        token += segment.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+    }
     if (!inSingle && !inDouble) {
       if (ch === " " || ch === "\t" || ch === "\r") {
         flushToken();
@@ -985,25 +1446,14 @@ function tokenizeShellSegments(command) {
         continue;
       }
       if (ch === "#" && !hasTokenChars) {
-        while (i < command.length && command[i] !== "\n") i += 1;
+        while (i < segment.length && segment[i] !== "\n") i += 1;
         continue;
       }
-      if (ch === "\n" || ch === ";" || ch === "(" || ch === ")") {
-        flushSegment();
-        i += 1;
-        continue;
-      }
-      if (ch === "|" || ch === "&") {
-        if (ch === "&" && command[i + 1] === ">") {
-          flushToken();
-          const opLen = command[i + 2] === ">" ? 3 : 2;
-          const { nextIdx } = readNextShellToken(command, i + opLen);
-          i = nextIdx;
-          continue;
-        }
-        flushSegment();
-        if (command[i + 1] === ch) i += 2;
-        else i += 1;
+      if (ch === "&" && segment[i + 1] === ">") {
+        flushToken();
+        const opLen = segment[i + 2] === ">" ? 3 : 2;
+        const { nextIdx } = readNextShellToken(segment, i + opLen);
+        i = nextIdx;
         continue;
       }
       if (ch === ">" || ch === "<") {
@@ -1013,29 +1463,32 @@ function tokenizeShellSegments(command) {
         } else {
           flushToken();
         }
-        if (ch === "<" && command[i + 1] === "<" && command[i + 2] === "<") {
-          const { nextIdx } = readNextShellToken(command, i + 3);
+        if (ch === "<" && segment[i + 1] === "<" && segment[i + 2] === "<") {
+          const { nextIdx } = readNextShellToken(segment, i + 3);
           i = nextIdx;
           continue;
         }
-        if (ch === "<" && command[i + 1] === "<") {
-          const opLen = command[i + 2] === "-" ? 3 : 2;
-          const { nextIdx } = readNextShellToken(command, i + opLen);
+        if (ch === "<" && segment[i + 1] === "<") {
+          const opLen = segment[i + 2] === "-" ? 3 : 2;
+          const { nextIdx } = readNextShellToken(segment, i + opLen);
           i = nextIdx;
           continue;
         }
-        if (ch === ">" && command[i + 1] === "&") {
-          const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)/);
+        if ((ch === ">" || ch === "<") && segment[i + 1] === "&") {
+          const fdMatch = segment.slice(i + 2).match(/^(?:\d+|-)/);
           if (fdMatch) {
             i += 2 + fdMatch[0].length;
             continue;
           }
-          const { nextIdx } = readNextShellToken(command, i + 2);
+          const { nextIdx } = readNextShellToken(segment, i + 2);
           i = nextIdx;
           continue;
         }
-        const opLen = command[i + 1] === ch || command[i + 1] === "|" || command[i + 1] === "&" || command[i + 1] === ">" ? 2 : 1;
-        const { nextIdx } = readNextShellToken(command, i + opLen);
+        const opLen =
+          segment[i + 1] === ch || segment[i + 1] === "|" || segment[i + 1] === "&" || segment[i + 1] === ">"
+            ? 2
+            : 1;
+        const { nextIdx } = readNextShellToken(segment, i + opLen);
         i = nextIdx;
         continue;
       }
@@ -1045,32 +1498,110 @@ function tokenizeShellSegments(command) {
     i += 1;
   }
 
-  flushSegment();
-  return segments;
+  flushToken();
+  return tokens;
 }
 
-function unwrapCommandSegment(tokens, inheritedEnv = {}) {
+function assignEnvVar(envObj, outerEnv, key, rawVal) {
+  const priorVal =
+    typeof envObj[key] === "string"
+      ? envObj[key]
+      : outerEnv && typeof outerEnv[key] === "string"
+        ? outerEnv[key]
+        : undefined;
+  if (priorVal !== undefined && rawVal.includes("$")) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const selfExpanded = rawVal
+      .replace(new RegExp(`\\$\\{${escapedKey}\\}`, "g"), priorVal)
+      .replace(new RegExp(`\\$${escapedKey}(?![A-Za-z0-9_])`, "g"), priorVal);
+    envObj[key] = selfExpanded;
+    return;
+  }
+  envObj[key] = rawVal;
+}
+
+const SHELL_KEYWORD_PREFIXES = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "while",
+  "until",
+  "do",
+  "done",
+  "esac",
+  "{",
+  "}",
+  "!",
+]);
+
+const READ_VALUE_FLAGS = new Set(["-p", "-t", "-n", "-N", "-d", "-u", "-i", "-a"]);
+
+function unwrapCommandSegment(tokens, inheritedEnv = {}, outerEnv = {}) {
   const env = { ...inheritedEnv };
+  const assignedKeys = [];
+  const taintedVars = [];
   let idx = 0;
 
   while (idx < tokens.length) {
     const tok = tokens[idx];
+    if (SHELL_KEYWORD_PREFIXES.has(tok)) {
+      idx += 1;
+      continue;
+    }
+    if ((tok === "for" || tok === "select") && idx === 0) {
+      if (idx + 1 < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*$/.test(tokens[idx + 1])) {
+        taintedVars.push(tokens[idx + 1]);
+      }
+      return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
+    }
+    if (tok === "case" && idx === 0) {
+      return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
+    }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
       const eq = tok.indexOf("=");
-      env[tok.slice(0, eq)] = tok.slice(eq + 1);
+      const key = tok.slice(0, eq);
+      assignEnvVar(env, outerEnv, key, tok.slice(eq + 1));
+      assignedKeys.push(key);
       idx += 1;
       continue;
     }
     const base = basename(tok);
-    if (base === "export" && idx === 0) {
-      for (let j = 1; j < tokens.length; j += 1) {
+    if (
+      (base === "export" || base === "local" || base === "readonly" || base === "declare" || base === "typeset") &&
+      tok === base
+    ) {
+      for (let j = idx + 1; j < tokens.length; j += 1) {
         const arg = tokens[j];
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
           const eq = arg.indexOf("=");
-          env[arg.slice(0, eq)] = arg.slice(eq + 1);
+          const key = arg.slice(0, eq);
+          assignEnvVar(env, outerEnv, key, arg.slice(eq + 1));
+          assignedKeys.push(key);
         }
       }
-      return { cmd: "export", args: tokens.slice(1), env };
+      return { cmd: "export", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
+    }
+    if (base === "unset" && tok === "unset") {
+      for (let j = idx + 1; j < tokens.length; j += 1) {
+        const arg = tokens[j];
+        if (!arg.startsWith("-")) delete env[arg];
+      }
+      return { cmd: "unset", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
+    }
+    if (base === "read" && tok === "read") {
+      for (let j = idx + 1; j < tokens.length; j += 1) {
+        const arg = tokens[j];
+        if (arg.startsWith("-") && arg.length > 1) {
+          if (READ_VALUE_FLAGS.has(arg)) j += 1;
+          continue;
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
+          taintedVars.push(arg);
+        }
+      }
+      return { cmd: "read", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
     }
     if (base === "env") {
       idx += 1;
@@ -1081,12 +1612,13 @@ function unwrapCommandSegment(tokens, inheritedEnv = {}) {
           continue;
         }
         if (envArg === "-u") {
+          if (idx + 1 < tokens.length) delete env[tokens[idx + 1]];
           idx += 2;
           continue;
         }
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(envArg)) {
           const eq = envArg.indexOf("=");
-          env[envArg.slice(0, eq)] = envArg.slice(eq + 1);
+          assignEnvVar(env, outerEnv, envArg.slice(0, eq), envArg.slice(eq + 1));
           idx += 1;
           continue;
         }
@@ -1128,42 +1660,85 @@ function unwrapCommandSegment(tokens, inheritedEnv = {}) {
   }
 
   if (idx >= tokens.length) {
-    return { cmd: "", args: [], env };
+    return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
   }
   return {
     cmd: basename(tokens[idx]),
+    rawCmd: tokens[idx],
     args: tokens.slice(idx + 1),
     env,
+    assignedKeys,
+    taintedVars,
   };
 }
 
-function collectInvocations(command, depth = 0) {
+function replaceObjectKeys(target, source) {
+  for (const k of Object.keys(target)) delete target[k];
+  Object.assign(target, source);
+}
+
+function collectInvocations(command, depth = 0, inheritedEnv = {}, outerEnv = {}) {
   if (depth > 8 || !command) return { invocations: [], redirectTargets: [] };
   const { strippedCommand, unquotedBodies } = preprocessHeredocs(command);
-  const redirectTargets = [...extractOutputRedirectTargets(strippedCommand)];
+  const redirectTargets = [];
   const invocations = [];
-  const scriptEnv = {};
+  const scriptEnv = { ...inheritedEnv };
+  const envStack = [];
 
-  const substitutions = [...extractCommandSubstitutions(strippedCommand)];
-  for (const body of unquotedBodies) {
-    substitutions.push(...extractCommandSubstitutions(body));
-  }
-
-  for (const sub of substitutions) {
-    const subRes = collectInvocations(sub, depth + 1);
-    redirectTargets.push(...subRes.redirectTargets);
-    invocations.push(...subRes.invocations);
-  }
-
-  const rawSegments = tokenizeShellSegments(strippedCommand);
-  for (const seg of rawSegments) {
-    const parsed = unwrapCommandSegment(seg, scriptEnv);
-    if (!parsed.cmd) {
-      Object.assign(scriptEnv, parsed.env);
+  const rawItems = splitRawShellSegments(strippedCommand);
+  for (const item of rawItems) {
+    if (item.type === "paren") {
+      if (item.dir === "(") {
+        envStack.push({ ...scriptEnv });
+      } else if (envStack.length > 0) {
+        replaceObjectKeys(scriptEnv, envStack.pop());
+      }
       continue;
     }
-    if (parsed.cmd === "export") {
-      Object.assign(scriptEnv, parsed.env);
+
+    const rawSeg = item.text;
+    const isPipelineStage = item.connectorBefore === "|" || item.connectorAfter === "|";
+    const isConditional = item.connectorBefore === "&&" || item.connectorBefore === "||";
+    const tokens = tokenizeSingleSegment(rawSeg);
+    const parsed = unwrapCommandSegment(tokens, scriptEnv, outerEnv);
+
+    for (const sub of extractCommandSubstitutions(rawSeg)) {
+      const subRes = collectInvocations(sub, depth + 1, parsed.env, outerEnv);
+      redirectTargets.push(...subRes.redirectTargets);
+      invocations.push(...subRes.invocations);
+    }
+
+    redirectTargets.push(...extractOutputRedirectTargets(rawSeg, parsed.env));
+
+    for (const tv of parsed.taintedVars) {
+      if (!isPipelineStage) {
+        parsed.env[tv] = "$__TAINTED__";
+        scriptEnv[tv] = "$__TAINTED__";
+      }
+    }
+
+    if (!parsed.cmd) {
+      if (!isPipelineStage) {
+        if (isConditional) {
+          for (const key of parsed.assignedKeys) {
+            scriptEnv[key] = "$__TAINTED__";
+          }
+        } else {
+          Object.assign(scriptEnv, parsed.env);
+        }
+      }
+      continue;
+    }
+    if (parsed.cmd === "export" || parsed.cmd === "unset" || parsed.cmd === "read") {
+      if (!isPipelineStage) {
+        if (isConditional) {
+          for (const key of parsed.assignedKeys) {
+            scriptEnv[key] = "$__TAINTED__";
+          }
+        } else {
+          replaceObjectKeys(scriptEnv, parsed.env);
+        }
+      }
       continue;
     }
     invocations.push(parsed);
@@ -1173,20 +1748,24 @@ function collectInvocations(command, depth = 0) {
         const arg = parsed.args[i];
         if (arg === "--") break;
         if (/^-[a-zA-Z]*c$/.test(arg) && i + 1 < parsed.args.length) {
-          const inner = collectInvocations(parsed.args[i + 1], depth + 1);
+          const inner = collectInvocations(parsed.args[i + 1], depth + 1, parsed.env, outerEnv);
           redirectTargets.push(...inner.redirectTargets);
-          for (const inv of inner.invocations) {
-            invocations.push({ ...inv, env: { ...parsed.env, ...inv.env } });
-          }
+          invocations.push(...inner.invocations);
           break;
         }
       }
     } else if (parsed.cmd === "eval" && parsed.args.length > 0) {
-      const inner = collectInvocations(parsed.args.join(" "), depth + 1);
+      const inner = collectInvocations(parsed.args.join(" "), depth + 1, parsed.env, outerEnv);
       redirectTargets.push(...inner.redirectTargets);
-      for (const inv of inner.invocations) {
-        invocations.push({ ...inv, env: { ...parsed.env, ...inv.env } });
-      }
+      invocations.push(...inner.invocations);
+    }
+  }
+
+  for (const body of unquotedBodies) {
+    for (const sub of extractCommandSubstitutions(body)) {
+      const subRes = collectInvocations(sub, depth + 1, scriptEnv, outerEnv);
+      redirectTargets.push(...subRes.redirectTargets);
+      invocations.push(...subRes.invocations);
     }
   }
 
@@ -1630,21 +2209,153 @@ function parseStaticPyString(expr) {
   return { ok: true, value: unescapeSimpleLiteral(inner, isRaw) };
 }
 
-function checkInlineNodeFs(code, allowReadOnlyTempPath) {
-  if (/\[[^\]]*(?:writeFile|appendFile|unlink|rm|rmdir|rename|copyFile|cp|mkdir|mkdtemp|chmod|chown|truncate|symlink|link|createWriteStream|openSync)/.test(code)) {
-    return "Dynamic fs mutation via inline Node script is blocked for read-only ro-* workers.";
+const JS_NON_MEMBER_PREFIX_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "await",
+  "yield",
+  "throw",
+  "delete",
+  "void",
+  "case",
+  "in",
+  "of",
+  "else",
+  "new",
+]);
+
+const NODE_MUTATION_NAME_RE =
+  /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b/;
+
+const PYTHON_MUTATION_NAME_RE =
+  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|lchmod|symlink_to|hardlink_to)\b/;
+
+function isVarBoundToVerifiedTmpRoot(varName, code) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return false;
+  const varEsc = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignRe = new RegExp(
+    `(?:^|[\\n;])\\s*(?:(?:const|let|var)\\s+)?${varEsc}\\s*=\\s*([^\\n;]+)`,
+    "g",
+  );
+  let lastRhs = null;
+  let m;
+  while ((m = assignRe.exec(code)) !== null) {
+    lastRhs = m[1].trim();
+  }
+  if (!lastRhs || lastRhs.includes("..")) return false;
+  return /^(?:[fFrRuUbB]{0,2}['"`](?:\/private)?\/tmp(?:\/|['"`\b])|[^\n;]*(?:mkdtemp|mkdtempSync|gettempdir|tmpdir)\s*\(|os\.environ\.get\(\s*['"]TMPDIR['"])/.test(
+    lastRhs,
+  );
+}
+
+function isSafeTmpTemplateOrJoin(expr, code, allowPath) {
+  if (!allowPath("/tmp/__pstack_probe__", { allowRootEqual: false, allowDevNull: false })) {
+    return false;
+  }
+  const trimmed = expr.trim();
+  if (trimmed.includes("..")) return false;
+  if (/^`(?:\/private)?\/tmp\/[^`]+`$/.test(trimmed)) {
+    return true;
+  }
+  const jsVarTemplate = trimmed.match(/^`\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?:\/[^`]*)?`$/);
+  if (jsVarTemplate && isVarBoundToVerifiedTmpRoot(jsVarTemplate[1], code)) {
+    return true;
+  }
+  if (
+    /^[fF](?:'''[\s\S]*'''|"""[\s\S]*"""|'[^']*'|"[^"]*")$/.test(trimmed) &&
+    /^[fF]['"]{1,3}(?:\/private)?\/tmp\//.test(trimmed)
+  ) {
+    return true;
+  }
+  const pyVarTemplate = trimmed.match(/^[fF](?:'''|"""|'|\")\{([A-Za-z_][A-Za-z0-9_]*)\}(?:\/[^'"]*)?(?:'''|"""|'|\")$/);
+  if (pyVarTemplate && isVarBoundToVerifiedTmpRoot(pyVarTemplate[1], code)) {
+    return true;
+  }
+  const joinMatch = trimmed.match(/^(?:path\s*\.\s*join|os\s*\.\s*path\s*\.\s*join|join)\s*\(([\s\S]*)\)$/);
+  if (joinMatch) {
+    const innerArgs = parseCallArguments(`(${joinMatch[1]})`, 0);
+    if (innerArgs && innerArgs.length >= 1) {
+      if (innerArgs.some((a) => a.includes(".."))) return false;
+      const rootArg = innerArgs[0].trim();
+      if (
+        /^['"`](?:\/private)?\/tmp(?:\/|['"`]$)/.test(rootArg) ||
+        /\b(?:mkdtemp|mkdtempSync|gettempdir|tmpdir)\s*\(/.test(rootArg)
+      ) {
+        return true;
+      }
+      if (isVarBoundToVerifiedTmpRoot(rootArg, code)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function resolveSimpleVarBinding(code, expr, isPython) {
+  const trimmed = expr.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return null;
+  const varEsc = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignRe = new RegExp(`(?:^|[\\n;])\\s*(?:(?:const|let|var)\\s+)?${varEsc}\\s*=\\s*([^\\n;]+)`, "g");
+  let lastRhs = null;
+  let m;
+  while ((m = assignRe.exec(code)) !== null) {
+    lastRhs = m[1].trim();
+  }
+  if (!lastRhs) return null;
+  return isPython ? parseStaticPyString(lastRhs) : parseStaticJsString(lastRhs);
+}
+
+function checkInlineNodeFs(code, allowPath, options = {}) {
+  const { allowDynamicPaths = false, roleLabel = "read-only ro-* workers" } = options;
+
+  const bracketRe = /(?:([A-Za-z_$][A-Za-z0-9_$]*)|([)\]'"]))\s*\[([^\]]*)\]/g;
+  let bm;
+  while ((bm = bracketRe.exec(code)) !== null) {
+    const ident = bm[1] || "";
+    const bracketBody = bm[3] || "";
+    if (ident && JS_NON_MEMBER_PREFIX_KEYWORDS.has(ident)) continue;
+    const afterBracket = code.slice(bm.index + bm[0].length);
+    const isFsReceiver =
+      ident === "fs" ||
+      ident === "fsp" ||
+      ident === "promises" ||
+      /require\s*\(\s*['"](?:node:)?fs(?:\/promises)?['"]\s*\)\s*$/.test(code.slice(0, bm.index + (bm[2] ? 1 : 0)));
+    if (NODE_MUTATION_NAME_RE.test(bracketBody) || (isFsReceiver && /^\s*\(/.test(afterBracket))) {
+      if (!allowDynamicPaths) {
+        return `Dynamic fs mutation via inline Node script is blocked for ${roleLabel}.`;
+      }
+    }
   }
 
   if (
-    /\.\s*(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b(?!\s*\()/.test(
+    !allowDynamicPaths &&
+    (/\.\s*(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b(?!\s*\()/.test(
       code,
     ) ||
-    /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*(?::|\bas\b)/.test(
-      code,
-    )
+      /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*\bas\b/.test(
+        code,
+      ) ||
+      /(?:const|let|var|\(|^|[;\n,])\s*\{[^}]*\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*:[^}]*\}\s*=/.test(
+        code,
+      ))
   ) {
-    return "Aliased fs mutation API in inline Node script is blocked for read-only ro-* workers.";
+    return `Aliased fs mutation API in inline Node script is blocked for ${roleLabel}.`;
   }
+
+  const checkNodePathArg = (argExpr, opts) => {
+    const lit = parseStaticJsString(argExpr || "");
+    if (lit.ok) {
+      return allowPath(lit.value, opts);
+    }
+    const bound = resolveSimpleVarBinding(code, argExpr || "", false);
+    if (bound && bound.ok) {
+      return allowPath(bound.value, opts);
+    }
+    if (isSafeTmpTemplateOrJoin(argExpr || "", code, allowPath)) {
+      return true;
+    }
+    return allowDynamicPaths;
+  };
 
   const callRe =
     /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync|open)\s*\(/g;
@@ -1658,7 +2369,7 @@ function checkInlineNodeFs(code, allowReadOnlyTempPath) {
     const openParenIdx = match.index + match[0].length - 1;
     const callArgs = parseCallArguments(code, openParenIdx);
     if (!callArgs) {
-      return `Unparseable fs.${fnName} call in inline Node script is blocked for read-only ro-* workers.`;
+      return `Unparseable fs.${fnName} call in inline Node script is blocked for ${roleLabel}.`;
     }
 
     if (fnName === "open" || fnName === "openSync") {
@@ -1670,41 +2381,39 @@ function checkInlineNodeFs(code, allowReadOnlyTempPath) {
       } else {
         continue;
       }
-      const pathLit = parseStaticJsString(callArgs[0] || "");
-      if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: false, allowDevNull: true })) {
-        return `Inline Node fs.${fnName} write outside canonical temp roots is blocked for read-only ro-* workers.`;
+      if (!checkNodePathArg(callArgs[0], { allowRootEqual: false, allowDevNull: true })) {
+        return `Inline Node fs.${fnName} write outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
 
     if (NODE_SINGLE_PATH_FS_APIS.has(fnName)) {
-      const pathLit = parseStaticJsString(callArgs[0] || "");
       const allowRoot = fnName === "mkdirSync" || fnName === "mkdir";
-      const allowNull = fnName === "writeFileSync" || fnName === "writeFile" || fnName === "appendFileSync" || fnName === "appendFile" || fnName === "createWriteStream";
-      if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: allowRoot, allowDevNull: allowNull })) {
-        return `Inline Node fs.${fnName} outside canonical temp roots is blocked for read-only ro-* workers.`;
+      const allowNull =
+        fnName === "writeFileSync" ||
+        fnName === "writeFile" ||
+        fnName === "appendFileSync" ||
+        fnName === "appendFile" ||
+        fnName === "createWriteStream";
+      if (!checkNodePathArg(callArgs[0], { allowRootEqual: allowRoot, allowDevNull: allowNull })) {
+        return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
 
     if (NODE_COPY_FS_APIS.has(fnName)) {
-      const dstLit = parseStaticJsString(callArgs[1] || "");
-      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: true })) {
-        return `Inline Node fs.${fnName} destination outside canonical temp roots is blocked for read-only ro-* workers.`;
+      if (!checkNodePathArg(callArgs[1], { allowRootEqual: true, allowDevNull: true })) {
+        return `Inline Node fs.${fnName} destination outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
 
     if (NODE_TWO_PATH_FS_APIS.has(fnName)) {
-      const firstLit = parseStaticJsString(callArgs[0] || "");
-      const secondLit = parseStaticJsString(callArgs[1] || "");
       if (
-        !firstLit.ok ||
-        !secondLit.ok ||
-        !allowReadOnlyTempPath(firstLit.value, { allowRootEqual: false, allowDevNull: false }) ||
-        !allowReadOnlyTempPath(secondLit.value, { allowRootEqual: true, allowDevNull: false })
+        !checkNodePathArg(callArgs[0], { allowRootEqual: false, allowDevNull: false }) ||
+        !checkNodePathArg(callArgs[1], { allowRootEqual: true, allowDevNull: false })
       ) {
-        return `Inline Node fs.${fnName} outside canonical temp roots is blocked for read-only ro-* workers.`;
+        return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
       }
     }
   }
@@ -1726,16 +2435,58 @@ function splitPythonCallArgs(callArgs) {
   return { positionals, kwargs };
 }
 
-function checkInlinePythonFs(code, allowReadOnlyTempPath) {
+function hasDisallowedPythonAlias(code) {
   if (
     /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/.test(
       code,
     ) ||
-    /\bfrom\s+(?:os|posix|shutil|pathlib)\s+import\b[^\n;]*\bas\b/.test(code) ||
     /(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|io\s*\.\s*)?open\b(?!\s*\()/.test(code)
   ) {
-    return "Aliased filesystem mutation API in inline Python script is blocked for read-only ro-* workers.";
+    return true;
   }
+  const importRe = /\bimport\s+(?:os|posix|shutil)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+  let im;
+  while ((im = importRe.exec(code)) !== null) {
+    const alias = im[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${alias}\\s*\\.\\s*${PYTHON_MUTATION_NAME_RE.source}`).test(code)) {
+      return true;
+    }
+  }
+  const fromImportRe = /\bfrom\s+(os|posix|shutil|pathlib)\s+import\s+([^\n;]+)/g;
+  while ((im = fromImportRe.exec(code)) !== null) {
+    const mod = im[1];
+    const clause = im[2];
+    if (!/\bas\b/.test(clause)) continue;
+    if (mod === "pathlib") {
+      if (PYTHON_MUTATION_NAME_RE.test(clause)) return true;
+      continue;
+    }
+    if (PYTHON_MUTATION_NAME_RE.test(clause)) return true;
+  }
+  return false;
+}
+
+function checkInlinePythonFs(code, allowPath, options = {}) {
+  const { allowDynamicPaths = false, roleLabel = "read-only ro-* workers" } = options;
+
+  if (!allowDynamicPaths && hasDisallowedPythonAlias(code)) {
+    return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
+  }
+
+  const checkPyPathArg = (argExpr, opts) => {
+    const lit = parseStaticPyString(argExpr || "");
+    if (lit.ok) {
+      return allowPath(lit.value, opts);
+    }
+    const bound = resolveSimpleVarBinding(code, argExpr || "", true);
+    if (bound && bound.ok) {
+      return allowPath(bound.value, opts);
+    }
+    if (isSafeTmpTemplateOrJoin(argExpr || "", code, allowPath)) {
+      return true;
+    }
+    return allowDynamicPaths;
+  };
 
   const pathMethodRe =
     /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|open)\s*\(/g;
@@ -1745,7 +2496,7 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
     const openParenIdx = match.index + match[0].length - 1;
     const methodArgs = parseCallArguments(code, openParenIdx);
     if (!methodArgs) {
-      return `Unparseable .${method}() call in inline Python script is blocked for read-only ro-* workers.`;
+      return `Unparseable .${method}() call in inline Python script is blocked for ${roleLabel}.`;
     }
     if (method === "open") {
       const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
@@ -1759,18 +2510,19 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
     const prefix = code.slice(0, match.index);
     const ctorMatch = prefix.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
     if (!ctorMatch) {
-      return `Inline Python Path.${method}() on non-literal receiver is blocked for read-only ro-* workers.`;
+      if (!allowDynamicPaths) {
+        return `Inline Python Path.${method}() on non-literal receiver is blocked for ${roleLabel}.`;
+      }
+      continue;
     }
     const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
-    const receiverLit = ctorArgs && ctorArgs.length === 1 ? parseStaticPyString(ctorArgs[0]) : { ok: false, value: "" };
     const allowRoot = method === "mkdir";
-    if (!receiverLit.ok || !allowReadOnlyTempPath(receiverLit.value, { allowRootEqual: allowRoot, allowDevNull: false })) {
-      return `Inline Python Path.${method}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+    if (!ctorArgs || ctorArgs.length !== 1 || !checkPyPathArg(ctorArgs[0], { allowRootEqual: allowRoot, allowDevNull: false })) {
+      return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
     }
     if (method === "rename" || method === "replace") {
-      const dstLit = parseStaticPyString(methodArgs[0] || "");
-      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: false })) {
-        return `Inline Python Path.${method}() target outside canonical temp roots is blocked for read-only ro-* workers.`;
+      if (!checkPyPathArg(methodArgs[0] || "", { allowRootEqual: true, allowDevNull: false })) {
+        return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
       }
     }
   }
@@ -1780,7 +2532,7 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
     const openParenIdx = match.index + match[0].length - 1;
     const openArgs = parseCallArguments(code, openParenIdx);
     if (!openArgs) {
-      return "Unparseable open() call in inline Python script is blocked for read-only ro-* workers.";
+      return `Unparseable open() call in inline Python script is blocked for ${roleLabel}.`;
     }
     const { positionals, kwargs } = splitPythonCallArgs(openArgs);
     const modeExpr = positionals[1] ?? kwargs.mode ?? null;
@@ -1790,9 +2542,8 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
       continue;
     }
     const pathExpr = positionals[0] ?? kwargs.file ?? "";
-    const pathLit = parseStaticPyString(pathExpr);
-    if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: false, allowDevNull: true })) {
-      return "Inline Python open() for write outside canonical temp roots is blocked for read-only ro-* workers.";
+    if (!checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
+      return `Inline Python open() for write outside allowed roots is blocked for ${roleLabel}.`;
     }
   }
 
@@ -1809,34 +2560,28 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
     const openParenIdx = match.index + match[0].length - 1;
     const callArgs = parseCallArguments(code, openParenIdx);
     if (!callArgs) {
-      return `Unparseable ${fnName}() call in inline Python script is blocked for read-only ro-* workers.`;
+      return `Unparseable ${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
     }
     const { positionals } = splitPythonCallArgs(callArgs);
     if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
       if (!qualifier && !/\bshutil\b/.test(code)) continue;
-      const dstLit = parseStaticPyString(positionals[1] || "");
-      if (!dstLit.ok || !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: true })) {
-        return `Inline Python ${fnName}() destination outside canonical temp roots is blocked for read-only ro-* workers.`;
+      if (!checkPyPathArg(positionals[1] || "", { allowRootEqual: true, allowDevNull: true })) {
+        return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
     if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
-      const srcLit = parseStaticPyString(positionals[0] || "");
-      const dstLit = parseStaticPyString(positionals[1] || "");
       if (
-        !srcLit.ok ||
-        !dstLit.ok ||
-        !allowReadOnlyTempPath(srcLit.value, { allowRootEqual: false, allowDevNull: false }) ||
-        !allowReadOnlyTempPath(dstLit.value, { allowRootEqual: true, allowDevNull: false })
+        !checkPyPathArg(positionals[0] || "", { allowRootEqual: false, allowDevNull: false }) ||
+        !checkPyPathArg(positionals[1] || "", { allowRootEqual: true, allowDevNull: false })
       ) {
-        return `Inline Python ${fnName}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+        return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
-    const pathLit = parseStaticPyString(positionals[0] || "");
     const allowRoot = fnName === "mkdir" || fnName === "makedirs";
-    if (!pathLit.ok || !allowReadOnlyTempPath(pathLit.value, { allowRootEqual: allowRoot, allowDevNull: false })) {
-      return `Inline Python ${fnName}() outside canonical temp roots is blocked for read-only ro-* workers.`;
+    if (!checkPyPathArg(positionals[0] || "", { allowRootEqual: allowRoot, allowDevNull: false })) {
+      return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
     }
   }
 
@@ -1844,18 +2589,36 @@ function checkInlinePythonFs(code, allowReadOnlyTempPath) {
 }
 
 function parseGitCommand(args) {
+  const globalDirs = [];
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
+    if (arg === "-C" || arg === "--git-dir" || arg === "--work-tree") {
+      if (i + 1 < args.length) globalDirs.push(args[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (arg.startsWith("-C") && arg.length > 2) {
+      globalDirs.push(arg.slice(2));
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--git-dir=")) {
+      globalDirs.push(arg.slice("--git-dir=".length));
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--work-tree=")) {
+      globalDirs.push(arg.slice("--work-tree=".length));
+      i += 1;
+      continue;
+    }
     if (GIT_GLOBAL_VALUE_FLAGS.has(arg)) {
       i += 2;
       continue;
     }
     if (
-      arg.startsWith("-C") ||
       arg.startsWith("-c") ||
-      arg.startsWith("--git-dir=") ||
-      arg.startsWith("--work-tree=") ||
       arg.startsWith("--namespace=") ||
       arg.startsWith("--config-env=")
     ) {
@@ -1866,9 +2629,9 @@ function parseGitCommand(args) {
       i += 1;
       continue;
     }
-    return { subcmd: arg, subArgs: args.slice(i + 1) };
+    return { subcmd: arg, subArgs: args.slice(i + 1), globalDirs };
   }
-  return { subcmd: "", subArgs: [] };
+  return { subcmd: "", subArgs: [], globalDirs };
 }
 
 function isReadOnlyGitTagArgs(subArgs) {
@@ -1909,6 +2672,62 @@ function isReadOnlyGitTagArgs(subArgs) {
 
 function isReadOnlyGitStashArgs(subArgs) {
   return subArgs.length > 0 && (subArgs[0] === "list" || subArgs[0] === "show");
+}
+
+function isMutatingGitAction(subcmd, subArgs) {
+  if (MUTATING_GIT_SUBCOMMANDS.has(subcmd)) return true;
+  if (subcmd === "tag") return !isReadOnlyGitTagArgs(subArgs);
+  if (subcmd === "stash") return !isReadOnlyGitStashArgs(subArgs);
+  if (subcmd === "branch") {
+    return subArgs.some((a) => ["-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"].includes(a));
+  }
+  if (subcmd === "worktree") {
+    const action = subArgs.find((a) => !a.startsWith("-")) || "";
+    return Boolean(action && action !== "list");
+  }
+  if (subcmd === "notes") {
+    const action = subArgs.find((a) => !a.startsWith("-")) || "";
+    return Boolean(action && action !== "list" && action !== "show");
+  }
+  if (subcmd === "replace") {
+    return subArgs.length > 0 && !subArgs.some((a) => a === "-l" || a === "--list");
+  }
+  if (subcmd === "submodule") {
+    const action = subArgs.find((a) => !a.startsWith("-")) || "";
+    return Boolean(action && action !== "status" && action !== "summary");
+  }
+  if (subcmd === "symbolic-ref") {
+    if (subArgs.some((a) => a === "-d" || a === "--delete")) return true;
+    const positionals = extractPositionalPaths(subArgs);
+    return positionals.length >= 2;
+  }
+  return false;
+}
+
+function isMutatingGitFetchForReadOnly(subArgs) {
+  const positionals = [];
+  let afterDoubleDash = false;
+  for (let i = 0; i < subArgs.length; i += 1) {
+    const arg = subArgs[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-")) {
+      if (
+        ["-p", "--prune", "-f", "--force", "-u", "--update-head-ok"].includes(arg) ||
+        (!arg.startsWith("--") && /^-[a-zA-Z]*[pfu]/.test(arg))
+      ) {
+        return true;
+      }
+      if (["--depth", "--deepen", "--shallow-since", "--shallow-exclude", "--negotiation-tip", "-o", "--server-option", "--upload-pack", "--refmap", "-j", "--jobs"].includes(arg)) {
+        i += 1;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+  return positionals.slice(1).some((refspec) => refspec.includes(":"));
 }
 
 function isForcePushToProtectedBranch(subArgs) {
@@ -1956,7 +2775,691 @@ function isForcePushToProtectedBranch(subArgs) {
   return false;
 }
 
-function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath) {
+function extractPathsSkippingValueFlags(args, valueFlags) {
+  const paths = [];
+  let afterDoubleDash = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (valueFlags.has(arg)) {
+        i += 1;
+      }
+      continue;
+    }
+    paths.push(arg);
+  }
+  return paths;
+}
+
+function extractInstallTargets(args) {
+  let dirMode = false;
+  let targetDir = null;
+  const positionals = [];
+  let afterDoubleDash = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (arg === "-d" || arg === "--directory" || (!arg.startsWith("--") && /^-[a-zA-Z]*d/.test(arg))) {
+        dirMode = true;
+      }
+      if (arg === "-t" || arg === "--target-directory") {
+        if (i + 1 >= args.length) return { valid: false, targets: [] };
+        targetDir = args[i + 1];
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--target-directory=")) {
+        targetDir = arg.slice("--target-directory=".length);
+        continue;
+      }
+      if (["-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"].includes(arg)) {
+        i += 1;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+  if (dirMode) {
+    return positionals.length > 0 ? { valid: true, targets: positionals } : { valid: false, targets: [] };
+  }
+  if (targetDir !== null) {
+    return positionals.length > 0 ? { valid: true, targets: [targetDir] } : { valid: false, targets: [] };
+  }
+  if (positionals.length < 2) return { valid: false, targets: [] };
+  return { valid: true, targets: [positionals[positionals.length - 1]] };
+}
+
+function extractCurlWriteTargets(args) {
+  const fileTargets = [];
+  let usesRemoteName = false;
+  let outputDir = ".";
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "-o" || arg === "--output") {
+      if (i + 1 < args.length) {
+        if (args[i + 1] !== "-") fileTargets.push(args[i + 1]);
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--output=")) {
+      const v = arg.slice("--output=".length);
+      if (v !== "-") fileTargets.push(v);
+      continue;
+    }
+    if (arg.startsWith("-o") && arg.length > 2) {
+      const v = arg.slice(2);
+      if (v !== "-") fileTargets.push(v);
+      continue;
+    }
+    if (arg === "--output-dir" && i + 1 < args.length) {
+      outputDir = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--output-dir=")) {
+      outputDir = arg.slice("--output-dir=".length);
+      continue;
+    }
+    if (arg === "-O" || arg === "--remote-name" || arg === "--remote-name-all" || (!arg.startsWith("--") && /^-[a-zA-Z]*O/.test(arg))) {
+      usesRemoteName = true;
+    }
+  }
+  return { fileTargets, dirTargets: usesRemoteName ? [outputDir] : [] };
+}
+
+function extractWgetWriteTargets(args) {
+  let isSpider = false;
+  let outputDoc = null;
+  let dirPrefix = null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "--spider") {
+      isSpider = true;
+      continue;
+    }
+    if (arg === "-O" || arg === "--output-document") {
+      if (i + 1 < args.length) {
+        outputDoc = args[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--output-document=")) {
+      outputDoc = arg.slice("--output-document=".length);
+      continue;
+    }
+    if (arg.startsWith("-O") && arg.length > 2) {
+      outputDoc = arg.slice(2);
+      continue;
+    }
+    if (arg === "-P" || arg === "--directory-prefix") {
+      if (i + 1 < args.length) {
+        dirPrefix = args[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--directory-prefix=")) {
+      dirPrefix = arg.slice("--directory-prefix=".length);
+      continue;
+    }
+    if (arg.startsWith("-P") && arg.length > 2) {
+      dirPrefix = arg.slice(2);
+      continue;
+    }
+  }
+  if (isSpider) return { fileTargets: [], dirTargets: [] };
+  if (outputDoc !== null) {
+    return outputDoc === "-" ? { fileTargets: [], dirTargets: [] } : { fileTargets: [outputDoc], dirTargets: [] };
+  }
+  return { fileTargets: [], dirTargets: [dirPrefix || "."] };
+}
+
+function extractTarWriteTargets(args) {
+  let isExtract = false;
+  let isCreateOrUpdate = false;
+  let toStdout = false;
+  let targetDir = ".";
+  let archiveFile = null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "-O" || arg === "--to-stdout") toStdout = true;
+    if (arg === "-x" || arg === "--extract" || arg === "--get") isExtract = true;
+    if (arg === "-c" || arg === "--create" || arg === "-r" || arg === "--append" || arg === "-u" || arg === "--update") {
+      isCreateOrUpdate = true;
+    }
+    if (!arg.startsWith("--") && (arg.startsWith("-") || i === 0)) {
+      const flags = arg.startsWith("-") ? arg.slice(1) : arg;
+      if (flags.includes("x")) isExtract = true;
+      if (/[cru]/.test(flags)) isCreateOrUpdate = true;
+      if (flags.includes("O")) toStdout = true;
+      if (flags.endsWith("f") && i + 1 < args.length) {
+        archiveFile = args[i + 1];
+        i += 1;
+        continue;
+      }
+      if (flags.endsWith("C") && i + 1 < args.length) {
+        targetDir = args[i + 1];
+        i += 1;
+        continue;
+      }
+    }
+    if (arg === "-C" || arg === "--directory") {
+      if (i + 1 < args.length) {
+        targetDir = args[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--directory=")) {
+      targetDir = arg.slice("--directory=".length);
+      continue;
+    }
+    if (arg === "-f" || arg === "--file") {
+      if (i + 1 < args.length) {
+        archiveFile = args[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--file=")) {
+      archiveFile = arg.slice("--file=".length);
+    }
+  }
+  const fileTargets = [];
+  const dirTargets = [];
+  if (isExtract && !toStdout) dirTargets.push(targetDir);
+  if (isCreateOrUpdate && archiveFile && archiveFile !== "-" && archiveFile !== "/dev/null") {
+    fileTargets.push(archiveFile);
+  }
+  return { fileTargets, dirTargets };
+}
+
+function extractUnzipWriteTargets(args) {
+  let readOnly = false;
+  let targetDir = ".";
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (["-l", "-v", "-t", "-p", "-c", "-Z"].includes(arg) || (!arg.startsWith("--") && /^-[a-zA-Z]*[lvtpcZ]/.test(arg))) {
+      readOnly = true;
+    }
+    if (arg === "-d" && i + 1 < args.length) {
+      targetDir = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-d") && arg.length > 2) {
+      targetDir = arg.slice(2);
+    }
+  }
+  return readOnly ? [] : [targetDir];
+}
+
+function extractRsyncWriteSpec(args) {
+  let dryRun = false;
+  const positionals = [];
+  let afterDoubleDash = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!afterDoubleDash && arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
+      if (arg === "-n" || arg === "--dry-run" || arg === "--list-only" || (!arg.startsWith("--") && /^-[a-zA-Z]*n/.test(arg))) {
+        dryRun = true;
+      }
+      if (["-e", "--rsh", "--exclude", "--include", "--filter", "--files-from", "--log-file", "--out-format", "--compare-dest", "--copy-dest", "--link-dest"].includes(arg)) {
+        i += 1;
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+  if (dryRun || positionals.length < 2) return { dryRun: true, destination: null };
+  return { dryRun: false, destination: positionals[positionals.length - 1] };
+}
+
+function extractFindEffects(args) {
+  const roots = [];
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    if (arg === "-H" || arg === "-L" || arg === "-P" || arg === "-O" || arg === "-D") {
+      if (arg === "-D") i += 1;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ",") break;
+    roots.push(arg);
+    i += 1;
+  }
+  const searchRoots = roots.length > 0 ? roots : ["."];
+  let hasDelete = false;
+  const fprintTargets = [];
+  const execCommands = [];
+
+  for (; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "-delete") {
+      hasDelete = true;
+      continue;
+    }
+    if (arg === "-fprint" || arg === "-fprint0" || arg === "-fls" || arg === "-fprintf") {
+      if (i + 1 < args.length) {
+        fprintTargets.push(args[i + 1]);
+        i += arg === "-fprintf" ? 2 : 1;
+      }
+      continue;
+    }
+    if (arg === "-exec" || arg === "-execdir" || arg === "-ok" || arg === "-okdir") {
+      const innerTokens = [];
+      let j = i + 1;
+      while (j < args.length && args[j] !== ";" && args[j] !== "+") {
+        innerTokens.push(args[j]);
+        j += 1;
+      }
+      if (innerTokens.length > 0) {
+        execCommands.push(innerTokens);
+      }
+      i = j;
+    }
+  }
+  return { searchRoots, hasDelete, fprintTargets, execCommands };
+}
+
+function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTokens) {
+  const { cmd, args } = inv;
+  if (cmd === "mkdir") {
+    const paths = extractPathsSkippingValueFlags(args, new Set(["-m", "--mode"]));
+    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: true, allowDevNull: false }))) {
+      return `Command 'mkdir' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "touch") {
+    const paths = extractPathsSkippingValueFlags(args, new Set(["-d", "--date", "-r", "--reference", "-t"]));
+    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+      return `Command 'touch' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "chmod") {
+    const paths = extractChmodTargets(args);
+    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+      return `Command 'chmod' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "truncate") {
+    const paths = extractPathsSkippingValueFlags(args, new Set(["-s", "--size", "-r", "--reference"]));
+    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+      return `Command 'truncate' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "dd") {
+    const ofArg = args.find((a) => a.startsWith("of="));
+    if (ofArg) {
+      const target = ofArg.slice(3);
+      if (!allowPath(target, { allowRootEqual: false, allowDevNull: true })) {
+        return `Command 'dd' output target outside allowed paths is blocked for ${roleLabel}.`;
+      }
+    }
+    return null;
+  }
+  if (cmd === "install") {
+    const spec = extractInstallTargets(args);
+    if (!spec.valid || spec.targets.some((t) => !allowPath(t, { allowRootEqual: true, allowDevNull: false }))) {
+      return `Command 'install' targeting outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "curl") {
+    const { fileTargets, dirTargets } = extractCurlWriteTargets(args);
+    if (
+      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+    ) {
+      return `Command 'curl' writing outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "wget") {
+    const { fileTargets, dirTargets } = extractWgetWriteTargets(args);
+    if (
+      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+    ) {
+      return `Command 'wget' writing outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "tar") {
+    const { fileTargets, dirTargets } = extractTarWriteTargets(args);
+    if (
+      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+    ) {
+      return `Command 'tar' writing outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "unzip") {
+    const dirTargets = extractUnzipWriteTargets(args);
+    if (dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))) {
+      return `Command 'unzip' extracting outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (cmd === "rsync") {
+    const spec = extractRsyncWriteSpec(args);
+    if (!spec.dryRun && spec.destination) {
+      if (/^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:/.test(spec.destination) || spec.destination.startsWith("rsync://")) {
+        return `Command 'rsync' to remote destination is blocked for ${roleLabel}.`;
+      }
+      if (!allowPath(spec.destination, { allowRootEqual: true, allowDevNull: false })) {
+        return `Command 'rsync' targeting outside allowed paths is blocked for ${roleLabel}.`;
+      }
+    }
+    return null;
+  }
+  if (cmd === "find") {
+    const { searchRoots, hasDelete, fprintTargets, execCommands } = extractFindEffects(args);
+    if (hasDelete && searchRoots.some((r) => !allowPath(r, { allowRootEqual: true, allowDevNull: false }))) {
+      return `Command 'find -delete' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    if (fprintTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true }))) {
+      return `Command 'find -fprint/-fls' outside allowed paths is blocked for ${roleLabel}.`;
+    }
+    for (const innerTokens of execCommands) {
+      const innerDeny = validateInnerTokens(innerTokens, searchRoots);
+      if (innerDeny) return innerDeny;
+    }
+    return null;
+  }
+  return undefined;
+}
+
+function extractNodePreloadTargets(args, mergedEnv) {
+  const targets = [];
+  const scanArgs = (list) => {
+    for (let i = 0; i < list.length; i += 1) {
+      const arg = list[i];
+      if (arg === "--") break;
+      if (
+        (arg === "-r" || arg === "--require" || arg === "--import" || arg === "--loader" || arg === "--experimental-loader") &&
+        i + 1 < list.length
+      ) {
+        targets.push(list[i + 1]);
+        i += 1;
+        continue;
+      }
+      for (const prefix of ["--require=", "--import=", "--loader=", "--experimental-loader="]) {
+        if (arg.startsWith(prefix)) {
+          targets.push(arg.slice(prefix.length));
+          break;
+        }
+      }
+    }
+  };
+  scanArgs(args);
+  if (typeof mergedEnv.NODE_OPTIONS === "string" && mergedEnv.NODE_OPTIONS.trim().length > 0) {
+    scanArgs(tokenizeSingleSegment(mergedEnv.NODE_OPTIONS));
+  }
+  return targets;
+}
+
+function findInterpreterScriptArg(cmd, args) {
+  const isNode = cmd === "node" || cmd === "nodejs" || cmd === "bun";
+  const isPy = /^python(?:\d+(?:\.\d+)?)?$/.test(cmd);
+  const isShell = ["sh", "bash", "zsh", "dash", "ksh"].includes(cmd);
+  const isPerlRuby = cmd === "perl" || cmd === "ruby";
+  if (!isNode && !isPy && !isShell && !isPerlRuby) return null;
+
+  const valueFlags = isNode
+    ? new Set(["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader", "--conditions", "-C"])
+    : isPy
+      ? new Set(["-c", "-m", "-W", "-X", "-Q"])
+      : isShell
+        ? new Set(["-c", "-o"])
+        : new Set(["-e", "-E", "-I", "-M", "-m", "-C"]);
+
+  let hasTestFlag = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") {
+      return i + 1 < args.length ? { scriptToken: args[i + 1], hasTestFlag } : null;
+    }
+    if (isNode && arg === "--test") {
+      hasTestFlag = true;
+      continue;
+    }
+    if (isNode && (arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print" || arg.startsWith("--eval=") || arg.startsWith("--print="))) {
+      return null;
+    }
+    if (isPy && (arg === "-c" || /^-[A-Za-z]+c$/.test(arg) || arg === "-m")) {
+      return null;
+    }
+    if (isShell && /^-[a-zA-Z]*c$/.test(arg)) {
+      return null;
+    }
+    if (isPerlRuby && (arg === "-e" || arg === "-E" || /^-[a-zA-Z.]*[eE]$/.test(arg))) {
+      return null;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (valueFlags.has(arg)) i += 1;
+      continue;
+    }
+    return { scriptToken: arg, hasTestFlag };
+  }
+  return null;
+}
+
+function inspectSingleTempFile(scriptToken, modeHint, context) {
+  const {
+    allowPath,
+    nodePyOptions,
+    canonicalTempRoots,
+    realCwd,
+    fallbackBaseDir,
+    mergedEnv,
+    outerEnv,
+    roleLabel,
+    kind,
+    validateShellCode,
+  } = context;
+
+  const resolved = resolveShellTargetPath(scriptToken, fallbackBaseDir, mergedEnv);
+  if (!resolved) return null;
+
+  const inTemp = isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
+    allowRootEqual: false,
+    excludeRealCwd: false,
+  });
+  if (!inTemp) return null;
+
+  if (kind === "sicko") {
+    return `Executing temporary script '${scriptToken}' is blocked for comment-sicko workers.`;
+  }
+
+  if (!existsSync(resolved)) {
+    return `Temporary script '${scriptToken}' must exist on disk before execution for ${roleLabel}.`;
+  }
+
+  let rawBuf;
+  try {
+    if (!statSync(resolved).isFile()) {
+      return `Temporary script '${scriptToken}' is not a readable file for ${roleLabel}.`;
+    }
+    rawBuf = readFileSync(resolved);
+  } catch {
+    return `Temporary script '${scriptToken}' could not be read for ${roleLabel}.`;
+  }
+
+  if (rawBuf.includes(0)) {
+    if (kind === "readonly" || kind === "sicko") {
+      return `Executing binary file '${scriptToken}' in canonical temp roots is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+
+  const code = rawBuf.toString("utf8");
+  const ext = extname(resolved).toLowerCase();
+  const firstLine = code.split(/\r?\n/, 1)[0] || "";
+  const isNode =
+    modeHint === "node" ||
+    [".js", ".mjs", ".cjs"].includes(ext) ||
+    /#!\s*\/.*\bnode\b/.test(firstLine);
+  const isPy =
+    modeHint === "python" ||
+    ext === ".py" ||
+    /#!\s*\/.*\bpython/.test(firstLine);
+  const isPerlRuby =
+    modeHint === "perl" ||
+    modeHint === "ruby" ||
+    ext === ".pl" ||
+    ext === ".rb" ||
+    /#!\s*\/.*\b(?:perl|ruby)\b/.test(firstLine);
+  const isShell =
+    modeHint === "shell" ||
+    [".sh", ".bash", ".zsh"].includes(ext) ||
+    /#!\s*\/.*\b(?:sh|bash|zsh|dash|ksh)\b/.test(firstLine);
+
+  if (isPerlRuby) {
+    if (kind === "readonly" || kind === "sicko") {
+      return `Executing temporary ${modeHint || "perl/ruby"} script '${scriptToken}' is blocked for ${roleLabel}.`;
+    }
+    return null;
+  }
+  if (isNode) {
+    return checkInlineNodeFs(code, allowPath, nodePyOptions);
+  }
+  if (isPy) {
+    return checkInlinePythonFs(code, allowPath, nodePyOptions);
+  }
+  if (isShell) {
+    return validateShellCode(code, mergedEnv, outerEnv);
+  }
+  return validateShellCode(code, mergedEnv, outerEnv);
+}
+
+function inspectTempScriptFile(inv, context) {
+  const { canonicalTempRoots, realCwd, fallbackBaseDir, mergedEnv, roleLabel, kind } = context;
+
+  if (inv.cmd === "node" || inv.cmd === "nodejs" || inv.cmd === "bun") {
+    for (const preloadTarget of extractNodePreloadTargets(inv.args, mergedEnv)) {
+      const preloadDeny = inspectSingleTempFile(preloadTarget, "node", context);
+      if (preloadDeny) return preloadDeny;
+    }
+  }
+
+  if (/^python(?:\d+(?:\.\d+)?)?$/.test(inv.cmd)) {
+    const mIdx = inv.args.indexOf("-m");
+    if (mIdx >= 0 && mIdx + 1 < inv.args.length && typeof mergedEnv.PYTHONPATH === "string") {
+      const modName = inv.args[mIdx + 1];
+      const modRel = modName.replace(/\./g, "/");
+      for (const pyRoot of mergedEnv.PYTHONPATH.split(/[:;]/).filter(Boolean)) {
+        const resolvedRoot = resolveShellTargetPath(pyRoot, fallbackBaseDir, mergedEnv);
+        if (
+          resolvedRoot &&
+          isInsideCanonicalTempRoots(resolvedRoot, canonicalTempRoots, realCwd, {
+            allowRootEqual: true,
+            excludeRealCwd: false,
+          })
+        ) {
+          if (kind === "sicko") {
+            return `Executing Python module '${modName}' from PYTHONPATH in canonical temp roots is blocked for ${roleLabel}.`;
+          }
+          const modFile = join(resolvedRoot, `${modRel}.py`);
+          const modInit = join(resolvedRoot, modRel, "__init__.py");
+          const candidate = existsSync(modFile) ? modFile : existsSync(modInit) ? modInit : null;
+          if (candidate) {
+            const modDeny = inspectSingleTempFile(candidate, "python", context);
+            if (modDeny) return modDeny;
+          } else if (kind === "readonly") {
+            return `Unresolvable Python module '${modName}' with PYTHONPATH in canonical temp roots is blocked for ${roleLabel}.`;
+          }
+        }
+      }
+    }
+  }
+
+  if (inv.cmd === "source" || inv.cmd === ".") {
+    const sourced = inv.args[0];
+    if (sourced) {
+      return inspectSingleTempFile(sourced, "shell", context);
+    }
+    return null;
+  }
+
+  let scriptToken = null;
+  let modeHint = "";
+  const interp = findInterpreterScriptArg(inv.cmd, inv.args);
+  if (interp) {
+    scriptToken = interp.scriptToken;
+    if (inv.cmd === "node" || inv.cmd === "nodejs" || inv.cmd === "bun") modeHint = "node";
+    else if (/^python/.test(inv.cmd)) modeHint = "python";
+    else if (inv.cmd === "perl" || inv.cmd === "ruby") modeHint = inv.cmd;
+    else modeHint = "shell";
+  } else if (inv.rawCmd && (inv.rawCmd.includes("/") || inv.rawCmd.startsWith(".") || inv.rawCmd.startsWith("~"))) {
+    scriptToken = inv.rawCmd;
+  }
+
+  if (!scriptToken) return null;
+  return inspectSingleTempFile(scriptToken, modeHint, context);
+}
+
+function extractInlineCodeCheck(inv, allowPath, nodePyOptions) {
+  const { cmd, args } = inv;
+  if (cmd === "node" || cmd === "nodejs" || cmd === "bun") {
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg === "--") break;
+      if ((arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") && i + 1 < args.length) {
+        const deny = checkInlineNodeFs(args[i + 1], allowPath, nodePyOptions);
+        if (deny) return deny;
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith("--eval=")) {
+        const deny = checkInlineNodeFs(arg.slice("--eval=".length), allowPath, nodePyOptions);
+        if (deny) return deny;
+      } else if (arg.startsWith("--print=")) {
+        const deny = checkInlineNodeFs(arg.slice("--print=".length), allowPath, nodePyOptions);
+        if (deny) return deny;
+      }
+    }
+  }
+  if (/^python(?:\d+(?:\.\d+)?)?$/.test(cmd)) {
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg === "--" || arg === "-m") break;
+      if ((arg === "-c" || /^-[A-Za-z]+c$/.test(arg)) && i + 1 < args.length) {
+        const deny = checkInlinePythonFs(args[i + 1], allowPath, nodePyOptions);
+        if (deny) return deny;
+        break;
+      }
+      if (!arg.startsWith("-")) break;
+    }
+  }
+  return null;
+}
+
+function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerTokens) {
   const { cmd, args } = inv;
   if (!cmd) return null;
 
@@ -1964,25 +3467,16 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath) {
     return `Filesystem mutation command '${cmd}' is blocked for read-only ro-* workers.`;
   }
 
-  if (cmd === "rm" || cmd === "unlink" || cmd === "touch" || cmd === "mkdir") {
-    const paths = extractPositionalPaths(args);
-    const allowRoot = cmd === "mkdir";
-    if (
-      paths.length === 0 ||
-      paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: allowRoot, allowDevNull: false }))
-    ) {
-      return `Filesystem command '${cmd}' outside canonical temp roots is blocked for read-only ro-* workers.`;
-    }
-    return null;
-  }
+  const sharedDeny = checkSharedTargetConfinement(inv, allowReadOnlyTempPath, "read-only ro-* workers", validateInnerTokens);
+  if (sharedDeny !== undefined) return sharedDeny;
 
-  if (cmd === "chmod") {
-    const paths = extractChmodTargets(args);
+  if (cmd === "rm" || cmd === "unlink") {
+    const paths = extractPositionalPaths(args);
     if (
       paths.length === 0 ||
       paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: false, allowDevNull: false }))
     ) {
-      return "Filesystem command 'chmod' outside canonical temp roots is blocked for read-only ro-* workers.";
+      return `Filesystem command '${cmd}' outside canonical temp roots is blocked for read-only ro-* workers.`;
     }
     return null;
   }
@@ -2026,66 +3520,19 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath) {
     return `In-place '${cmd} -i' is blocked for read-only ro-* workers.`;
   }
 
-  if (cmd === "node" || cmd === "nodejs" || cmd === "bun") {
-    for (let i = 0; i < args.length; i += 1) {
-      const arg = args[i];
-      if (arg === "--") break;
-      if ((arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") && i + 1 < args.length) {
-        const deny = checkInlineNodeFs(args[i + 1], allowReadOnlyTempPath);
-        if (deny) return deny;
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--eval=")) {
-        const deny = checkInlineNodeFs(arg.slice("--eval=".length), allowReadOnlyTempPath);
-        if (deny) return deny;
-      } else if (arg.startsWith("--print=")) {
-        const deny = checkInlineNodeFs(arg.slice("--print=".length), allowReadOnlyTempPath);
-        if (deny) return deny;
-      }
-    }
-  }
-
-  if (/^python(?:\d+(?:\.\d+)?)?$/.test(cmd)) {
-    for (let i = 0; i < args.length; i += 1) {
-      const arg = args[i];
-      if (arg === "--" || arg === "-m") break;
-      if ((arg === "-c" || /^-[A-Za-z]+c$/.test(arg)) && i + 1 < args.length) {
-        const deny = checkInlinePythonFs(args[i + 1], allowReadOnlyTempPath);
-        if (deny) return deny;
-        break;
-      }
-      if (!arg.startsWith("-")) break;
-    }
-  }
+  const inlineDeny = extractInlineCodeCheck(inv, allowReadOnlyTempPath, {
+    allowDynamicPaths: false,
+    roleLabel: "read-only ro-* workers",
+  });
+  if (inlineDeny) return inlineDeny;
 
   if (cmd === "git") {
     const { subcmd, subArgs } = parseGitCommand(args);
-    if (subcmd === "tag") {
-      if (!isReadOnlyGitTagArgs(subArgs)) {
-        return "Mutating git command 'git tag' is blocked for read-only ro-* workers.";
-      }
-      return null;
+    if (subcmd === "fetch" && isMutatingGitFetchForReadOnly(subArgs)) {
+      return "Mutating 'git fetch' with colon refspec or prune/force/update flags is blocked for read-only ro-* workers.";
     }
-    if (subcmd === "stash") {
-      if (!isReadOnlyGitStashArgs(subArgs)) {
-        return "Mutating git command 'git stash' is blocked for read-only ro-* workers.";
-      }
-      return null;
-    }
-    if (MUTATING_GIT_SUBCOMMANDS.has(subcmd)) {
+    if (isMutatingGitAction(subcmd, subArgs)) {
       return `Mutating git command 'git ${subcmd}' is blocked for read-only ro-* workers.`;
-    }
-    if (subcmd === "branch") {
-      if (subArgs.some((a) => ["-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"].includes(a))) {
-        return "Mutating 'git branch' flag is blocked for read-only ro-* workers.";
-      }
-    }
-    if (subcmd === "worktree") {
-      const action = subArgs.find((a) => !a.startsWith("-")) || "";
-      if (action && action !== "list") {
-        return `Mutating 'git worktree ${action}' is blocked for read-only ro-* workers.`;
-      }
     }
   }
 
@@ -2141,9 +3588,17 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath) {
   return null;
 }
 
-function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase) {
+function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase, validateInnerTokens) {
   const { cmd, args } = inv;
   if (!cmd) return null;
+
+  const sharedDeny = checkSharedTargetConfinement(
+    inv,
+    allowAuthorShellPath,
+    "confined worker worktree, artifact directory, or canonical temp roots",
+    validateInnerTokens,
+  );
+  if (sharedDeny !== undefined) return sharedDeny;
 
   if (cmd === "cp") {
     const cpSpec = extractCpOrMvSpec(args);
@@ -2237,15 +3692,33 @@ function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase) 
     }
   }
 
+  const inlineDeny = extractInlineCodeCheck(inv, allowAuthorShellPath, {
+    allowDynamicPaths: true,
+    roleLabel: "author/adversary workers",
+  });
+  if (inlineDeny) return inlineDeny;
+
+  if (cmd === "git") {
+    const { subcmd, subArgs, globalDirs } = parseGitCommand(args);
+    if (isMutatingGitAction(subcmd, subArgs) && globalDirs.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: false }))) {
+      return `Mutating git command 'git ${subcmd}' targeting a repository outside confined worktree or canonical temp roots is blocked.`;
+    }
+  }
+
   return null;
 }
 
-function checkSickoShellInvocation(inv) {
+function checkSickoShellInvocation(inv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens) {
   const { cmd, args } = inv;
   if (!cmd) return null;
 
   if (SICKO_BLOCKED_FS_COMMANDS.has(cmd)) {
     return `Filesystem mutation command '${cmd}' is blocked for comment-sicko workers; use edit_file on existing files only.`;
+  }
+
+  if (cmd === "curl" || cmd === "wget" || cmd === "tar" || cmd === "unzip" || cmd === "rsync" || cmd === "find") {
+    const sharedDeny = checkSharedTargetConfinement(inv, allowSickoWritePath, "comment-sicko workers", validateInnerTokens);
+    if (sharedDeny) return sharedDeny;
   }
 
   if (cmd === "tee") {
@@ -2261,6 +3734,25 @@ function checkSickoShellInvocation(inv) {
 
   if ((cmd === "perl" || cmd === "ruby") && extractPerlRubyInPlaceTargets(args) !== null) {
     return `In-place '${cmd} -i' is blocked for comment-sicko workers; use edit_file only.`;
+  }
+
+  const inlineDeny = extractInlineCodeCheck(inv, allowSickoWritePath, {
+    allowDynamicPaths: false,
+    roleLabel: "comment-sicko workers",
+  });
+  if (inlineDeny) return inlineDeny;
+
+  if (cmd === "git") {
+    const { subcmd, subArgs, globalDirs } = parseGitCommand(args);
+    for (const dir of globalDirs) {
+      const resolved = resolveForBase(dir);
+      if (!resolved || !realCwd || !isInsideOrEqual(resolved, realCwd)) {
+        return "Git command targeting a directory outside the confined worktree is blocked for comment-sicko workers.";
+      }
+    }
+    if (subcmd !== "add" && subcmd !== "commit" && isMutatingGitAction(subcmd, subArgs)) {
+      return `Mutating or file-restoring git command 'git ${subcmd}' is blocked for comment-sicko workers.`;
+    }
   }
 
   return null;
@@ -2393,32 +3885,12 @@ function handlePreToolUse(payload, env) {
 
     if (toolName === "run_command") {
       const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-      const { invocations, redirectTargets } = collectInvocations(commandLine);
 
-      const allowReadOnlyTempPath = (rawToken, opts = {}) => {
-        const { allowRootEqual = false, allowDevNull = false } = opts;
-        const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, env);
-        if (!resolved) return false;
-        if (allowDevNull && resolved === "/dev/null") return true;
-        return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
-          allowRootEqual,
-          excludeRealCwd: true,
-        });
-      };
+      const validateReadOnlyShell = (code, inheritedEnv = {}, outerEnv = env, depth = 0) => {
+        if (depth > 4) return "Nested shell script depth limit exceeded for read-only ro-* workers.";
+        const { invocations, redirectTargets } = collectInvocations(code, 0, inheritedEnv, outerEnv);
 
-      for (const redirectTarget of redirectTargets) {
-        if (!allowReadOnlyTempPath(redirectTarget, { allowRootEqual: false, allowDevNull: true })) {
-          return {
-            decision: "deny",
-            reason:
-              "Output file redirection outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.",
-          };
-        }
-      }
-
-      for (const inv of invocations) {
-        const mergedEnv = { ...env, ...inv.env };
-        const allowInvTempPath = (rawToken, opts = {}) => {
+        const makeAllowInvTempPath = (mergedEnv) => (rawToken, opts = {}) => {
           const { allowRootEqual = false, allowDevNull = false } = opts;
           const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
           if (!resolved) return false;
@@ -2428,10 +3900,52 @@ function handlePreToolUse(payload, env) {
             excludeRealCwd: true,
           });
         };
-        const denyReason = isMutatingReadOnlyInvocation(inv, allowInvTempPath);
-        if (denyReason) {
-          return { decision: "deny", reason: denyReason };
+
+        for (const redirectTarget of redirectTargets) {
+          const mergedEnv = { ...outerEnv, ...redirectTarget.env };
+          if (!makeAllowInvTempPath(mergedEnv)(redirectTarget.target, { allowRootEqual: false, allowDevNull: true })) {
+            return "Output file redirection outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.";
+          }
         }
+
+        for (const inv of invocations) {
+          const mergedEnv = { ...outerEnv, ...inv.env };
+          const allowInvTempPath = makeAllowInvTempPath(mergedEnv);
+          const validateInnerTokens = (innerTokens, searchRoots) => {
+            const innerInv = unwrapCommandSegment(innerTokens, inv.env, outerEnv);
+            if (!innerInv.cmd) return null;
+            const innerAllow = (rawToken, opts = {}) => {
+              if (rawToken === "{}" || rawToken.includes("{}")) {
+                return searchRoots.every((r) => allowInvTempPath(r, { allowRootEqual: true, allowDevNull: false }));
+              }
+              return allowInvTempPath(rawToken, opts);
+            };
+            return isMutatingReadOnlyInvocation(innerInv, innerAllow, validateInnerTokens);
+          };
+          const denyReason = isMutatingReadOnlyInvocation(inv, allowInvTempPath, validateInnerTokens);
+          if (denyReason) return denyReason;
+
+          const scriptDeny = inspectTempScriptFile(inv, {
+            allowPath: allowInvTempPath,
+            nodePyOptions: { allowDynamicPaths: false, roleLabel: "read-only ro-* workers" },
+            canonicalTempRoots,
+            realCwd,
+            fallbackBaseDir,
+            mergedEnv,
+            outerEnv,
+            roleLabel: "read-only ro-* workers",
+            kind,
+            validateShellCode: (scriptCode, scriptEnv, baseOuterEnv) =>
+              validateReadOnlyShell(scriptCode, scriptEnv, baseOuterEnv, depth + 1),
+          });
+          if (scriptDeny) return scriptDeny;
+        }
+        return null;
+      };
+
+      const roDeny = validateReadOnlyShell(commandLine, {}, env, 0);
+      if (roDeny) {
+        return { decision: "deny", reason: roDeny };
       }
     }
 
@@ -2493,11 +4007,11 @@ function handlePreToolUse(payload, env) {
 
   if (toolName === "run_command") {
     const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-    const { invocations, redirectTargets } = collectInvocations(commandLine);
+    const { invocations, redirectTargets } = collectInvocations(commandLine, 0, {}, env);
 
     if (kind === "sicko") {
       for (const redirectTarget of redirectTargets) {
-        if (redirectTarget !== "/dev/null") {
+        if (redirectTarget.target !== "/dev/null") {
           return {
             decision: "deny",
             reason:
@@ -2505,10 +4019,37 @@ function handlePreToolUse(payload, env) {
           };
         }
       }
+      const allowSickoWritePath = (_rawToken, opts = {}) => {
+        if (opts.allowDevNull && _rawToken === "/dev/null") return true;
+        return false;
+      };
       for (const inv of invocations) {
-        const sickoDeny = checkSickoShellInvocation(inv);
+        const mergedEnv = { ...env, ...inv.env };
+        const resolveForBase = (rawToken) =>
+          resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
+        const validateInnerTokens = (innerTokens) => {
+          const innerInv = unwrapCommandSegment(innerTokens, inv.env, env);
+          if (!innerInv.cmd) return null;
+          return checkSickoShellInvocation(innerInv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens);
+        };
+        const sickoDeny = checkSickoShellInvocation(inv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens);
         if (sickoDeny) {
           return { decision: "deny", reason: sickoDeny };
+        }
+        const scriptDeny = inspectTempScriptFile(inv, {
+          allowPath: allowSickoWritePath,
+          nodePyOptions: { allowDynamicPaths: false, roleLabel: "comment-sicko workers" },
+          canonicalTempRoots,
+          realCwd,
+          fallbackBaseDir,
+          mergedEnv,
+          outerEnv: env,
+          roleLabel: "comment-sicko workers",
+          kind,
+          validateShellCode: () => "Executing temporary shell script is blocked for comment-sicko workers.",
+        });
+        if (scriptDeny) {
+          return { decision: "deny", reason: scriptDeny };
         }
       }
     }
@@ -2517,7 +4058,7 @@ function handlePreToolUse(payload, env) {
       const checkConfinedShellPath = (rawToken, mergedEnv, opts = {}) => {
         const { allowRootEqual = false, allowDevNull = false, customBaseDir = null } = opts;
         const activeBase = customBaseDir || realCwd;
-        if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$TMPDIR") && !rawToken.startsWith("${TMPDIR}")) {
+        if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$")) {
           return false;
         }
         const resolved = resolveShellTargetPath(rawToken, activeBase || fallbackBaseDir, mergedEnv);
@@ -2538,25 +4079,57 @@ function handlePreToolUse(payload, env) {
         });
       };
 
-      for (const redirectTarget of redirectTargets) {
-        if (!checkConfinedShellPath(redirectTarget, env, { allowRootEqual: false, allowDevNull: true })) {
-          return {
-            decision: "deny",
-            reason:
-              "Shell output redirection outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.",
-          };
-        }
-      }
+      const validateAuthorShell = (code, inheritedEnv = {}, outerEnv = env, depth = 0) => {
+        if (depth > 4) return "Nested shell script depth limit exceeded.";
+        const shellData = depth === 0 ? { invocations, redirectTargets } : collectInvocations(code, 0, inheritedEnv, outerEnv);
 
-      for (const inv of invocations) {
-        const mergedEnv = { ...env, ...inv.env };
-        const allowInvPath = (rawToken, opts = {}) => checkConfinedShellPath(rawToken, mergedEnv, opts);
-        const resolveForBase = (rawToken) =>
-          resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
-        const authorDeny = checkAuthorShellConfinement(inv, allowInvPath, resolveForBase);
-        if (authorDeny) {
-          return { decision: "deny", reason: authorDeny };
+        for (const redirectTarget of shellData.redirectTargets) {
+          const mergedEnv = { ...outerEnv, ...redirectTarget.env };
+          if (!checkConfinedShellPath(redirectTarget.target, mergedEnv, { allowRootEqual: false, allowDevNull: true })) {
+            return "Shell output redirection outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.";
+          }
         }
+
+        for (const inv of shellData.invocations) {
+          const mergedEnv = { ...outerEnv, ...inv.env };
+          const allowInvPath = (rawToken, opts = {}) => checkConfinedShellPath(rawToken, mergedEnv, opts);
+          const resolveForBase = (rawToken) =>
+            resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
+          const validateInnerTokens = (innerTokens, searchRoots) => {
+            const innerInv = unwrapCommandSegment(innerTokens, inv.env, outerEnv);
+            if (!innerInv.cmd) return null;
+            const innerAllow = (rawToken, opts = {}) => {
+              if (rawToken === "{}" || rawToken.includes("{}")) {
+                return searchRoots.every((r) => allowInvPath(r, { allowRootEqual: true, allowDevNull: false }));
+              }
+              return allowInvPath(rawToken, opts);
+            };
+            return checkAuthorShellConfinement(innerInv, innerAllow, resolveForBase, validateInnerTokens);
+          };
+          const authorDeny = checkAuthorShellConfinement(inv, allowInvPath, resolveForBase, validateInnerTokens);
+          if (authorDeny) return authorDeny;
+
+          const scriptDeny = inspectTempScriptFile(inv, {
+            allowPath: allowInvPath,
+            nodePyOptions: { allowDynamicPaths: true, roleLabel: "author/adversary workers" },
+            canonicalTempRoots,
+            realCwd,
+            fallbackBaseDir,
+            mergedEnv,
+            outerEnv,
+            roleLabel: "author/adversary workers",
+            kind,
+            validateShellCode: (scriptCode, scriptEnv, baseOuterEnv) =>
+              validateAuthorShell(scriptCode, scriptEnv, baseOuterEnv, depth + 1),
+          });
+          if (scriptDeny) return scriptDeny;
+        }
+        return null;
+      };
+
+      const authorDeny = validateAuthorShell(commandLine, {}, env, 0);
+      if (authorDeny) {
+        return { decision: "deny", reason: authorDeny };
       }
     }
 
@@ -2603,6 +4176,31 @@ function main() {
     rawInput = readFileSync(0, "utf8");
   } catch {
     rawInput = "";
+  }
+
+  if (
+    typeof process.env.PSTACK_PLUGIN_ROOT === "string" &&
+    process.env.PSTACK_PLUGIN_ROOT.length > 0 &&
+    process.env.PSTACK_GUARD_DELEGATED !== "1"
+  ) {
+    const targetGuard = join(process.env.PSTACK_PLUGIN_ROOT, "hooks", "guard.mjs");
+    if (existsSync(targetGuard)) {
+      let selfReal = null;
+      let targetReal = null;
+      try {
+        selfReal = realpathSync(fileURLToPath(import.meta.url));
+        targetReal = realpathSync(targetGuard);
+      } catch {}
+      if (selfReal && targetReal && selfReal !== targetReal) {
+        const delegatedOut = execFileSync(process.execPath, [targetReal], {
+          input: rawInput,
+          env: { ...process.env, PSTACK_GUARD_DELEGATED: "1" },
+          encoding: "utf8",
+        });
+        process.stdout.write(delegatedOut);
+        return;
+      }
+    }
   }
 
   let payload = {};
