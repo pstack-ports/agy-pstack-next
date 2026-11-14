@@ -2679,7 +2679,7 @@ const NODE_MUTATION_NAME_RE =
   /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b/;
 
 const PYTHON_MUTATION_NAME_RE =
-  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|lchmod|symlink_to|hardlink_to)\b/;
+  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|lchmod|symlink_to|hardlink_to|link_to)\b/;
 
 function isVarBoundToVerifiedTmpRoot(varName, code) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return false;
@@ -2742,6 +2742,16 @@ function isSafeTmpTemplateOrJoin(expr, code, allowPath) {
   return false;
 }
 
+function unwrapPythonPathCtor(expr) {
+  const trimmed = String(expr || "").trim();
+  const m = trimmed.match(/^(?:pathlib\s*\.\s*)?Path\s*\(([\s\S]*)\)$/);
+  if (!m) return trimmed;
+  const args = parseCallArguments(`(${m[1]})`, 0);
+  if (!args || args.length === 0) return trimmed;
+  if (args.length === 1) return args[0].trim();
+  return `os.path.join(${args.join(", ")})`;
+}
+
 function resolveSimpleVarBinding(code, expr, isPython) {
   const trimmed = expr.trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return null;
@@ -2753,13 +2763,15 @@ function resolveSimpleVarBinding(code, expr, isPython) {
     lastRhs = m[1].trim();
   }
   if (!lastRhs) return null;
-  return isPython ? parseStaticPyString(lastRhs) : parseStaticJsString(lastRhs);
+  const normalizedRhs = isPython ? unwrapPythonPathCtor(lastRhs) : lastRhs;
+  return isPython ? parseStaticPyString(normalizedRhs) : parseStaticJsString(normalizedRhs);
 }
 
 function resolveStaticArgValue(argExpr, code, isPython) {
-  const lit = isPython ? parseStaticPyString(argExpr || "") : parseStaticJsString(argExpr || "");
+  const normalizedExpr = isPython ? unwrapPythonPathCtor(argExpr || "") : String(argExpr || "");
+  const lit = isPython ? parseStaticPyString(normalizedExpr) : parseStaticJsString(normalizedExpr);
   if (lit.ok) return lit.value;
-  const bound = resolveSimpleVarBinding(code, argExpr || "", isPython);
+  const bound = resolveSimpleVarBinding(code, normalizedExpr, isPython);
   if (bound && bound.ok) return bound.value;
   return null;
 }
@@ -2889,7 +2901,12 @@ function extractJsObjectProperty(objExpr, propName) {
 }
 
 function checkInlineNodeFs(code, allowPath, options = {}) {
-  const { allowDynamicPaths = false, roleLabel = "read-only ro-* workers" } = options;
+  const {
+    allowDynamicPaths = false,
+    roleLabel = "read-only ro-* workers",
+    allowReadOnlyArtifactCopySource = null,
+    registerReadOnlyMkdir = null,
+  } = options;
 
   const bracketRe = /(?:([A-Za-z_$][A-Za-z0-9_$]*)|([)\]'"]))\s*\[([^\]]*)\]/g;
   let bm;
@@ -2927,9 +2944,6 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
 
   const checkNodePathArg = (argExpr, opts) => {
     const rawExpr = String(argExpr || "");
-    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
-      return false;
-    }
     const lit = parseStaticJsString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
@@ -2944,6 +2958,9 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
     }
     if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
       return true;
+    }
+    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
+      return false;
     }
     return allowDynamicPaths;
   };
@@ -3000,25 +3017,39 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
           allowRootEqual: isMkdir,
           allowDevNull: allowNull,
           allowArtifactDir: isMkdir,
+          requireArtifactDir: isMkdir,
           allowArtifactRoot: isMkdir,
           forbidReadOnlyArtifact: forbidRoArtifact,
         })
       ) {
         return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
       }
+      if (isMkdir && registerReadOnlyMkdir) {
+        const mkdirVal =
+          resolveStaticArgValue(callArgs[0] || "", code, false) ??
+          resolveStaticJoinOrTemplate(callArgs[0] || "", code, false);
+        if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
+      }
       continue;
     }
 
     if (NODE_COPY_FS_APIS.has(fnName)) {
-      const forbidRoArtifact = fnName === "cpSync" || fnName === "cp";
+      const isCpDirApi = fnName === "cpSync" || fnName === "cp";
+      const hasRecursiveOpt =
+        isCpDirApi && callArgs.length >= 3 && /\brecursive\b/.test(String(callArgs[2] || ""));
       const srcVal = resolveStaticArgValue(callArgs[0] || "", code, false);
-      const srcIsImg = Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal));
+      const srcOkForRoArtifact =
+        !hasRecursiveOpt &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
       if (
         !checkNodePathArg(callArgs[1], {
           allowRootEqual: true,
           allowDevNull: true,
           allowArtifactDir: false,
-          forbidReadOnlyArtifact: forbidRoArtifact && !srcIsImg,
+          allowArtifactRoot: false,
+          forbidReadOnlyArtifact: !srcOkForRoArtifact,
         })
       ) {
         return `Inline Node fs.${fnName} destination outside allowed roots is blocked for ${roleLabel}.`;
@@ -3027,22 +3058,32 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
     }
 
     if (NODE_TWO_PATH_FS_APIS.has(fnName)) {
-      const isLink =
-        fnName === "symlinkSync" ||
-        fnName === "symlink" ||
-        fnName === "linkSync" ||
-        fnName === "link";
+      const isSymlink = fnName === "symlinkSync" || fnName === "symlink";
+      const isLink = isSymlink || fnName === "linkSync" || fnName === "link";
+      const srcVal = resolveStaticArgValue(callArgs[0] || "", code, false);
+      const dstVal = resolveStaticArgValue(callArgs[1] || "", code, false);
+      const symlinkBaseDir =
+        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
+      const srcOkForRoArtifact =
+        !isLink &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
       if (
         !checkNodePathArg(callArgs[0], {
           allowRootEqual: false,
           allowDevNull: false,
           forbidReadOnlyArtifact: isLink,
+          disallowArtifactRoot: isLink,
+          customBaseDir: symlinkBaseDir,
         }) ||
         !checkNodePathArg(callArgs[1], {
           allowRootEqual: true,
           allowDevNull: false,
           allowArtifactDir: false,
-          forbidReadOnlyArtifact: isLink,
+          allowArtifactRoot: false,
+          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
+          disallowArtifactRoot: isLink,
         })
       ) {
         return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
@@ -3090,7 +3131,7 @@ function splitPythonCallArgs(callArgs) {
 
 function hasDisallowedPythonAlias(code) {
   if (
-    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/.test(
+    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/.test(
       code,
     ) ||
     /(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|io\s*\.\s*)?open\b(?!\s*\()/.test(code)
@@ -3120,17 +3161,19 @@ function hasDisallowedPythonAlias(code) {
 }
 
 function checkInlinePythonFs(code, allowPath, options = {}) {
-  const { allowDynamicPaths = false, roleLabel = "read-only ro-* workers" } = options;
+  const {
+    allowDynamicPaths = false,
+    roleLabel = "read-only ro-* workers",
+    allowReadOnlyArtifactCopySource = null,
+    registerReadOnlyMkdir = null,
+  } = options;
 
   if (!allowDynamicPaths && hasDisallowedPythonAlias(code)) {
     return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
   }
 
   const checkPyPathArg = (argExpr, opts) => {
-    const rawExpr = String(argExpr || "");
-    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
-      return false;
-    }
+    const rawExpr = unwrapPythonPathCtor(argExpr || "");
     const lit = parseStaticPyString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
@@ -3146,11 +3189,58 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
       return true;
     }
+    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
+      return false;
+    }
     return allowDynamicPaths;
   };
 
+  const resolvePythonPathReceiverArg = (prefixStr) => {
+    const ctorMatch = prefixStr.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
+    if (ctorMatch) {
+      const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
+      if (!ctorArgs || ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
+      return { valid: true, found: true, expr: ctorArgs[0] };
+    }
+    const varMatch = prefixStr.match(/(?:^|[^\w.])([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+    if (varMatch) {
+      const varEsc = varMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const assignRe = new RegExp(
+        `(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*(?:pathlib\\s*\\.\\s*)?Path\\s*\\(\\s*([^()]*)\\s*\\)`,
+        "g",
+      );
+      let lastBody = null;
+      let am;
+      while ((am = assignRe.exec(code)) !== null) {
+        lastBody = am[1];
+      }
+      if (lastBody !== null) {
+        const boundArgs = parseCallArguments(`(${lastBody})`, 0);
+        if (boundArgs && boundArgs.length === 1) {
+          return { valid: true, found: true, expr: boundArgs[0] };
+        }
+      }
+    }
+    return { valid: true, found: false, expr: null };
+  };
+
+  if (registerReadOnlyMkdir) {
+    const preMkdirRe = /(?:(?:os|posix)\s*\.\s*|\b)(?:mkdir|makedirs)\s*\(/g;
+    let pm;
+    while ((pm = preMkdirRe.exec(code)) !== null) {
+      const mArgs = parseCallArguments(code, pm.index + pm[0].length - 1);
+      if (!mArgs) continue;
+      const { positionals: pPos, kwargs: pKw } = splitPythonCallArgs(mArgs);
+      const dExpr = pPos[0] ?? pKw.path ?? pKw.name ?? "";
+      const dVal =
+        resolveStaticArgValue(dExpr, code, true) ??
+        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr), code, true);
+      if (dVal) registerReadOnlyMkdir(dVal);
+    }
+  }
+
   const pathMethodRe =
-    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|open)\s*\(/g;
+    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|open)\s*\(/g;
   let match;
   while ((match = pathMethodRe.exec(code)) !== null) {
     const method = match[1];
@@ -3169,40 +3259,77 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       }
     }
     const prefix = code.slice(0, match.index);
-    const ctorMatch = prefix.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
-    if (!ctorMatch) {
-      if (!allowDynamicPaths) {
-        return `Inline Python Path.${method}() on non-literal receiver is blocked for ${roleLabel}.`;
-      }
-      continue;
-    }
-    const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
+    const recv = resolvePythonPathReceiverArg(prefix);
     const isMkdir = method === "mkdir";
+    const isLinkMethod =
+      method === "symlink_to" || method === "hardlink_to" || method === "link_to";
     const forbidRo =
-      method === "symlink_to" ||
-      method === "hardlink_to" ||
+      isLinkMethod ||
       method === "rmdir" ||
       method === "chmod" ||
       method === "lchmod";
-    if (
-      !ctorArgs ||
-      ctorArgs.length !== 1 ||
-      !checkPyPathArg(ctorArgs[0], {
-        allowRootEqual: isMkdir,
-        allowDevNull: false,
-        allowArtifactDir: isMkdir,
-        allowArtifactRoot: isMkdir,
-        forbidReadOnlyArtifact: forbidRo,
-      })
-    ) {
+    if (!recv.valid) {
       return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
     }
-    if (method === "rename" || method === "replace") {
+    if (recv.found) {
       if (
-        !checkPyPathArg(methodArgs[0] || "", {
+        !checkPyPathArg(recv.expr, {
+          allowRootEqual: isMkdir,
+          allowDevNull: false,
+          allowArtifactDir: isMkdir,
+          requireArtifactDir: isMkdir,
+          allowArtifactRoot: isMkdir,
+          forbidReadOnlyArtifact: forbidRo,
+          disallowArtifactRoot: isLinkMethod,
+        })
+      ) {
+        return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
+      }
+      if (isMkdir && registerReadOnlyMkdir) {
+        const mkdirVal =
+          resolveStaticArgValue(recv.expr, code, true) ??
+          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(recv.expr), code, true);
+        if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
+      }
+    } else if (!allowDynamicPaths) {
+      return `Inline Python Path.${method}() on non-literal receiver is blocked for ${roleLabel}.`;
+    }
+
+    if (isLinkMethod) {
+      const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
+      const targetExpr = mPos[0] ?? mKw.target ?? "";
+      const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
+      const symlinkBaseDir =
+        method === "symlink_to" && recvVal && isAbsolute(recvVal) ? dirname(recvVal) : null;
+      if (
+        !targetExpr ||
+        !checkPyPathArg(targetExpr, {
+          allowRootEqual: false,
+          allowDevNull: false,
+          allowArtifactDir: false,
+          allowArtifactRoot: false,
+          forbidReadOnlyArtifact: true,
+          disallowArtifactRoot: true,
+          customBaseDir: symlinkBaseDir,
+        })
+      ) {
+        return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
+      }
+    } else if (method === "rename" || method === "replace") {
+      const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
+      const targetExpr = mPos[0] ?? mKw.target ?? "";
+      const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
+      const srcOkForRoArtifact = allowReadOnlyArtifactCopySource
+        ? Boolean(recvVal && allowReadOnlyArtifactCopySource(recvVal))
+        : Boolean(recvVal && /\.(?:png|jpe?g|webp)$/i.test(recvVal));
+      if (
+        !targetExpr ||
+        !checkPyPathArg(targetExpr, {
           allowRootEqual: true,
           allowDevNull: false,
           allowArtifactDir: false,
+          allowArtifactRoot: false,
+          forbidReadOnlyArtifact: !srcOkForRoArtifact,
         })
       ) {
         return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
@@ -3245,19 +3372,27 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     if (!callArgs) {
       return `Unparseable ${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
     }
-    const { positionals } = splitPythonCallArgs(callArgs);
+    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
     if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
       if (!qualifier && !/\bshutil\b/.test(code)) continue;
-      const srcVal = resolveStaticArgValue(positionals[0] || "", code, true);
-      const srcIsImg = Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal));
-      const allowImgDir = srcIsImg && (fnName === "copy" || fnName === "copy2");
+      const srcExpr = positionals[0] ?? kwargs.src ?? "";
+      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
+      const isCopyTree = fnName === "copytree";
+      const srcVal = !isCopyTree ? resolveStaticArgValue(srcExpr, code, true) : null;
+      const srcOkForRoArtifact =
+        !isCopyTree &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
+      const allowImgDir = srcOkForRoArtifact && (fnName === "copy" || fnName === "copy2");
       if (
-        !checkPyPathArg(positionals[1] || "", {
+        !dstExpr ||
+        !checkPyPathArg(dstExpr, {
           allowRootEqual: true,
           allowDevNull: true,
           allowArtifactDir: allowImgDir,
           allowArtifactRoot: allowImgDir,
-          forbidReadOnlyArtifact: fnName === "copytree",
+          forbidReadOnlyArtifact: isCopyTree || !srcOkForRoArtifact,
         })
       ) {
         return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
@@ -3265,36 +3400,64 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       continue;
     }
     if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
-      const isLink = fnName === "symlink" || fnName === "link";
+      const srcExpr = positionals[0] ?? kwargs.src ?? "";
+      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
+      const isSymlink = fnName === "symlink";
+      const isLink = isSymlink || fnName === "link";
+      const srcVal = !isLink ? resolveStaticArgValue(srcExpr, code, true) : null;
+      const dstVal = isSymlink ? resolveStaticArgValue(dstExpr, code, true) : null;
+      const symlinkBaseDir =
+        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
+      const srcOkForRoArtifact =
+        !isLink &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
+      const allowMoveDir = srcOkForRoArtifact && fnName === "move";
       if (
-        !checkPyPathArg(positionals[0] || "", {
+        !srcExpr ||
+        !dstExpr ||
+        !checkPyPathArg(srcExpr, {
           allowRootEqual: false,
           allowDevNull: false,
           forbidReadOnlyArtifact: isLink,
+          disallowArtifactRoot: isLink,
+          customBaseDir: symlinkBaseDir,
         }) ||
-        !checkPyPathArg(positionals[1] || "", {
+        !checkPyPathArg(dstExpr, {
           allowRootEqual: true,
           allowDevNull: false,
-          allowArtifactDir: false,
-          forbidReadOnlyArtifact: isLink,
+          allowArtifactDir: allowMoveDir,
+          allowArtifactRoot: allowMoveDir,
+          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
+          disallowArtifactRoot: isLink,
         })
       ) {
         return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
+    const singleExpr = positionals[0] ?? kwargs.path ?? kwargs.name ?? "";
     const isMkdir = fnName === "mkdir" || fnName === "makedirs";
     const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "chown"].includes(fnName);
     if (
-      !checkPyPathArg(positionals[0] || "", {
+      !singleExpr ||
+      !checkPyPathArg(singleExpr, {
         allowRootEqual: isMkdir,
         allowDevNull: false,
         allowArtifactDir: isMkdir,
+        requireArtifactDir: isMkdir,
         allowArtifactRoot: isMkdir,
         forbidReadOnlyArtifact: forbidRo,
       })
     ) {
       return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
+    }
+    if (isMkdir && registerReadOnlyMkdir) {
+      const mkdirVal =
+        resolveStaticArgValue(singleExpr, code, true) ??
+        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(singleExpr), code, true);
+      if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
     }
   }
 
@@ -3744,6 +3907,8 @@ function extractUnzipWriteTargets(args) {
 
 function extractRsyncWriteSpec(args) {
   let dryRun = false;
+  let hasDelete = false;
+  let removeSourceFiles = false;
   const positionals = [];
   let afterDoubleDash = false;
   for (let i = 0; i < args.length; i += 1) {
@@ -3756,6 +3921,12 @@ function extractRsyncWriteSpec(args) {
       if (arg === "-n" || arg === "--dry-run" || arg === "--list-only" || (!arg.startsWith("--") && /^-[a-zA-Z]*n/.test(arg))) {
         dryRun = true;
       }
+      if (arg.startsWith("--del")) {
+        hasDelete = true;
+      }
+      if (arg === "--remove-source-files") {
+        removeSourceFiles = true;
+      }
       if (["-e", "--rsh", "--exclude", "--include", "--filter", "--files-from", "--log-file", "--out-format", "--compare-dest", "--copy-dest", "--link-dest"].includes(arg)) {
         i += 1;
       }
@@ -3763,8 +3934,16 @@ function extractRsyncWriteSpec(args) {
     }
     positionals.push(arg);
   }
-  if (dryRun || positionals.length < 2) return { dryRun: true, destination: null };
-  return { dryRun: false, destination: positionals[positionals.length - 1] };
+  if (dryRun || positionals.length < 2) {
+    return { dryRun: true, destination: null, sources: [], hasDelete: false, removeSourceFiles: false };
+  }
+  return {
+    dryRun: false,
+    destination: positionals[positionals.length - 1],
+    sources: positionals.slice(0, -1),
+    hasDelete,
+    removeSourceFiles,
+  };
 }
 
 function extractFindEffects(args) {
@@ -3827,6 +4006,7 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
             allowRootEqual: true,
             allowDevNull: false,
             allowArtifactDir: true,
+            requireArtifactDir: true,
             allowArtifactRoot: true,
           }),
       )
@@ -3928,7 +4108,25 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
       if (/^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:/.test(spec.destination) || spec.destination.startsWith("rsync://")) {
         return `Command 'rsync' to remote destination is blocked for ${roleLabel}.`;
       }
-      if (!allowPath(spec.destination, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true })) {
+      if (
+        !allowPath(spec.destination, {
+          allowRootEqual: true,
+          allowDevNull: false,
+          forbidReadOnlyArtifact: true,
+          isRecursiveDelete: spec.hasDelete,
+          disallowArtifactRoot: spec.hasDelete,
+        }) ||
+        (spec.removeSourceFiles &&
+          spec.sources.some(
+            (s) =>
+              !allowPath(s, {
+                allowRootEqual: false,
+                allowDevNull: false,
+                forbidReadOnlyArtifact: true,
+                isRecursiveDelete: true,
+              }),
+          ))
+      ) {
         return `Command 'rsync' targeting outside allowed paths is blocked for ${roleLabel}.`;
       }
     }
@@ -4227,7 +4425,26 @@ function extractInlineCodeCheck(inv, allowPath, nodePyOptions) {
   return null;
 }
 
-function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerTokens) {
+function hasCpRecursiveOrArchiveFlag(args) {
+  for (const arg of args) {
+    if (arg === "--") break;
+    if (arg === "--recursive" || arg === "--archive" || arg.startsWith("--archive=")) {
+      return true;
+    }
+    if (!arg.startsWith("--") && /^-[A-Za-z]*[rRa]/.test(arg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isMutatingReadOnlyInvocation(
+  inv,
+  allowReadOnlyTempPath,
+  validateInnerTokens,
+  checkReadOnlyCopySource = null,
+  registerReadOnlyMkdir = null,
+) {
   const { cmd, args } = inv;
   if (!cmd) return null;
 
@@ -4251,8 +4468,13 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
 
   if (cmd === "cp") {
     const cpSpec = extractCpOrMvSpec(args);
-    const allSourcesImages =
-      cpSpec.sources.length > 0 && cpSpec.sources.every((s) => /\.(?:png|jpe?g|webp)$/i.test(s));
+    const hasRecOrArchive = hasCpRecursiveOrArchiveFlag(args);
+    const validArtifactImageCopy =
+      !hasRecOrArchive &&
+      cpSpec.sources.length > 0 &&
+      cpSpec.sources.every((s) =>
+        checkReadOnlyCopySource ? checkReadOnlyCopySource(s) : /\.(?:png|jpe?g|webp)$/i.test(s),
+      );
     if (
       !cpSpec.valid ||
       cpSpec.destinations.some(
@@ -4260,8 +4482,9 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
           !allowReadOnlyTempPath(d, {
             allowRootEqual: true,
             allowDevNull: true,
-            allowArtifactDir: allSourcesImages,
-            allowArtifactRoot: allSourcesImages,
+            allowArtifactDir: validArtifactImageCopy,
+            allowArtifactRoot: validArtifactImageCopy,
+            forbidReadOnlyArtifact: !validArtifactImageCopy,
           }),
       )
     ) {
@@ -4272,8 +4495,11 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
 
   if (cmd === "mv") {
     const mvSpec = extractCpOrMvSpec(args);
-    const allSourcesImages =
-      mvSpec.sources.length > 0 && mvSpec.sources.every((s) => /\.(?:png|jpe?g|webp)$/i.test(s));
+    const validArtifactImageMove =
+      mvSpec.sources.length > 0 &&
+      mvSpec.sources.every((s) =>
+        checkReadOnlyCopySource ? checkReadOnlyCopySource(s) : /\.(?:png|jpe?g|webp)$/i.test(s),
+      );
     if (
       !mvSpec.valid ||
       mvSpec.sources.some((s) => !allowReadOnlyTempPath(s, { allowRootEqual: false, allowDevNull: false })) ||
@@ -4282,8 +4508,9 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
           !allowReadOnlyTempPath(d, {
             allowRootEqual: true,
             allowDevNull: false,
-            allowArtifactDir: allSourcesImages,
-            allowArtifactRoot: allSourcesImages,
+            allowArtifactDir: validArtifactImageMove,
+            allowArtifactRoot: validArtifactImageMove,
+            forbidReadOnlyArtifact: !validArtifactImageMove,
           }),
       )
     ) {
@@ -4311,6 +4538,8 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
   const inlineDeny = extractInlineCodeCheck(inv, allowReadOnlyTempPath, {
     allowDynamicPaths: false,
     roleLabel: "read-only ro-* workers",
+    allowReadOnlyArtifactCopySource: checkReadOnlyCopySource,
+    registerReadOnlyMkdir,
   });
   if (inlineDeny) return inlineDeny;
 
@@ -4413,7 +4642,9 @@ function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase, 
     const lnSpec = extractLnSpec(args);
     if (
       !lnSpec.valid ||
-      lnSpec.linkPaths.some((l) => !allowAuthorShellPath(l, { allowRootEqual: true, allowDevNull: false }))
+      lnSpec.linkPaths.some(
+        (l) => !allowAuthorShellPath(l, { allowRootEqual: true, allowDevNull: false, disallowArtifactRoot: true }),
+      )
     ) {
       return "Command 'ln' creating a link outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
     }
@@ -4421,10 +4652,18 @@ function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase, 
     const linkBaseDir = resolvedLink ? (lnSpec.linkIsDir ? resolvedLink : dirname(resolvedLink)) : null;
     for (const src of lnSpec.sources) {
       if (!lnSpec.isSymbolic) {
-        if (!allowAuthorShellPath(src, { allowRootEqual: false, allowDevNull: false })) {
+        if (!allowAuthorShellPath(src, { allowRootEqual: false, allowDevNull: false, disallowArtifactRoot: true })) {
           return "Command 'ln' hardlinking a source outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
         }
-      } else if (linkBaseDir && !allowAuthorShellPath(src, { allowRootEqual: true, allowDevNull: false, customBaseDir: linkBaseDir })) {
+      } else if (
+        linkBaseDir &&
+        !allowAuthorShellPath(src, {
+          allowRootEqual: true,
+          allowDevNull: false,
+          customBaseDir: linkBaseDir,
+          disallowArtifactRoot: true,
+        })
+      ) {
         return "Command 'ln -s' pointing outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
       }
     }
@@ -4653,23 +4892,104 @@ function resolveWorkerConfinementRoots(payload, env, appDataDir) {
   return { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots };
 }
 
+function hasUnsafeArtifactRelativePath(resolvedPath, realArtifact) {
+  if (!resolvedPath || !realArtifact || !isStrictlyInside(resolvedPath, realArtifact)) {
+    return false;
+  }
+  const rel = relative(realArtifact, resolvedPath);
+  if (rel.includes(".system_generated")) return true;
+  if ((rel.includes("{") || rel.includes("}")) && rel.includes("..")) return true;
+  const firstSeg = rel.split(/[\\/]/)[0] || "";
+  if (!firstSeg) return false;
+  if (/^[*?[{^]/.test(firstSeg)) return true;
+  if (/^[!+@]\(/.test(firstSeg)) return true;
+  if (firstSeg.includes("{") || firstSeg.includes("}")) return true;
+  if (firstSeg.startsWith(".") && /[*?[\]()]/.test(firstSeg)) return true;
+  return false;
+}
+
 function isSystemGeneratedArtifactPath(resolvedPath, realArtifact) {
   if (!resolvedPath || !realArtifact) return false;
-  return isInsideOrEqual(resolvedPath, join(realArtifact, ".system_generated"));
+  if (isInsideOrEqual(resolvedPath, join(realArtifact, ".system_generated"))) return true;
+  return hasUnsafeArtifactRelativePath(resolvedPath, realArtifact);
+}
+
+function isValidReadOnlyImageSourcePath(resolvedSrc, pendingMkdirs = null) {
+  if (!resolvedSrc) return false;
+  if (/[*?[\]{}]/.test(resolvedSrc)) return false;
+  if (pendingMkdirs && pendingMkdirs.has(resolvedSrc)) return false;
+  const leaf = basename(resolvedSrc);
+  if (!leaf || leaf.startsWith(".") || !/\.(?:png|jpe?g|webp)$/i.test(leaf)) {
+    return false;
+  }
+  try {
+    const st = lstatSync(resolvedSrc);
+    if (st.isDirectory() || st.isSymbolicLink()) return false;
+  } catch {}
+  return true;
+}
+
+function isCleanArtifactDirSegment(seg) {
+  return (
+    Boolean(seg) &&
+    !seg.startsWith(".") &&
+    extname(seg) === "" &&
+    !/[*?[\]{}()]/.test(seg)
+  );
 }
 
 function isAllowedReadOnlyArtifactPath(
   resolvedPath,
   realArtifact,
   realCwd,
-  { allowDirectory = false } = {},
+  { allowDirectory = false, requireDirectory = false } = {},
 ) {
   if (!resolvedPath || !realArtifact) return false;
   if (!isStrictlyInside(resolvedPath, realArtifact)) return false;
   if (isSystemGeneratedArtifactPath(resolvedPath, realArtifact)) return false;
   if (realCwd && isInsideOrEqual(resolvedPath, realCwd)) return false;
-  if (/\.(?:png|jpe?g|webp)$/i.test(resolvedPath)) return true;
-  if (allowDirectory === true && extname(resolvedPath) === "") return true;
+
+  const rel = relative(realArtifact, resolvedPath);
+  const segments = rel.split(/[\\/]/).filter(Boolean);
+  if (segments.length === 0) return false;
+
+  if (requireDirectory) {
+    let cur = realArtifact;
+    for (const seg of segments) {
+      if (!isCleanArtifactDirSegment(seg)) return false;
+      cur = join(cur, seg);
+      try {
+        if (!lstatSync(cur).isDirectory()) return false;
+      } catch {}
+    }
+    return true;
+  }
+
+  let cur = realArtifact;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const seg = segments[i];
+    if (!isCleanArtifactDirSegment(seg)) return false;
+    cur = join(cur, seg);
+    try {
+      if (!lstatSync(cur).isDirectory()) return false;
+    } catch {}
+  }
+
+  const leaf = segments[segments.length - 1];
+  if (!leaf || leaf.startsWith(".") || leaf.includes("{") || leaf.includes("}")) {
+    return false;
+  }
+  let leafStat = null;
+  try {
+    leafStat = lstatSync(resolvedPath);
+  } catch {}
+  if (leafStat && leafStat.isSymbolicLink()) return false;
+  if (/\.(?:png|jpe?g|webp)$/i.test(leaf)) {
+    return !(leafStat && leafStat.isDirectory());
+  }
+  if (allowDirectory === true && isCleanArtifactDirSegment(leaf)) {
+    return !(leafStat && !leafStat.isDirectory());
+  }
   return false;
 }
 
@@ -4743,36 +5063,46 @@ function handlePreToolUse(payload, env) {
       const validateReadOnlyShell = (code, inheritedEnv = {}, outerEnv = env, depth = 0) => {
         if (depth > 4) return "Nested shell script depth limit exceeded for read-only ro-* workers.";
         const { invocations, redirectTargets } = collectInvocations(code, 0, inheritedEnv, outerEnv);
+        const pendingMkdirs = new Set();
 
         const makeAllowInvTempPath = (mergedEnv) => (rawToken, opts = {}) => {
           const {
             allowRootEqual = false,
             allowDevNull = false,
             allowArtifactDir = false,
+            requireArtifactDir = false,
             allowArtifactRoot = false,
             forbidReadOnlyArtifact = false,
+            disallowArtifactRoot = false,
+            customBaseDir = null,
           } = opts;
-          const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
+          const resolved = resolveShellTargetPath(rawToken, customBaseDir || fallbackBaseDir, mergedEnv);
           if (!resolved) return false;
           if (allowDevNull && resolved === "/dev/null") return true;
           if (isSystemGeneratedArtifactPath(resolved, realArtifact)) return false;
           if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
             if (forbidReadOnlyArtifact) return false;
-            if (
-              allowArtifactRoot &&
-              resolved === realArtifact &&
-              !(realCwd && isInsideOrEqual(resolved, realCwd))
-            ) {
-              return true;
+            if (resolved === realArtifact) {
+              return (
+                Boolean(allowArtifactRoot) &&
+                !disallowArtifactRoot &&
+                !(realCwd && isInsideOrEqual(resolved, realCwd))
+              );
             }
             return isAllowedReadOnlyArtifactPath(resolved, realArtifact, realCwd, {
               allowDirectory: Boolean(allowArtifactDir),
+              requireDirectory: Boolean(requireArtifactDir),
             });
           }
           return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
             allowRootEqual,
             excludeRealCwd: true,
           });
+        };
+
+        const makeCheckReadOnlyCopySource = (mergedEnv) => (rawToken) => {
+          const resolvedSrc = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
+          return isValidReadOnlyImageSourcePath(resolvedSrc, pendingMkdirs);
         };
 
         for (const redirectTarget of redirectTargets) {
@@ -4785,6 +5115,11 @@ function handlePreToolUse(payload, env) {
         for (const inv of invocations) {
           const mergedEnv = { ...outerEnv, ...inv.env };
           const allowInvTempPath = makeAllowInvTempPath(mergedEnv);
+          const checkReadOnlyCopySource = makeCheckReadOnlyCopySource(mergedEnv);
+          const registerReadOnlyMkdir = (rawToken) => {
+            const resolvedDir = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
+            if (resolvedDir) pendingMkdirs.add(resolvedDir);
+          };
           const validateInnerTokens = (innerTokens, searchRoots) => {
             const innerInv = unwrapCommandSegment(innerTokens, inv.env, outerEnv);
             if (!innerInv.cmd) return null;
@@ -4794,14 +5129,41 @@ function handlePreToolUse(payload, env) {
               }
               return allowInvTempPath(rawToken, opts);
             };
-            return isMutatingReadOnlyInvocation(innerInv, innerAllow, validateInnerTokens);
+            const innerCopySourceCheck = (rawToken) => {
+              if (rawToken === "{}" || rawToken.includes("{}")) return false;
+              return checkReadOnlyCopySource(rawToken);
+            };
+            return isMutatingReadOnlyInvocation(
+              innerInv,
+              innerAllow,
+              validateInnerTokens,
+              innerCopySourceCheck,
+              registerReadOnlyMkdir,
+            );
           };
-          const denyReason = isMutatingReadOnlyInvocation(inv, allowInvTempPath, validateInnerTokens);
+          const denyReason = isMutatingReadOnlyInvocation(
+            inv,
+            allowInvTempPath,
+            validateInnerTokens,
+            checkReadOnlyCopySource,
+            registerReadOnlyMkdir,
+          );
           if (denyReason) return denyReason;
+
+          if (inv.cmd === "mkdir") {
+            for (const p of extractPathsSkippingValueFlags(inv.args, new Set(["-m", "--mode"]))) {
+              registerReadOnlyMkdir(p);
+            }
+          }
 
           const scriptDeny = inspectTempScriptFile(inv, {
             allowPath: allowInvTempPath,
-            nodePyOptions: { allowDynamicPaths: false, roleLabel: "read-only ro-* workers" },
+            nodePyOptions: {
+              allowDynamicPaths: false,
+              roleLabel: "read-only ro-* workers",
+              allowReadOnlyArtifactCopySource: checkReadOnlyCopySource,
+              registerReadOnlyMkdir,
+            },
             canonicalTempRoots,
             realCwd,
             fallbackBaseDir,
@@ -4942,6 +5304,7 @@ function handlePreToolUse(payload, env) {
           allowDevNull = false,
           customBaseDir = null,
           isRecursiveDelete = false,
+          disallowArtifactRoot = false,
         } = opts;
         const activeBase = customBaseDir || realCwd;
         if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$")) {
@@ -4962,7 +5325,7 @@ function handlePreToolUse(payload, env) {
           return true;
         }
         if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
-          return allowRootEqual ? true : isStrictlyInside(resolved, realArtifact);
+          return allowRootEqual && !disallowArtifactRoot ? true : isStrictlyInside(resolved, realArtifact);
         }
         return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
           allowRootEqual,

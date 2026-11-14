@@ -2501,24 +2501,69 @@ describe("agy 1.5.9 native swarm compatibility caveats", () => {
         assert.equal(runRoShell(cmd).decision, "allow", `expected ro screenshot shell allow: ${cmd}`);
       }
 
+      const evilDirPng = join(slashTmpDir, "evil_dir.png");
+      const payloadSh = join(slashTmpDir, "payload.sh");
+      const existingDirInExplicitArt = join(roExplicitArtifact, "existing_dir.png");
+      mkdirSync(evilDirPng, { recursive: true });
+      mkdirSync(existingDirInExplicitArt, { recursive: true });
+      writeFileSync(payloadSh, "#!/bin/sh\necho pwn\n", "utf8");
+      writeFileSync(join(evilDirPng, "payload.sh"), "#!/bin/sh\necho pwn\n", "utf8");
+
+      assert.equal(
+        callFileTool("ro-c2", "write_file", existingDirInExplicitArt, roExplicitArtifact).decision,
+        "deny",
+      );
+      assert.equal(
+        callFileTool("ro-c2", "write_file", join(roFallbackArtifact, "evil.png", "shot.png")).decision,
+        "deny",
+      );
+      assert.equal(
+        callFileTool("ro-c2", "write_file", join(roFallbackArtifact, ".png")).decision,
+        "deny",
+      );
+
       const roDeniedCmds = [
         `echo bad > ${join(roFallbackArtifact, "report.md")}`,
         `echo bad > ${join(roFallbackArtifact, ".system_generated", "shot.png")}`,
+        `echo bad > ${join(roFallbackArtifact, "evil.png", "shot.png")}`,
+        `echo bad > ${join(roFallbackArtifact, ".png")}`,
         `cp ${join(slashTmpDir, "notes.md")} ${join(roFallbackArtifact, "shots")}`,
         `cp ${join(slashTmpDir, "notes.md")} ${join(roFallbackArtifact, "notes.md")}`,
         `mv ${join(slashTmpDir, "notes.txt")} ${join(roFallbackArtifact, "notes.txt")}`,
         `tee ${join(roFallbackArtifact, "out.json")}`,
         `curl -sL https://example.com/data -o ${join(roFallbackArtifact, "out.json")}`,
         `mkdir -p ${join(roFallbackArtifact, "notes.md")}`,
+        `mkdir -p ${join(roFallbackArtifact, "evil.png")}`,
+        `mkdir -p ${join(roFallbackArtifact, ".png")}`,
+        `mkdir -p ${join(roFallbackArtifact, "evil.png")} && cp ${payloadSh} ${join(roFallbackArtifact, "evil.png")}`,
         `mkdir -p ${join(roFallbackArtifact, ".system_generated", "sub")}`,
+        `cp -r ${evilDirPng} ${join(roFallbackArtifact, "shots")}`,
+        `cp -a ${evilDirPng} ${join(roFallbackArtifact, "shots")}`,
+        `cp ${evilDirPng} ${join(roFallbackArtifact, "shots")}`,
+        `mv ${evilDirPng} ${join(roFallbackArtifact, "shots")}`,
+        `mkdir -p ${join(slashTmpDir, "staged_dir.png")} && mv ${join(slashTmpDir, "staged_dir.png")} ${join(roFallbackArtifact, "shots")}`,
+        `cp ${payloadSh} ${join(roFallbackArtifact, "disguised.png")}`,
+        `mv ${payloadSh} ${join(roFallbackArtifact, "disguised.png")}`,
+        `cp ${join(slashTmpDir, "*.png")} ${join(roFallbackArtifact, "shots")}`,
         `rm -f ${join(roFallbackArtifact, "notes.md")}`,
         `rm -rf ${roFallbackArtifact}`,
         `ln -s /etc/passwd ${join(roFallbackArtifact, "shot.png")}`,
         `node -e "require('node:fs').writeFileSync('${join(roFallbackArtifact, "notes.md")}', 'x')"`,
+        `node -e "require('node:fs').mkdirSync('${join(roFallbackArtifact, "evil.png")}', { recursive: true })"`,
+        `node -e "require('node:fs').copyFileSync('${payloadSh}', '${join(roFallbackArtifact, "disguised.png")}')"`,
+        `node -e "require('node:fs').cpSync('${evilDirPng}', '${join(roFallbackArtifact, "shots", "evil_dir.png")}', { recursive: true })"`,
+        `node -e "const fs = require('node:fs'); fs.mkdirSync('${join(slashTmpDir, "inline_dir.png")}'); fs.renameSync('${join(slashTmpDir, "inline_dir.png")}', '${join(roFallbackArtifact, "shots", "inline_dir.png")}')"`,
         `node -e "require('node:fs').symlinkSync('/etc/passwd', '${join(roFallbackArtifact, "shot.png")}')"`,
         `node -e "await page.screenshot({ path: '${join(sb.outsideDir, "escape.png")}' })"`,
         `node ${tempBadPlaywrightMjs}`,
         `python3 -c "open('${join(roFallbackArtifact, "notes.txt")}', 'w').write('x')"`,
+        `python3 -c "import os, shutil; os.makedirs('${join(roFallbackArtifact, "evil.png")}', exist_ok=True); shutil.copy('${payloadSh}', '${join(roFallbackArtifact, "evil.png")}')"`,
+        `python3 -c "import os; os.makedirs('${join(roFallbackArtifact, "evil.png")}', exist_ok=True)"`,
+        `python3 -c "from pathlib import Path; Path('${join(roFallbackArtifact, "evil.png")}').mkdir(parents=True, exist_ok=True)"`,
+        `python3 -c "import shutil; shutil.copy('${payloadSh}', '${join(roFallbackArtifact, "disguised.png")}')"`,
+        `python3 -c "import shutil; shutil.copytree('${evilDirPng}', '${join(roFallbackArtifact, "shots", "evil_dir.png")}')"`,
+        `python3 -c "import os, shutil; os.makedirs('${join(slashTmpDir, "py_dir.png")}', exist_ok=True); shutil.move('${join(slashTmpDir, "py_dir.png")}', '${join(roFallbackArtifact, "shots")}')"`,
+        `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "ro_repo_sym")}').symlink_to('${join(sb.worktree, "README.md")}')"`,
         `python3 -c "page.screenshot(path='${join(roFallbackArtifact, ".system_generated", "x.png")}')"`,
       ];
       for (const cmd of roDeniedCmds) {
@@ -2541,9 +2586,26 @@ describe("agy 1.5.9 native swarm compatibility caveats", () => {
           `cp ${join(slashTmpDir, "a.json")} ${swarmPlanTarget}`,
           `rm -rf ${join(artDir, ".system_generated")}`,
           `rm -rf ${artDir}`,
+          `rm -rf ${join(artDir, ".*")}`,
+          `rm -rf ${join(artDir, ".s*")}`,
+          `rm -rf ${join(artDir, ".?ystem_generated")}`,
+          `rm -rf ${join(artDir, "[.]system_generated")}`,
+          `rm -rf ${join(artDir, "*")}`,
+          `rm -rf ${join(artDir, "{.system_generated,scratch}")}`,
+          `rm -rf ${join(artDir, "scratch", "{../.system_generated,a}")}`,
+          `rsync -a --delete ${slashTmpDir}/ ${artDir}/`,
+          `rsync -a --del ${slashTmpDir}/ ${artDir}/`,
+          `rsync -a --delete-after ${slashTmpDir}/ ${artDir}/`,
+          `rsync -a --remove-source-files ${artDir} ${slashTmpDir}/out/`,
+          `ln -s ${artDir} ${join(slashTmpDir, "art_root_link")}`,
           `find ${artDir} -delete`,
           `node -e "require('node:fs').writeFileSync('${transcriptTarget}', '{}')"`,
           `python3 -c "open('${transcriptTarget}', 'w').write('{}')"`,
+          `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "sym")}').symlink_to('${transcriptTarget}')" && echo "{}" > ${join(slashTmpDir, "sym")}`,
+          `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "hl")}').hardlink_to('${transcriptTarget}')"`,
+          `python3 -c "from pathlib import Path; p = Path('${join(slashTmpDir, "sym_var")}'); p.symlink_to('${transcriptTarget}')"`,
+          `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "sym_out")}').symlink_to(Path('${join(sb.outsideDir, "outside.txt")}'))"`,
+          `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "sym_root")}').symlink_to('${artDir}')"`,
         ]) {
           assert.equal(
             runGuard(
@@ -2560,6 +2622,27 @@ describe("agy 1.5.9 native swarm compatibility caveats", () => {
             `expected .system_generated deny for ${convId}: ${sysGenCmd}`,
           );
         }
+      }
+
+      for (const allowedImplCmd of [
+        `rsync -a --delete ${slashTmpDir}/ ${join(implArtifact, "scratch")}/`,
+        `rm -rf ${join(implArtifact, "scratch", "*")}`,
+        `python3 -c "from pathlib import Path; Path('${join(slashTmpDir, "ok_sym")}').symlink_to('${join(sb.worktree, "src.js")}')"`,
+      ]) {
+        assert.equal(
+          runGuard(
+            {
+              hookEventName: "PreToolUse",
+              conversationId: "impl-c2",
+              rootConversationId: "coord-c2",
+              cwd: sb.worktree,
+              toolCall: { id: "impl-ok", name: "run_command", args: { CommandLine: allowedImplCmd } },
+            },
+            { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+          ).decision,
+          "allow",
+          `expected impl confined command allow: ${allowedImplCmd}`,
+        );
       }
 
       assert.equal(
