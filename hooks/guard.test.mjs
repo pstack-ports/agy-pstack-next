@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -64,7 +66,7 @@ function writeTranscriptLines(transcriptPath, steps) {
   writeFileSync(transcriptPath, text, "utf8");
 }
 
-function runGuard(payload, envOverrides = {}) {
+function runGuard(payload, envOverrides = {}, guardScriptPath = GUARD_PATH) {
   const env = { ...process.env };
   delete env.PSTACK_APPDATA_DIR;
   delete env.ANTIGRAVITY_APP_DATA_DIR;
@@ -72,15 +74,27 @@ function runGuard(payload, envOverrides = {}) {
   delete env.PLUGIN_ROOT;
   delete env.PSTACK_PLUGIN_ROOT;
   delete env.PSTACK_CACHE_DIR;
+  delete env.PSTACK_CONFIG_DIR;
+  delete env.PSTACK_REMOTE_SWARM_CLI;
+  delete env.PSTACK_REMOTE_BOARD_CONFIG;
   delete env.PSTACK_GUARD_DELEGATED;
   delete env.PSTACK_ALLOW_PUSH;
   delete env.PSTACK_FORCE_COORDINATOR;
+  if (
+    guardScriptPath === GUARD_PATH &&
+    !("PSTACK_CONFIG_DIR" in envOverrides) &&
+    !("HOME" in envOverrides) &&
+    !("PLUGIN_ROOT" in envOverrides) &&
+    !("PSTACK_PLUGIN_ROOT" in envOverrides)
+  ) {
+    env.PSTACK_CONFIG_DIR = join(PLUGIN_ROOT, ".nonexistent-pstack-config-dir");
+  }
   for (const [k, v] of Object.entries(envOverrides)) {
     if (v === undefined || v === null) delete env[k];
     else env[k] = v;
   }
 
-  const res = spawnSync(process.execPath, [GUARD_PATH], {
+  const res = spawnSync(process.execPath, [guardScriptPath], {
     input: JSON.stringify(payload),
     encoding: "utf8",
     env,
@@ -1923,6 +1937,911 @@ describe("agy 1.5.9 audit fixes: shell vars, evolve isolation, numbered verifier
       }
     } finally {
       rmSync(slashTmpDir, { recursive: true, force: true });
+      sb.cleanup();
+    }
+  });
+});
+
+describe("agy 1.5.9 native swarm compatibility caveats", () => {
+  test("Caveat 3 respects config.json plugin disable across PSTACK_CONFIG_DIR, plugins layout, and HOME fallback without cache writes", () => {
+    const sb = makeSandbox();
+    try {
+      const coordCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "coordinator.md"), "utf8");
+      writeSwarmMembers(sb.appDataDir, "coord-c3", {
+        coordinator: { conversation_id: "coord-c3", role: "coordinator" },
+        "ro-1": { conversation_id: "ro-c3", role: "worker" },
+        "sicko-1": { conversation_id: "sicko-c3", role: "worker" },
+        "impl-1": { conversation_id: "impl-c3", role: "worker" },
+      });
+
+      const cfgDir = join(sb.root, "custom-config");
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(
+        join(cfgDir, "config.json"),
+        JSON.stringify({ plugins: { "agy-pstack-next": { enabled: false } } }),
+        "utf8",
+      );
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "coord-c3",
+            lastUserInput: "/pstack audit hooks",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        {},
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreInvocation",
+            conversationId: "ro-c3",
+            rootConversationId: "coord-c3",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        {},
+      );
+
+      const cacheDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next");
+      assert.equal(existsSync(join(cacheDir, "injected-capsules.json")), false);
+      assert.equal(existsSync(join(cacheDir, "member-map.json")), false);
+      assert.equal(existsSync(join(cacheDir, "plain-swarm-roots.json")), false);
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "coord-c3",
+            cwd: sb.worktree,
+            toolCall: { id: "t1", name: "invoke_subagent", args: {} },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        { decision: "allow" },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-c3",
+            cwd: sb.worktree,
+            toolCall: { id: "t2", name: "write_file", args: { Path: join(sb.worktree, "mutated.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        { decision: "allow" },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "sicko-c3",
+            cwd: sb.worktree,
+            toolCall: { id: "t3", name: "write_file", args: { Path: join(sb.worktree, "created.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        { decision: "allow" },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "impl-c3",
+            cwd: sb.worktree,
+            toolCall: { id: "t4", name: "run_command", args: { CommandLine: "git push origin main" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        { decision: "allow" },
+      );
+
+      writeFileSync(
+        join(cfgDir, "config.json"),
+        JSON.stringify({ plugins: { "agy-pstack-next": { enabled: true } } }),
+        "utf8",
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "coord-c3",
+            lastUserInput: "/pstack audit hooks",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+
+      const simulatedHome = join(sb.root, "sim-home");
+      const simulatedConfigDir = join(simulatedHome, ".gemini", "config");
+      const simulatedPluginDir = join(simulatedConfigDir, "plugins", "agy-pstack-next");
+      mkdirSync(join(simulatedPluginDir, "hooks"), { recursive: true });
+      mkdirSync(join(simulatedPluginDir, "roles"), { recursive: true });
+      copyFileSync(GUARD_PATH, join(simulatedPluginDir, "hooks", "guard.mjs"));
+      chmodSync(join(simulatedPluginDir, "hooks", "guard.mjs"), 0o755);
+      copyFileSync(
+        join(PLUGIN_ROOT, "roles", "coordinator.md"),
+        join(simulatedPluginDir, "roles", "coordinator.md"),
+      );
+      writeFileSync(
+        join(simulatedConfigDir, "config.json"),
+        JSON.stringify({ plugins: { "agy-pstack-next": { enabled: false } } }),
+        "utf8",
+      );
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "sim-coord",
+            lastUserInput: "/pstack run",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PLUGIN_ROOT: simulatedPluginDir },
+        ),
+        {},
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "sim-coord-installed",
+            lastUserInput: "/pstack run",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+          join(simulatedPluginDir, "hooks", "guard.mjs"),
+        ),
+        {},
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-c3",
+            cwd: sb.worktree,
+            toolCall: { id: "t5", name: "write_file", args: { Path: join(sb.worktree, "ok.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+          join(simulatedPluginDir, "hooks", "guard.mjs"),
+        ),
+        { decision: "allow" },
+      );
+
+      const isolatedHomeOut = runGuard(
+        {
+          hookEventName: "SessionStart",
+          conversationId: "isolated-from-home",
+          lastUserInput: "/pstack run",
+        },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, HOME: simulatedHome },
+      );
+      assert.deepEqual(isolatedHomeOut, {
+        injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }],
+      });
+
+      const bareHomeAppData = join(simulatedHome, ".gemini", "antigravity-cli");
+      mkdirSync(join(bareHomeAppData, "brain"), { recursive: true });
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "home-fallback-coord",
+            lastUserInput: "/pstack run",
+          },
+          { HOME: simulatedHome },
+        ),
+        {},
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("Caveat 1 keeps built-in /swarm and unprefixed plain swarms unmanaged with clean cache hygiene while upgrading cleanly to pstack", () => {
+    const sb = makeSandbox();
+    try {
+      const coordCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "coordinator.md"), "utf8");
+      const agentCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "poteto-agent.md"), "utf8");
+      const researchCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "research.md"), "utf8");
+      const cacheDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next");
+
+      writeSwarmMembers(sb.appDataDir, "plain-slash-coord", {
+        coordinator: { conversation_id: "plain-slash-coord", role: "coordinator" },
+        monitor: { conversation_id: "plain-slash-mon", role: "worker" },
+      });
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "plain-slash-coord",
+            lastUserInput: "/swarm investigate flaky test",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      const plainRootsDoc = JSON.parse(readFileSync(join(cacheDir, "plain-swarm-roots.json"), "utf8"));
+      assert.equal(plainRootsDoc["plain-slash-coord"], true);
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "plain-slash-mon",
+            rootConversationId: "plain-slash-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "plain-slash-coord",
+            cwd: sb.worktree,
+            toolCall: { id: "ps-1", name: "invoke_subagent", args: {} },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { decision: "allow" },
+      );
+
+      const plainAnchorDir = join(sb.appDataDir, "brain", "plain-anchor-coord", ".system_generated", "swarm");
+      mkdirSync(plainAnchorDir, { recursive: true });
+      writeFileSync(
+        join(plainAnchorDir, "swarm.json"),
+        JSON.stringify({ backend: "spanner", coordinator_conversation_id: "plain-anchor-coord" }),
+        "utf8",
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "plain-anchor-coord",
+            lastUserInput: "/swarm coordinate remote team",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+
+      writeSwarmMembers(sb.appDataDir, "plain-organic-coord", {
+        coordinator: { conversation_id: "plain-organic-coord", role: "coordinator" },
+        monitor: { conversation_id: "plain-organic-mon", role: "worker" },
+        parser: { conversation_id: "plain-parser", role: "worker" },
+        docs: { conversation_id: "plain-docs", role: "worker" },
+        verifier: { conversation_id: "plain-verifier", role: "worker" },
+      });
+
+      for (const id of ["plain-organic-coord", "plain-parser", "plain-docs", "plain-verifier"]) {
+        assert.deepEqual(
+          runGuard(
+            {
+              hookEventName: "SessionStart",
+              conversationId: id,
+              lastUserInput:
+                id === "plain-parser"
+                  ? "You are @parser. Compare built-in swarm with /pstack docs."
+                  : "Work on your slice.",
+            },
+            { PSTACK_APPDATA_DIR: sb.appDataDir },
+          ),
+          {},
+          `expected plain swarm member ${id} to stay unmanaged`,
+        );
+      }
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "plain-verifier",
+            rootConversationId: "plain-organic-coord",
+            cwd: sb.worktree,
+            toolCall: {
+              id: "pv-1",
+              name: "write_file",
+              args: { Path: join(sb.worktree, "plain-verifier-allowed.txt") },
+            },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { decision: "allow" },
+      );
+
+      const mapBeforeUpgrade = existsSync(join(cacheDir, "member-map.json"))
+        ? JSON.parse(readFileSync(join(cacheDir, "member-map.json"), "utf8"))
+        : {};
+      assert.equal(mapBeforeUpgrade["plain-parser"], undefined);
+      assert.equal(mapBeforeUpgrade["plain-docs"], undefined);
+      assert.equal(mapBeforeUpgrade["plain-verifier"], undefined);
+
+      const nonWorkerBeforeUpgrade = existsSync(join(cacheDir, "non-worker-roots.json"))
+        ? JSON.parse(readFileSync(join(cacheDir, "non-worker-roots.json"), "utf8"))
+        : {};
+      assert.equal(nonWorkerBeforeUpgrade["plain-parser"], undefined);
+      assert.equal(nonWorkerBeforeUpgrade["plain-verifier"], undefined);
+      assert.equal(nonWorkerBeforeUpgrade["plain-organic-coord"], undefined);
+
+      writeSwarmMembers(sb.appDataDir, "plain-organic-coord", {
+        coordinator: { conversation_id: "plain-organic-coord", role: "coordinator" },
+        monitor: { conversation_id: "plain-organic-mon", role: "worker" },
+        parser: { conversation_id: "plain-parser", role: "worker" },
+        docs: { conversation_id: "plain-docs", role: "worker" },
+        verifier: { conversation_id: "plain-verifier", role: "worker" },
+        "impl-1": { conversation_id: "upgraded-impl-1", role: "worker" },
+      });
+
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "plain-parser" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "plain-verifier" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+      );
+      assert.equal(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "plain-verifier",
+            cwd: sb.worktree,
+            toolCall: {
+              id: "pv-2",
+              name: "write_file",
+              args: { Path: join(sb.worktree, "blocked-after-upgrade.txt") },
+            },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "deny",
+      );
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "plain-organic-coord" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+
+      writeSwarmMembers(sb.appDataDir, "plain-slash-coord", {
+        coordinator: { conversation_id: "plain-slash-coord", role: "coordinator" },
+        verifier: { conversation_id: "slash-v0", role: "worker" },
+        "verifier-1": { conversation_id: "slash-v1", role: "worker" },
+        "api-verifier": { conversation_id: "slash-api-v", role: "worker" },
+        "verify-links": { conversation_id: "slash-vlinks", role: "worker" },
+        "eval-runner-1": { conversation_id: "slash-eval-1", role: "worker" },
+      });
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreInvocation",
+            conversationId: "plain-slash-coord",
+            lastUserInput: "/pstack take over this swarm",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+      assert.equal(
+        JSON.parse(readFileSync(join(cacheDir, "plain-swarm-roots.json"), "utf8"))["plain-slash-coord"],
+        false,
+      );
+
+      for (const roId of ["slash-v0", "slash-v1", "slash-api-v", "slash-vlinks"]) {
+        assert.deepEqual(
+          runGuard(
+            {
+              hookEventName: "SessionStart",
+              conversationId: roId,
+              rootConversationId: "plain-slash-coord",
+            },
+            { PSTACK_APPDATA_DIR: sb.appDataDir },
+          ),
+          { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+        );
+      }
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "slash-eval-1",
+            rootConversationId: "plain-slash-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+
+      writeSwarmMembers(sb.appDataDir, "marker-coord", {
+        coordinator: { conversation_id: "marker-coord", role: "coordinator" },
+        parser: { conversation_id: "marker-parser", role: "worker" },
+      });
+      writeFileSync(
+        join(sb.appDataDir, "brain", "marker-coord", ".system_generated", "swarm", "pstack.json"),
+        "{}\n",
+        "utf8",
+      );
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "marker-parser", rootConversationId: "marker-coord" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("Caveat 2 allows ro-* Overview timeline screenshots in explicit and fallback brain/<convId> artifact dirs while protecting .system_generated across all worker roles", () => {
+    const sb = makeSandbox();
+    const slashTmpDir = mkdtempSync("/tmp/pstack-c2-");
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-c2", {
+        coordinator: { conversation_id: "coord-c2", role: "coordinator" },
+        "ro-ui": { conversation_id: "ro-c2", role: "worker" },
+        "impl-ui": { conversation_id: "impl-c2", role: "worker" },
+        "adv-ui": { conversation_id: "adv-c2", role: "worker" },
+        "sicko-ui": { conversation_id: "sicko-c2", role: "worker" },
+      });
+
+      const roFallbackArtifact = join(sb.appDataDir, "brain", "ro-c2");
+      const roExplicitArtifact = join(sb.root, "explicit-ro-artifact");
+      mkdirSync(roExplicitArtifact, { recursive: true });
+      const implArtifact = join(sb.appDataDir, "brain", "impl-c2");
+      const advArtifact = join(sb.appDataDir, "brain", "adv-c2");
+      const sickoArtifact = join(sb.appDataDir, "brain", "sicko-c2");
+      const coordArtifact = join(sb.appDataDir, "brain", "coord-c2");
+      for (const dir of [roFallbackArtifact, implArtifact, advArtifact, sickoArtifact, coordArtifact]) {
+        mkdirSync(join(dir, ".system_generated", "logs"), { recursive: true });
+        mkdirSync(join(dir, ".system_generated", "swarm"), { recursive: true });
+        writeFileSync(join(dir, ".system_generated", "logs", "transcript.jsonl"), "{}\n", "utf8");
+      }
+
+      const callFileTool = (convId, toolName, targetPath, artifactDirectoryPath = undefined) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            rootConversationId: convId === "coord-c2" ? undefined : "coord-c2",
+            ...(artifactDirectoryPath !== undefined ? { artifactDirectoryPath } : {}),
+            cwd: sb.worktree,
+            toolCall: { id: "f-c2", name: toolName, args: { Path: targetPath } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      for (const artDir of [roFallbackArtifact, roExplicitArtifact]) {
+        const explicitParam = artDir === roExplicitArtifact ? roExplicitArtifact : undefined;
+        for (const ext of ["png", "jpg", "jpeg", "webp", "PNG", "WEBP"]) {
+          assert.equal(
+            callFileTool("ro-c2", "write_file", join(artDir, "timeline", `shot.${ext}`), explicitParam).decision,
+            "allow",
+            `expected ro write_file allow for .${ext} in ${artDir}`,
+          );
+        }
+        assert.equal(
+          callFileTool("ro-c2", "edit_file", join(artDir, "shot.png"), explicitParam).decision,
+          "deny",
+        );
+        for (const blockedRel of [
+          "report.md",
+          "data.json",
+          "probe.js",
+          "notes.txt",
+          ".system_generated/shot.png",
+          ".system_generated/logs/transcript.jsonl",
+        ]) {
+          assert.equal(
+            callFileTool("ro-c2", "write_file", join(artDir, blockedRel), explicitParam).decision,
+            "deny",
+            `expected ro write_file deny for ${blockedRel}`,
+          );
+        }
+        assert.equal(callFileTool("ro-c2", "write_file", artDir, explicitParam).decision, "deny");
+      }
+
+      const tempPlaywrightMjs = join(slashTmpDir, "capture-ok.mjs");
+      writeFileSync(
+        tempPlaywrightMjs,
+        `import fs from 'node:fs'; fs.mkdirSync('${join(roFallbackArtifact, "shots")}', { recursive: true }); await page.screenshot({ path: '${join(roFallbackArtifact, "shots", "overview.png")}', fullPage: true });\n`,
+        "utf8",
+      );
+      const tempBadPlaywrightMjs = join(slashTmpDir, "capture-bad.mjs");
+      writeFileSync(
+        tempBadPlaywrightMjs,
+        `await page.screenshot({ path: '${join(roFallbackArtifact, ".system_generated", "overview.png")}' });\n`,
+        "utf8",
+      );
+
+      const runRoShell = (CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-c2",
+            rootConversationId: "coord-c2",
+            cwd: sb.worktree,
+            toolCall: { id: "sh-ro", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const roAllowedCmds = [
+        `mkdir -p ${roFallbackArtifact} ${join(roFallbackArtifact, "shots", "sub")}`,
+        `cat ${join(slashTmpDir, "raw.png")} > ${join(roFallbackArtifact, "overview.png")}`,
+        `cp ${join(slashTmpDir, "a.png")} ${join(roFallbackArtifact, "shots", "a.png")}`,
+        `cp ${join(slashTmpDir, "a.webp")} ${join(roFallbackArtifact, "shots")}`,
+        `mv ${join(slashTmpDir, "a.jpg")} ${join(roFallbackArtifact, "shots", "a.jpg")}`,
+        `mv ${join(roFallbackArtifact, "shots", "a.jpg")} ${join(roFallbackArtifact, "shots", "b.jpeg")}`,
+        `tee ${join(roFallbackArtifact, "pipe.png")} < ${join(slashTmpDir, "a.png")}`,
+        `curl -sL https://example.com/frame.png -o ${join(roFallbackArtifact, "frame.png")}`,
+        `rm -f ${join(roFallbackArtifact, "frame.png")}`,
+        `unlink ${join(roFallbackArtifact, "shots", "b.jpeg")}`,
+        `node -e "const fs = require('node:fs'); fs.mkdirSync('${join(roFallbackArtifact, "shots")}', { recursive: true }); fs.writeFileSync('${join(roFallbackArtifact, "shots", "snap.png")}', buf); fs.copyFileSync('${join(slashTmpDir, "a.png")}', '${join(roFallbackArtifact, "shots", "copy.webp")}')"`,
+        `node -e "await page.screenshot({ path: '${join(roFallbackArtifact, "pane.jpg")}' })"`,
+        `node ${tempPlaywrightMjs}`,
+        `python3 -c "import os; os.makedirs('${join(roFallbackArtifact, "shots")}', exist_ok=True); open('${join(roFallbackArtifact, "shots", "py.png")}', 'wb').write(b'x')"`,
+        `python3 -c "from pathlib import Path; Path('${join(roFallbackArtifact, "shots")}').mkdir(parents=True, exist_ok=True); Path('${join(roFallbackArtifact, "shots", "p.webp")}').write_bytes(b'x')"`,
+        `python3 -c "page.screenshot(path='${join(roFallbackArtifact, "py-shot.jpeg")}')"`,
+      ];
+      for (const cmd of roAllowedCmds) {
+        assert.equal(runRoShell(cmd).decision, "allow", `expected ro screenshot shell allow: ${cmd}`);
+      }
+
+      const roDeniedCmds = [
+        `echo bad > ${join(roFallbackArtifact, "report.md")}`,
+        `echo bad > ${join(roFallbackArtifact, ".system_generated", "shot.png")}`,
+        `cp ${join(slashTmpDir, "notes.md")} ${join(roFallbackArtifact, "shots")}`,
+        `cp ${join(slashTmpDir, "notes.md")} ${join(roFallbackArtifact, "notes.md")}`,
+        `mv ${join(slashTmpDir, "notes.txt")} ${join(roFallbackArtifact, "notes.txt")}`,
+        `tee ${join(roFallbackArtifact, "out.json")}`,
+        `curl -sL https://example.com/data -o ${join(roFallbackArtifact, "out.json")}`,
+        `mkdir -p ${join(roFallbackArtifact, "notes.md")}`,
+        `mkdir -p ${join(roFallbackArtifact, ".system_generated", "sub")}`,
+        `rm -f ${join(roFallbackArtifact, "notes.md")}`,
+        `rm -rf ${roFallbackArtifact}`,
+        `ln -s /etc/passwd ${join(roFallbackArtifact, "shot.png")}`,
+        `node -e "require('node:fs').writeFileSync('${join(roFallbackArtifact, "notes.md")}', 'x')"`,
+        `node -e "require('node:fs').symlinkSync('/etc/passwd', '${join(roFallbackArtifact, "shot.png")}')"`,
+        `node -e "await page.screenshot({ path: '${join(sb.outsideDir, "escape.png")}' })"`,
+        `node ${tempBadPlaywrightMjs}`,
+        `python3 -c "open('${join(roFallbackArtifact, "notes.txt")}', 'w').write('x')"`,
+        `python3 -c "page.screenshot(path='${join(roFallbackArtifact, ".system_generated", "x.png")}')"`,
+      ];
+      for (const cmd of roDeniedCmds) {
+        assert.equal(runRoShell(cmd).decision, "deny", `expected ro screenshot shell deny: ${cmd}`);
+      }
+
+      for (const [convId, artDir] of [
+        ["ro-c2", roFallbackArtifact],
+        ["impl-c2", implArtifact],
+        ["adv-c2", advArtifact],
+        ["sicko-c2", sickoArtifact],
+      ]) {
+        const transcriptTarget = join(artDir, ".system_generated", "logs", "transcript.jsonl");
+        const swarmPlanTarget = join(artDir, ".system_generated", "swarm", "plan.json");
+        assert.equal(callFileTool(convId, "edit_file", transcriptTarget).decision, "deny");
+        assert.equal(callFileTool(convId, "write_file", swarmPlanTarget).decision, "deny");
+
+        for (const sysGenCmd of [
+          `echo forged >> ${transcriptTarget}`,
+          `cp ${join(slashTmpDir, "a.json")} ${swarmPlanTarget}`,
+          `rm -rf ${join(artDir, ".system_generated")}`,
+          `rm -rf ${artDir}`,
+          `find ${artDir} -delete`,
+          `node -e "require('node:fs').writeFileSync('${transcriptTarget}', '{}')"`,
+          `python3 -c "open('${transcriptTarget}', 'w').write('{}')"`,
+        ]) {
+          assert.equal(
+            runGuard(
+              {
+                hookEventName: "PreToolUse",
+                conversationId: convId,
+                rootConversationId: "coord-c2",
+                cwd: sb.worktree,
+                toolCall: { id: "sg-sh", name: "run_command", args: { CommandLine: sysGenCmd } },
+              },
+              { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+            ).decision,
+            "deny",
+            `expected .system_generated deny for ${convId}: ${sysGenCmd}`,
+          );
+        }
+      }
+
+      assert.equal(
+        callFileTool("impl-c2", "write_file", join(implArtifact, "notes.md")).decision,
+        "allow",
+      );
+      assert.equal(
+        callFileTool(
+          "coord-c2",
+          "write_file",
+          join(coordArtifact, ".system_generated", "swarm", "plan.json"),
+          coordArtifact,
+        ).decision,
+        "allow",
+      );
+
+      writeSwarmMembers(sb.appDataDir, "coord-unsafe", {
+        "ro-unsafe-1": { conversation_id: "../outside", role: "worker" },
+        "ro-unsafe-2": { conversation_id: "..", role: "worker" },
+      });
+      assert.equal(
+        callFileTool("../outside", "write_file", join(sb.appDataDir, "outside", "shot.png")).decision,
+        "deny",
+      );
+      assert.equal(
+        callFileTool("..", "write_file", join(sb.appDataDir, "shot.png")).decision,
+        "deny",
+      );
+    } finally {
+      rmSync(slashTmpDir, { recursive: true, force: true });
+      sb.cleanup();
+    }
+  });
+
+  test("Caveat 4 resolves remote swarm.json anchors via bounded --roster-only CLI probe with cache, O(1) member-map, and clean fail-open", () => {
+    const sb = makeSandbox();
+    try {
+      const researchCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "research.md"), "utf8");
+      const agentCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "poteto-agent.md"), "utf8");
+      const cacheDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next");
+
+      const callsLog = join(sb.root, "remote-cli-calls.jsonl");
+      const rosterStateFile = join(sb.root, "remote-roster-state.json");
+      const mockCli = join(sb.root, "mock-remote-swarm-cli.mjs");
+      writeFileSync(
+        rosterStateFile,
+        JSON.stringify({
+          swm_remote_pstack: {
+            coordinator: { conversation_id: "remote-coord", role: "coordinator" },
+            "impl-1": { conversation_id: "remote-impl-1", role: "worker" },
+            "ro-1": { conversation_id: "remote-ro-1", role: "worker" },
+          },
+          swm_remote_plain: {
+            coordinator: { conversation_id: "remote-plain-coord", role: "coordinator" },
+            parser: { conversation_id: "remote-plain-parser", role: "worker" },
+            verifier: { conversation_id: "remote-plain-verifier", role: "worker" },
+          },
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        mockCli,
+        `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(callsLog)}, JSON.stringify(args) + "\\n", "utf8");
+if (process.env.MOCK_CLI_MODE === "fail") process.exit(2);
+if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else {
+  const swarmId = args[args.length - 1];
+  const state = JSON.parse(readFileSync(${JSON.stringify(rosterStateFile)}, "utf8"));
+  const members = state[swarmId];
+  if (members) {
+    process.stdout.write(JSON.stringify({ type: "meta", ok: true }) + "\\n");
+    process.stdout.write(JSON.stringify({ swarm_id: swarmId, members }) + "\\n");
+  }
+}
+`,
+        "utf8",
+      );
+      chmodSync(mockCli, 0o755);
+
+      const writeRemoteAnchor = (coordId, doc) => {
+        const dir = join(sb.appDataDir, "brain", coordId, ".system_generated", "swarm");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "swarm.json"), JSON.stringify(doc), "utf8");
+      };
+
+      writeRemoteAnchor("remote-coord", {
+        backend: "spanner",
+        swarm_id: "swm_remote_pstack",
+        db: "projects/p/instances/i/databases/d",
+        coordinator_conversation_id: "remote-coord",
+      });
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-ro-1",
+            rootConversationId: "remote-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+      );
+
+      const recordedCalls = readFileSync(callsLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.equal(recordedCalls.length, 1);
+      assert.deepEqual(recordedCalls[0], [
+        "swarm",
+        "--json",
+        "--roster-only",
+        "--db",
+        "projects/p/instances/i/databases/d",
+        "swm_remote_pstack",
+      ]);
+
+      const remoteCache = JSON.parse(readFileSync(join(cacheDir, "remote-rosters.json"), "utf8"));
+      assert.ok(remoteCache.swm_remote_pstack);
+      assert.equal(remoteCache.swm_remote_pstack.members["ro-1"].conversation_id, "remote-ro-1");
+
+      assert.equal(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "remote-ro-1",
+            cwd: sb.worktree,
+            toolCall: { id: "r1", name: "write_file", args: { Path: join(sb.worktree, "nope.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ).decision,
+        "deny",
+      );
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "remote-impl-1" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+      assert.equal(readFileSync(callsLog, "utf8").trim().split("\n").length, 1);
+
+      const sidecarDir = join(
+        sb.appDataDir,
+        "builtin",
+        "plugins",
+        "swarm",
+        "sidecars",
+        "swarm_board",
+      );
+      mkdirSync(sidecarDir, { recursive: true });
+      writeFileSync(
+        join(sidecarDir, "remote_board.json"),
+        JSON.stringify({ backend: "spanner", cli: [mockCli] }),
+        "utf8",
+      );
+
+      writeRemoteAnchor("remote-plain-coord", {
+        backend: "spanner",
+        swarm_id: "swm_remote_plain",
+        coordinator_conversation_id: "remote-plain-coord",
+      });
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-plain-verifier",
+            rootConversationId: "remote-plain-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      const memberMapAfterPlain = JSON.parse(readFileSync(join(cacheDir, "member-map.json"), "utf8"));
+      assert.equal(memberMapAfterPlain["remote-plain-verifier"], undefined);
+      assert.equal(memberMapAfterPlain["remote-plain-parser"], undefined);
+
+      const lateWorkerTranscript = join(
+        sb.appDataDir,
+        "brain",
+        "remote-ro-late",
+        ".system_generated",
+        "logs",
+        "transcript.jsonl",
+      );
+      writeTranscriptLines(lateWorkerTranscript, [
+        { step_index: 0, type: "SYSTEM_MESSAGE", content: "[swarm] new board message #2" },
+      ]);
+      const callsBeforeBackoffProbe = readFileSync(callsLog, "utf8").trim().split("\n").length;
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-ro-late",
+            rootConversationId: "remote-coord",
+            transcriptPath: lateWorkerTranscript,
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      assert.equal(readFileSync(callsLog, "utf8").trim().split("\n").length, callsBeforeBackoffProbe);
+      const nonWorkerAfterMiss = existsSync(join(cacheDir, "non-worker-roots.json"))
+        ? JSON.parse(readFileSync(join(cacheDir, "non-worker-roots.json"), "utf8"))
+        : {};
+      assert.equal(nonWorkerAfterMiss["remote-ro-late"], undefined);
+
+      writeFileSync(
+        rosterStateFile,
+        JSON.stringify({
+          swm_remote_pstack: {
+            coordinator: { conversation_id: "remote-coord", role: "coordinator" },
+            "impl-1": { conversation_id: "remote-impl-1", role: "worker" },
+            "ro-1": { conversation_id: "remote-ro-1", role: "worker" },
+            "ro-late": { conversation_id: "remote-ro-late", role: "worker" },
+          },
+        }),
+        "utf8",
+      );
+      const agedCache = JSON.parse(readFileSync(join(cacheDir, "remote-rosters.json"), "utf8"));
+      agedCache.swm_remote_pstack.fetchedAt = Date.now() - 6000;
+      writeFileSync(join(cacheDir, "remote-rosters.json"), JSON.stringify(agedCache), "utf8");
+
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-ro-late",
+            rootConversationId: "remote-coord",
+            transcriptPath: lateWorkerTranscript,
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+      );
+
+      writeRemoteAnchor("flag-inject-coord", {
+        backend: "spanner",
+        swarm_id: "-bad-flag",
+        db: "--evil-db",
+      });
+      const callsBeforeBadAnchor = readFileSync(callsLog, "utf8").trim().split("\n").length;
+      runGuard(
+        {
+          hookEventName: "SessionStart",
+          conversationId: "flag-worker",
+          rootConversationId: "flag-inject-coord",
+          transcriptPath: lateWorkerTranscript,
+        },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+      );
+      assert.equal(readFileSync(callsLog, "utf8").trim().split("\n").length, callsBeforeBadAnchor);
+
+      writeRemoteAnchor("fail-open-coord", {
+        backend: "spanner",
+        swarm_id: "swm_fail_open",
+        coordinator_conversation_id: "fail-open-coord",
+      });
+      for (const mode of ["fail", "hang"]) {
+        assert.deepEqual(
+          runGuard(
+            {
+              hookEventName: "SessionStart",
+              conversationId: `fail-open-worker-${mode}`,
+              rootConversationId: "fail-open-coord",
+              transcriptPath: lateWorkerTranscript,
+            },
+            {
+              PSTACK_APPDATA_DIR: sb.appDataDir,
+              PSTACK_REMOTE_SWARM_CLI: mockCli,
+              MOCK_CLI_MODE: mode,
+            },
+          ),
+          {},
+        );
+        const nonWorkers = existsSync(join(cacheDir, "non-worker-roots.json"))
+          ? JSON.parse(readFileSync(join(cacheDir, "non-worker-roots.json"), "utf8"))
+          : {};
+        assert.equal(nonWorkers[`fail-open-worker-${mode}`], undefined);
+      }
+    } finally {
       sb.cleanup();
     }
   });
