@@ -9,10 +9,12 @@ A statechart shows how a system moves between states in the words of the person 
 
 ## Where It Fits in Pstack
 
+Swarm workers do not mount installed plugin skills in `<skills>`, so coordinators pass the explicit resolved `<plugin-root>/skills/statechart/SKILL.md` path in worker briefs rather than telling workers to invoke `/statechart` by name.
+
 - **`/pstack` (`diagnose` and `build`).** Model concurrency, retries, leases, or offline UI flows in a per-worker `/tmp` folder before writing or changing stateful code.
-- **`/crucible`.** Have competing `cand-*` workers attach checked statecharts so `ro-judge` and the user compare exact state graphs and invariants across candidate designs.
-- **`/interrogate`.** Let `adv-*` workers encode suspected ordering or race bugs in TLA+, extract the shortest `bugPath` counterexample, and replay each action against real code.
-- **[`/verify-gen --formal`](../verify-gen/SKILL.md).** Project-local TLA+ verification skills invoke `/statechart` so future agents read invariant violations and state graphs in plain domain words.
+- **`/crucible`.** Pass `<plugin-root>/skills/statechart/SKILL.md` in `cand-*` briefs so competing candidates attach checked statecharts and `ro-judge` compares exact state graphs and invariants across designs.
+- **`/interrogate`.** Pass `<plugin-root>/skills/statechart/SKILL.md` in `adv-*` briefs so adversaries encode suspected ordering or race bugs in TLA+, extract the shortest `bugPath` counterexample, and replay each action against real code.
+- **[`/verify-gen --formal`](../verify-gen/SKILL.md).** Project-local TLA+ verification skills direct future agents to read the resolved `statechart/SKILL.md` path so invariant violations and state graphs render in plain domain words.
 
 ## Run
 

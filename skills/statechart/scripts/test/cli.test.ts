@@ -117,7 +117,10 @@ const linkedLauncher = () => {
   const [first, second] = [path.join(links, "a"), path.join(links, "b")];
   fs.mkdirSync(first);
   fs.mkdirSync(second);
-  fs.symlinkSync(path.relative(second, launcher), path.join(second, "statechart"));
+  fs.symlinkSync(
+    path.relative(fs.realpathSync(second), fs.realpathSync(launcher)),
+    path.join(second, "statechart"),
+  );
   fs.symlinkSync(path.join(second, "statechart"), path.join(first, "statechart"));
   return path.join(first, "statechart");
 };
@@ -159,13 +162,15 @@ const fakeBun = (version: string) => () => {
 };
 
 test("the launcher runs statechart.ts on Bun 1.1.5 when PATH has no Node", () => {
-  const r = run(path.join(corpus, "Login"), {
-    command: [launcher],
-    env: { PATH: fakeBun("1.1.5")() },
-  });
-  assert.equal(r.stderr, "");
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout, `${path.join(here, "../statechart.ts")}\n`);
+  for (const cmd of [launcher, linkedLauncher()]) {
+    const r = run(path.join(corpus, "Login"), {
+      command: [cmd],
+      env: { PATH: fakeBun("1.1.5")() },
+    });
+    assert.equal(r.stderr, "");
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, `${path.join(here, "../statechart.ts")}\n`);
+  }
 });
 
 for (const [what, bin] of [

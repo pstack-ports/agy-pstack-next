@@ -1,13 +1,15 @@
 #!/bin/sh
 self=$0
 while [ -L "$self" ]; do
+  dir=$(CDPATH= cd -P -- "$(dirname -- "$self")" && pwd)
   link=$(readlink "$self")
   case $link in
     /*) self=$link ;;
-    *) self=$(dirname "$self")/$link ;;
+    *) self=$dir/$link ;;
   esac
 done
-entry=$(dirname "$self")/statechart.ts
+dir=$(CDPATH= cd -P -- "$(dirname -- "$self")" && pwd)
+entry=$dir/statechart.ts
 version() {
   command -v "$1" >/dev/null || { echo 0; return; }
   "$1" --version 2>/dev/null | sed -n '1s/[^0-9]*\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\).*/\1 \2 \3/p' | {

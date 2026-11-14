@@ -14,17 +14,17 @@ Separate read-only diagnostic tasks from repair tasks at step 0:
 Instead of testing guesses serially in one thread, partition the search space across `2` to `4` read-only `ro-*` workers (`workspace: "inherit"`):
 
 1. **Seed distinct hypotheses.** Frame `2` to `4` falsifiable candidate mechanisms (such as state race in reducer vs stale persisted cache after restart vs boundary parser dropping a field) plus git regression history (`git log -S` / `git log -L`).
-2. **Fan out `ro-probe-*` workers.** Assign one hypothesis or subsystem boundary per `ro-probe-*` worker. Enforced by `hooks/guard.mjs`, `ro-*` workers cannot mutate repository files and may write temporary query artifacts only under `/tmp`.
+2. **Fan out `ro-probe-*` workers.** Assign one hypothesis or subsystem boundary per `ro-probe-*` worker (passing `<plugin-root>/roles/research.md` in each brief when global `hooks.json` is not active). Enforced by `hooks/guard.mjs`, `ro-*` workers cannot mutate repository files and may write temporary query artifacts only inside temp roots (`/tmp`).
 3. **Share clues live on the board.** Each `ro-probe-*` posts concrete observations (`#seq`) with `file` and `line` pointers, command outputs, or falsifications as soon as found. When `ro-probe-2` proves the wire payload is already corrupt on ingress, peers immediately pivot upstream instead of auditing downstream UI rendering.
 4. **Attack failed premises.** If two candidate explanations sharing one assumption both fail empirical checks, invoke `Attack the Premise` from [../references/principles.md](../references/principles.md). Write down the shared assumption and test it directly before spawning another probe.
 
 ## Phase 2. Trace, runtime, and boundary correlation
 
-### Live runtime forensics (`/control-ui` and `/control-cli`)
+### Live runtime forensics (`control-ui` and `control-cli`)
 
 When diagnosing a live symptom (idle CPU spin, memory growth, layout flicker, hung PTY):
 
-1. Drive the target on an isolated port or PTY session via `/control-ui` ([../../control-ui/SKILL.md](../../control-ui/SKILL.md)) or `/control-cli` ([../../control-cli/SKILL.md](../../control-cli/SKILL.md)) and capture a real signal (CPU profile, heap snapshot, CDP performance trace, syscall summary, or structured event stream).
+1. Pass the resolved `<plugin-root>/skills/control-ui/SKILL.md` ([../../control-ui/SKILL.md](../../control-ui/SKILL.md)) or `<plugin-root>/skills/control-cli/SKILL.md` ([../../control-cli/SKILL.md](../../control-cli/SKILL.md)) path in `ro-runtime`'s brief rather than telling the worker to invoke plugin skills by name. Have `ro-runtime` drive the target on an isolated port or PTY session and capture a real signal (CPU profile, heap snapshot, CDP performance trace, syscall summary, or structured event stream).
 2. Reduce bulky captures inside an `ro-runtime` worker (`Guard the Context Window`) down to the exact hot stack frame, GC root retainer chain, or unthrottled timer loop.
 3. Confirm the mechanism empirically (for example via read-only CDP expression evaluation or comparing controlled input runs) and map it to exact source file, symbol, and line.
 
@@ -50,10 +50,10 @@ If the request is read-only, synthesize the `ro-*` `#seq` evidence and reply to 
 
 Once one `ro-*` investigator (`ro-winner`) isolates and proves the root mechanism with runtime evidence:
 
-1. **Warm-fork the author.** Spawn `impl-fix` with `swarm{action: "add", name: "impl-fix", workspace: "share", fork: "ro-winner", brief: "..."}`. Forking carries every file read, stack trace, and boundary invariant already in `ro-winner`'s context straight into an isolated writable worktree, upgrading its capsule from `roles/research.md` to `roles/poteto-agent.md` automatically on next turn.
+1. **Warm-fork the author.** Spawn `impl-fix` with `swarm{action: "add", name: "impl-fix", workspace: "share", fork: "ro-winner", brief: "..."}`. Forking carries every file read, stack trace, and boundary invariant already in `ro-winner`'s context straight into an isolated writable worktree, upgrading its capsule from `roles/research.md` to `roles/poteto-agent.md` automatically on next turn when global `hooks.json` is active (pass `<plugin-root>/roles/poteto-agent.md` explicitly in the brief when global `hooks.json` is not active).
 2. **Prove failure before touching production code.** Inside `impl-fix`'s `share` worktree:
    - When the defect has a clear, fast behavioral test path, write the focused regression test first (`Test Behavior, Not Implementation`) and run it to confirm it fails for the exact expected reason.
-   - When unit harnesses would require brittle mocks or heavy synthetic setup, reproduce the failure directly on the real surface via `/control-ui`, `/control-cli`, or a targeted reproduction script and capture verbatim failing output. Do not hand reproduction back to the human unless a hardware or external-credential barrier is documented after driving automation to its limit.
+   - When unit harnesses would require brittle mocks or heavy synthetic setup, pass the resolved `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path in `impl-fix`'s brief so it reproduces the failure directly on the real surface or via a targeted reproduction script and captures verbatim failing output. Do not hand reproduction back to the human unless a hardware or external-credential barrier is documented after driving automation to its limit.
 3. **Fix the root cause minimally.** Make the smallest production edit that eliminates the fault, sweep the repository for sibling occurrences of the same bug pattern, and revert any exploratory logging or belt-and-suspenders tweaks that did not contribute to fixing the repro.
 4. **Sequence commits cleanly.** When an automated regression test was added, commit the failing test first and the production fix second (`Sequence Verifiable Units`) so anyone replaying git history can watch the test fail at `HEAD~1` and pass at `HEAD`.
 
@@ -61,5 +61,5 @@ Once one `ro-*` investigator (`ro-winner`) isolates and proves the root mechanis
 
 1. Once `impl-fix` commits cleanly and posts its commit SHA, worktree path, and failing-then-passing output (`#seq`), dispatch an independent `ro-verify` worker (`workspace: "inherit"`).
 2. `ro-verify` inspects the diff in `<impl_fix_cwd>`, verifies that the test fails without the fix (or checks `HEAD~1` vs `HEAD`), reruns the original surface reproduction plus surrounding test suites, and posts `PASS` or `ISSUES` (`#seq`).
-3. After `ro-verify` posts `PASS`, fetch and merge `impl-fix`'s commits into the coordinator worktree (`git fetch <impl_fix_cwd> <sha> && git merge --no-edit FETCH_HEAD`) **before** calling `swarm{action: "kill", name: "impl-fix"}` and retiring `ro-*` workers.
+3. After `ro-verify` posts `PASS`, fetch and merge `impl-fix`'s commits into the coordinator worktree (`git fetch <impl_fix_cwd> <sha> && git merge --no-edit FETCH_HEAD`) **before** calling `swarm{action: "kill", name: "impl-fix"}` and retiring `ro-*` task workers (leaving `monitor` and `narrator` alive unless asked).
 4. Include the broken behavior, proven root cause, minimal fix, and verbatim failing-before and passing-after reproduction output in your reply (or chain into [ship.md](ship.md) when a PR was requested).

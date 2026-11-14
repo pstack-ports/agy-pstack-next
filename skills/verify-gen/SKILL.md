@@ -18,12 +18,12 @@ Select the mode from the user's flags or request intent.
 
 ## Swarm Pipeline
 
-Run the workflow across three prefix-enforced worker roles on the native swarm board. Never use legacy subagent tools.
+Run the workflow across three prefix-enforced worker roles on the native swarm board. Never use legacy subagent tools. Because native `Swarm Worker` subagents do not mount installed plugin skills in `<skills>`, pass explicit resolved file paths (such as `<plugin-root>/skills/statechart/SKILL.md`, `<plugin-root>/skills/control-ui/SKILL.md`, `<plugin-root>/skills/control-cli/SKILL.md`, and `<plugin-root>/skills/verify-gen/references/feature-map-example/README.md`) in worker briefs for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is not active, also pass `<plugin-root>/roles/research.md` or `<plugin-root>/roles/poteto-agent.md` in each brief.
 
-1. **Read-only mappers (`ro-*`, `workspace: "inherit"`).** Spawn parallel `ro-*` workers to inspect source, startup commands, existing harnesses, invariants, or commit diffs since `sync_commit`. `ro-*` workers never edit repository files and write any temporary probe output strictly under `/tmp`. Each worker posts concise findings on the board and cites peer posts by `#seq`.
+1. **Read-only mappers (`ro-*`, `workspace: "inherit"`).** Spawn parallel `ro-*` workers to inspect source, startup commands, existing harnesses, invariants, or commit diffs since `sync_commit`. `ro-*` workers never edit repository files and write any temporary probe output strictly inside temp roots (`/tmp`). Each worker posts concise findings on the board and cites peer posts by `#seq`.
 2. **Skill and harness authors (`impl-*`, `workspace: "share"`).** Spawn `impl-verify` (or disjoint `impl-*` authors per target) in isolated `share` worktrees. Authors edit only the verification skill directory (`.agents/skills/verify-<target>/`) unless the user explicitly asked to repair a broken project build first.
 3. **Independent live verifier (`ro-verify`, `workspace: "inherit"`).** After `impl-verify` commits in its `share` worktree and posts the worktree path and commit SHA, `ro-verify` executes the skill's own instructions cold against that worktree using isolated `/tmp` directories, ephemeral ports, and disposable profiles.
-4. **Coordinator landing.** Fetch and merge the verified commit from `impl-verify`'s worktree (`git fetch <worker_cwd> <sha> && git merge --no-edit FETCH_HEAD`) before calling `swarm{action: "kill"}` on any `share` worker.
+4. **Coordinator landing.** Fetch and merge the verified commit from `impl-verify`'s worktree (`git fetch <worker_cwd> <sha> && git merge --no-edit FETCH_HEAD`) before calling `swarm{action: "kill"}` on any task worker (leaving `monitor` and `narrator` alive unless asked).
 
 ## 1. Behavioral Creation (Default)
 
@@ -33,7 +33,7 @@ Have `ro-surface` and `ro-harness` answer five questions from the codebase and a
 
 - **Surface.** Identify what a user touches (web UI, Electron app, CLI, TUI, HTTP API, or library). Pick the primary surface and note secondary entry points.
 - **Run.** Locate the documented local startup command, migrations, seed fixtures, auth setup, and readiness signal. Ready means usable from an empty data directory, not merely an open socket.
-- **Drive.** Reuse checked-in Playwright, Cypress, PTY, or HTTP harnesses first. Otherwise pair with [`/control-ui`](../control-ui/SKILL.md) for browser and CDP surfaces or [`/control-cli`](../control-cli/SKILL.md) for interactive terminals.
+- **Drive.** Reuse checked-in Playwright, Cypress, PTY, or HTTP harnesses first. Otherwise pair with [`control-ui`](../control-ui/SKILL.md) for browser and CDP surfaces or [`control-cli`](../control-cli/SKILL.md) for interactive terminals, passing the resolved `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path in `ro-harness` and `impl-verify` briefs.
 - **Observe.** List concrete proof artifacts such as ARIA snapshots, screenshots, terminal transcripts, exit codes, HTTP payloads, and stored database or filesystem state.
 - **Isolate.** Determine how parallel swarm workers avoid collisions via ephemeral ports (`--port 0`), disposable data directories (`/tmp/verify-<app>-$RUN_ID`), isolated browser `--user-data-dir` paths, and per-run tmux or PTY session names. If two instances cannot run side by side safely, state that lock constraint explicitly in the generated skill.
 
@@ -64,7 +64,7 @@ Seed `.agents/skills/verify-<app>/features/README.md` plus 3 to 5 core user-faci
 
 Match the question to the lowest-cost verifier that developers in this repo can install and run in seconds.
 
-- **Event-ordering and protocol races.** Model-check a small faithful state model in TLA+ (TLC) and pair result inspection with [`/statechart`](../statechart/SKILL.md).
+- **Event-ordering and protocol races.** Model-check a small faithful state model in TLA+ (TLC) and pair result inspection with [`statechart`](../statechart/SKILL.md) by passing `<plugin-root>/skills/statechart/SKILL.md` in `ro-invariants`, `impl-verify`, and `ro-verify` briefs.
 - **Code-level invariants across inputs.** Use a language-native SMT or bounded verifier when available. When none exists for the language, run property-based testing with generated inputs against the real production functions, never against a hand-transcribed toy copy.
 - **Unbounded structural properties.** Use a proof assistant when finite bounds cannot establish the guarantee.
 
@@ -75,7 +75,7 @@ Match the question to the lowest-cost verifier that developers in this repo can 
 - **True to code.** Every model action or harness step maps to one indivisible step in production source that a reviewer can open.
 - **Readable without formalism.** State the invariant and the user-visible harm in one plain sentence each. Express counterexamples as ordered steps in the repository's own domain words.
 - **Explicit scope and sync anchor.** Record exact bounds, assumptions, unmodeled behavior, covered file and function paths, and `sync_commit: <HEAD_SHA>`. Instruct future agents to advance `sync_commit` only after confirming the model matches code at the new SHA.
-- **Statechart integration.** When the check uses TLA+, instruct future agents to render and read results with `/statechart` by name. Do not copy internal `/statechart` CLI flags or script paths into the generated skill.
+- **Statechart integration.** When the check uses TLA+, pass the resolved `<plugin-root>/skills/statechart/SKILL.md` path in `impl-verify` and `ro-verify` briefs rather than telling workers to invoke `/statechart` by name. Inside the generated `.agents/skills/verify-<area>-formal/SKILL.md`, instruct future coordinators and workers to read the resolved `statechart/SKILL.md` path (for example `~/.gemini/config/plugins/agy-pstack-next/skills/statechart/SKILL.md` when installed as a plugin, passing that resolved `SKILL.md` path in any swarm worker brief) and run `<statechart-skill-dir>/scripts/statechart` rather than assuming `/statechart` is mounted by name in worker `<skills>`.
 - **Proven able to fail.** A check that has never failed proves nothing. Inside `impl-verify`'s isolated `share` worktree, apply a temporary scratch mutation to production code (such as dropping a lock check or reordering two writes), run the generated check to confirm it catches the bug, and revert the product-code mutation before committing only `.agents/skills/verify-<area>-formal/`.
 
 If the current `HEAD` code already violates the invariant, keep the invariant intact, do not touch product code unless asked, and report the counterexample trace as a finding. `ro-verify` independently reruns the one-command check and verifies a scratch break before coordinator lands the skill.

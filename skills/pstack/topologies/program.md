@@ -11,10 +11,10 @@ Declare the operating mode before spawning workers so every member holds the sam
 - **`stack`.** Build and independently verify a dependency-ordered chain of branches or PRs across `impl-*` and `lead-*` workers (`workspace: "share"`), then stop at verified local branches (or ready PRs when requested) so the human operator controls landing.
 - **`full`.** Execute a multi-PR queue or multi-area DAG end to end through independent swarm verification and bottom-up landing via [ship.md](ship.md), strictly within an explicit user grant to push and merge.
 
-## Multi-area channels and `lead-<area>` delegation
+## Multi-area `lead-<area>` delegation and optional channels
 
-1. **Size the hierarchy.** Stay flat (coordinator plus leaf workers) when `8` or fewer workers are active. When a program exceeds `8` concurrent workers or spans multiple coupled subsystems, create dedicated channels with `swarm{action: "channel"}` (such as `#auth`, `#storage`, `#ui`) and spawn one `lead-<area>` worker (`workspace: "share"`) per channel.
-2. **Hold the three-tier ceiling.** Never nest deeper than coordinator, `lead-<area>`, and leaf workers (`impl-*`, `ro-*`, `adv-*`, `sicko-*`). Each `lead-<area>` manages roughly `4` to `8` leaf workers in its channel, verifies slice diffs, merges passing leaf commits into its area branch, and posts a single consolidated `#seq` rollup back to `@coordinator`.
+1. **Size the hierarchy.** Stay flat (coordinator plus leaf workers) when `8` or fewer workers are active. When a program exceeds `8` concurrent workers or spans multiple coupled subsystems, spawn one `lead-<area>` worker (`workspace: "share"`) per subsystem. Check whether the live `swarm` tool declaration includes `"channel"` in `action`. When `"channel"` is available, create dedicated channels with `swarm{action: "channel"}` (such as `#auth`, `#storage`, `#ui`) and assign each `lead-<area>` and its leaf workers to that channel. When `"channel"` is absent, coordinate on the main board through `lead-<area>` coordinators with strict `@mention` discipline so leaf workers mention only `@lead-<area>` and never wake unrelated slices or `@all`.
+2. **Hold the three-tier ceiling.** Never nest deeper than coordinator, `lead-<area>`, and leaf workers (`impl-*`, `ro-*`, `adv-*`, `sicko-*`). Each `lead-<area>` manages roughly `4` to `8` leaf workers in its area (inside `#<area>` when channels exist, or on the main board via targeted `@lead-<area>` mentions when channels are absent), verifies slice diffs, merges passing leaf commits into its area branch, and posts a single consolidated `#seq` rollup back to `@coordinator`. Pass explicit resolved `<plugin-root>/skills/<name>/SKILL.md` paths (and `<plugin-root>/roles/<capsule>.md` paths when global `hooks.json` is not active) in `lead-<area>` and leaf briefs rather than naming plugin skills.
 3. **Run one canary unit first.** Before fanning out across dozens of similar modules or PRs, take one representative slice all the way through `impl-1`, `ro-verify`, and branch integration. Fix any flaw in the brief, harness, or file fence while the mistake costs one worker instead of twenty.
 4. **Enforce disjoint write fences.** Assign non-overlapping directories or files to every `impl-*` and `lead-*` brief per `Separate Before Serializing Shared State` in [../references/principles.md](../references/principles.md). Coordinator and `lead-*` own decomposition, boundary checks, and merge integration rather than hand-editing application files.
 
@@ -40,7 +40,7 @@ Treat the swarm board as the authoritative operational ledger. At the end of eve
 
 For unattended multi-hour programs, arm a recurring `schedule` job (such as `CronExpression: "0 * * * *"` with jitter left enabled) until all units finish:
 
-1. Call `swarm{action: "status"}` and `read_board{since: <last_seen_seq>}`.
+1. Call `swarm{action: "status"}` and page `read_board{since: <last_seen_seq>, limit: 100}` until `<last_seen_seq>` reaches `head`.
 2. Judge active workers by side effects (`git log`, commits, test artifacts, PR state) rather than prose promises.
 3. Hot-swap waiting workers hitting quota or capacity limits via `swarm{action: "model", name, model}`. If a worker stalls or loops without side effects, harvest any useful partial commit from its worktree first, `swarm{action: "kill"}` it, and spawn a fresh replacement with consolidated scope (narrowing slice size if context overflowed).
 4. Emit a concise `/ketchup` delta to the user only when a tracked milestone, blocker, or operator-gated decision changed since the previous tick. Stay silent on no-op ticks.
@@ -58,7 +58,7 @@ Run this procedure only when the operator explicitly asks to pause, hold, or pre
 
 When resuming a paused swarm, prior conversation transcript, or existing branch stack:
 
-1. Reconstruct state from `read_board{since: 0}`, `swarm{action: "status"}`, `git worktree list`, and `git log --oneline -n 20`. If resuming from a prior session's `<appDataDir>/brain/<prior-id>/.system_generated/logs/transcript.jsonl`, spawn a single `ro-pickup` worker (`workspace: "inherit"`) to extract the decision timeline without flooding coordinator context.
+1. Reconstruct state by paging `read_board{since: <cursor>, limit: 100}` from `<cursor> = 0` until `<cursor>` reaches `head` (because `read_board` defaults to `limit: 20`), alongside `swarm{action: "status"}`, `git worktree list`, and `git log --oneline -n 20`. If resuming from a prior session's `<appDataDir>/brain/<prior-id>/.system_generated/logs/transcript.jsonl`, spawn a single `ro-pickup` worker (`workspace: "inherit"`) to extract the decision timeline without flooding coordinator context.
 2. Treat prior `#seq` verdicts and landed commits as authoritative inputs rather than redoing completed slices from scratch.
 3. Diff completed units against the remaining plan, verify inherited end-state claims once against the real artifact, and dispatch workers starting at the exact unfinished frontier.
 
@@ -71,7 +71,7 @@ When resuming a paused swarm, prior conversation transcript, or existing branch 
 1. Confirm each finished worker (`impl-*`, `lead-*`, `sicko-*`) committed cleanly (`git -C <worker_cwd> status --short` empty).
 2. Fetch and integrate each verified commit into the coordinator or integration branch (`git fetch <worker_cwd> <sha> && git merge --no-edit FETCH_HEAD` or `git cherry-pick <sha>`).
 3. Run final verification on the integrated tree.
-4. Call `swarm{action: "kill", name}` on every spawned worker and post `[done] <summary>`.
+4. Call `swarm{action: "kill", name}` on every task worker (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`) while leaving built-in `monitor` and `narrator` (`*-N`) alive unless the user asks, then post `[done] <summary>` with no `@` so `monitor` goes quiet.
 
 ### Standalone worktree and simulator cleanup
 

@@ -39,11 +39,11 @@ Gather exact workspace-scoped paths before spawning reviewers (never glob unrela
 
 ### Step 2. Fan out `ro-judgment`, `ro-tooling`, and `ro-divergent`
 
-Spawn three parallel read-only reviewers (`workspace: "inherit"`, enforced read-only by `hooks/guard.mjs` with full read-only MCP access for referenced tickets, chat threads, and traces), using the `ro-*` model in `~/.gemini/config/rules/pstack-models.md` (or `inherit`):
+Spawn three parallel read-only reviewers (`workspace: "inherit"`, enforced read-only by `hooks/guard.mjs` with full read-only MCP access for referenced tickets, chat threads, and traces), using the `ro-*` model in `~/.gemini/config/rules/pstack-models.md` (or `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved reference paths in each reviewer's brief rather than bare relative paths or plugin skill names, plus `<plugin-root>/roles/research.md` when global `~/.gemini/config/hooks.json` is not active:
 
-- **`ro-judgment`** follows [`references/judgment-reviewer.md`](references/judgment-reviewer.md) to extract generalizable engineering decisions, operator corrections, and swarm coordination mistakes on `board.jsonl` (overlapping file ownership, noisy `@mention` wakeups, killing `share` workers before merging, missed warm `fork`).
-- **`ro-tooling`** follows [`references/tooling-reviewer.md`](references/tooling-reviewer.md) to extract CLI flags, test and build quirks, port or worktree isolation traps, and agent self-sufficiency gaps where the human pasted context an agent should have fetched via MCP or CLI.
-- **`ro-divergent`** follows [`references/divergent-reviewer.md`](references/divergent-reviewer.md) to uncover second-order blind spots, lucky passes, skipped verification, architectural smells, and missed skill triggers (`tune description: <skill path>`).
+- **`ro-judgment`** reads `<plugin-root>/skills/reflect/references/judgment-reviewer.md` ([`references/judgment-reviewer.md`](references/judgment-reviewer.md)) to extract generalizable engineering decisions, operator corrections, and swarm coordination mistakes on `board.jsonl` (overlapping file ownership, noisy `@mention` wakeups, killing `share` workers before merging, missed warm `fork`).
+- **`ro-tooling`** reads `<plugin-root>/skills/reflect/references/tooling-reviewer.md` ([`references/tooling-reviewer.md`](references/tooling-reviewer.md)) to extract CLI flags, test and build quirks, port or worktree isolation traps, and agent self-sufficiency gaps where the human pasted context an agent should have fetched via MCP or CLI.
+- **`ro-divergent`** reads `<plugin-root>/skills/reflect/references/divergent-reviewer.md` ([`references/divergent-reviewer.md`](references/divergent-reviewer.md)) to uncover second-order blind spots, lucky passes, skipped verification, architectural smells, and missed skill triggers (`tune description: <skill path>`).
 
 Each `ro-*` reviewer posts its numbered findings to the board (`#seq`) and parks in `waiting`.
 
@@ -76,9 +76,9 @@ Wait for explicit user approval when modifying skills, role capsules, or global 
 
 Once approved, retire `ro-judgment`, `ro-tooling`, and `ro-divergent` with `swarm{action: "kill"}` and spawn `impl-sharpen` (`workspace: "share"`):
 
-1. `impl-sharpen` implements the approved architectural refactors, type or lint rules, `hooks/guard.mjs` + `hooks/guard.test.mjs` guards, `roles/*.md` capsule updates, or `SKILL.md` improvements (following Antigravity's `agy-customizations` skill for frontmatter and structure).
+1. Pass explicit resolved paths such as `<plugin-root>/skills/technical-writing/SKILL.md` (and `<plugin-root>/roles/poteto-agent.md` when global `hooks.json` is not active) in `impl-sharpen`'s brief rather than telling it to invoke plugin skills by name. `impl-sharpen` implements the approved architectural refactors, type or lint rules, `hooks/guard.mjs` + `hooks/guard.test.mjs` guards, `roles/*.md` capsule updates, or `SKILL.md` improvements (following Antigravity's built-in `agy-customizations` skill for frontmatter and structure).
 2. **Prove every check catches the real mistake.** Run the new lint, typecheck, `node --test hooks/guard.test.mjs`, or `agy plugin validate --strict` against the past failure shape to confirm it fails when broken and passes when fixed.
-3. Fetch and merge `impl-sharpen`'s clean commit into the coordinator workspace (`git fetch <sharpen_cwd> <sha> && git merge --no-edit FETCH_HEAD`) before calling `swarm{action: "kill", name: "impl-sharpen"}`. Never `git push` unless the user asks.
+3. Fetch and merge `impl-sharpen`'s clean commit into the coordinator workspace (`git fetch <sharpen_cwd> <sha> && git merge --no-edit FETCH_HEAD`) before calling `swarm{action: "kill", name: "impl-sharpen"}` (leaving `monitor` and `narrator` alive unless asked). Never `git push` unless the user asks.
 
 ---
 
