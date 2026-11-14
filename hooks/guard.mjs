@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import {
+  accessSync,
+  constants as fsConstants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -34,6 +36,18 @@ const SWARM_BOARD_TOOLS = new Set([
 
 const PSTACK_SLASH_COMMAND_RE =
   /(?:^|\s)\/(?:agy-pstack-next:)?(?:pstack|setup-pstack|understand|crucible|interrogate|reflect|ketchup|verify-gen|control-ui|control-cli|statechart|technical-writing|make-bot-ui)\b/i;
+
+const BUILTIN_SWARM_SLASH_RE = /(?:^|\s)\/swarm\b/i;
+
+const PSTACK_WORKER_PREFIX_RE = /^(?:impl|cand|lead|ro|adv|sicko)-/i;
+
+const BUILTIN_SUPPORT_MEMBER_RE = /^(?:coordinator|monitor(?:-\d+)?|narrator(?:-\d+)?)$/i;
+
+const REMOTE_SWARM_ID_RE = /^[A-Za-z0-9._-]{4,128}$/;
+
+const REMOTE_ROSTER_TTL_MS = 15000;
+
+const REMOTE_MISS_BACKOFF_MS = 5000;
 
 const ROLE_CAPSULE_HEADING_RE = /(?:^|\r?\n|\\n)# [^\r\n\\]+ role capsule(?:\r?\n|\\n|$)/i;
 
@@ -283,6 +297,28 @@ function resolvePluginRoot(env) {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
+function resolveConfigJsonPath(env) {
+  if (typeof env.PSTACK_CONFIG_DIR === "string" && env.PSTACK_CONFIG_DIR.length > 0) {
+    return join(env.PSTACK_CONFIG_DIR, "config.json");
+  }
+  const pluginRoot = resolvePluginRoot(env);
+  if (pluginRoot && basename(dirname(pluginRoot)) === "plugins") {
+    return join(dirname(dirname(pluginRoot)), "config.json");
+  }
+  if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT && !env.PLUGIN_ROOT) {
+    const home = typeof env.HOME === "string" && env.HOME.length > 0 ? env.HOME : homedir();
+    return join(home, ".gemini", "config", "config.json");
+  }
+  return null;
+}
+
+function isPluginDisabled(env) {
+  const configPath = resolveConfigJsonPath(env);
+  if (!configPath || !existsSync(configPath)) return false;
+  const parsed = readJsonObject(configPath);
+  return parsed?.plugins?.["agy-pstack-next"]?.enabled === false;
+}
+
 function resolveOwnTranscriptPath(payload, appDataDir) {
   if (typeof payload.transcriptPath === "string" && payload.transcriptPath.length > 0) {
     return payload.transcriptPath;
@@ -364,38 +400,353 @@ function transcriptContainsRoleCapsule(transcriptPath) {
   return false;
 }
 
-function extractMembersFromDoc(doc, targetConversationId) {
+function extractMembersFromDoc(doc, targetConversationId, fallbackCoordId = null) {
   const workerEntries = {};
   let matchedCoordinator = false;
+  let coordId =
+    typeof fallbackCoordId === "string" && fallbackCoordId.length > 0 ? fallbackCoordId : null;
+  let hasPstackPrefixedWorker = false;
+  let hasTaskWorker = false;
   const members = doc && typeof doc === "object" ? doc.members : null;
   if (!members || typeof members !== "object") {
-    return { hasMembers: false, workerEntries, matchedCoordinator };
+    return {
+      hasMembers: false,
+      workerEntries,
+      matchedCoordinator,
+      coordId,
+      hasPstackPrefixedWorker,
+      hasTaskWorker,
+    };
   }
   for (const [memberName, info] of Object.entries(members)) {
     if (!info || typeof info !== "object") continue;
     const cid = info.conversation_id || info.conversationId;
-    if (typeof cid !== "string" || cid.length === 0) continue;
     if (memberName === "coordinator" || info.role === "coordinator") {
-      if (cid === targetConversationId) matchedCoordinator = true;
+      if (typeof cid === "string" && cid.length > 0) {
+        coordId = cid;
+        if (cid === targetConversationId) matchedCoordinator = true;
+      }
       continue;
     }
-    workerEntries[cid] = memberName;
+    if (PSTACK_WORKER_PREFIX_RE.test(memberName)) {
+      hasPstackPrefixedWorker = true;
+    }
+    if (!BUILTIN_SUPPORT_MEMBER_RE.test(memberName)) {
+      hasTaskWorker = true;
+    }
+    if (typeof cid === "string" && cid.length > 0) {
+      workerEntries[cid] = memberName;
+    }
   }
-  return { hasMembers: true, workerEntries, matchedCoordinator };
+  return {
+    hasMembers: true,
+    workerEntries,
+    matchedCoordinator,
+    coordId,
+    hasPstackPrefixedWorker,
+    hasTaskWorker,
+  };
 }
 
-function anchorMatchesCoordinator(anchorPath, targetConversationId, ownerDirId) {
-  if (!existsSync(anchorPath)) return false;
-  const doc = readJsonObject(anchorPath);
+function isManagedPstackSwarm({
+  swarmDir,
+  coordId,
+  hasPstackPrefixedWorker,
+  hasTaskWorker,
+  injectedMap,
+  plainSwarmRoots,
+}) {
+  const hasPstackMarker = Boolean(swarmDir && existsSync(join(swarmDir, "pstack.json")));
+  const coordAlreadyManaged = Boolean((coordId && injectedMap[coordId]) || hasPstackMarker);
+  if (hasPstackPrefixedWorker || coordAlreadyManaged) {
+    return true;
+  }
+  if (coordId && plainSwarmRoots[coordId]) {
+    return false;
+  }
+  if (hasTaskWorker) {
+    return false;
+  }
+  return true;
+}
+
+function getAnchorCoordinatorId(doc, ownerDirId) {
   const explicitCoord =
     doc.coordinator_conversation_id ||
     doc.coordinatorConversationId ||
     doc.coordinator_id ||
     doc.coordinatorId;
   if (typeof explicitCoord === "string" && explicitCoord.length > 0) {
-    return explicitCoord === targetConversationId;
+    return explicitCoord;
   }
-  return ownerDirId === targetConversationId;
+  return ownerDirId;
+}
+
+function parseRemoteSwarmAnchor(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  if (typeof doc.backend !== "string" || doc.backend.length === 0) return null;
+  if (
+    typeof doc.swarm_id !== "string" ||
+    doc.swarm_id.startsWith("-") ||
+    !REMOTE_SWARM_ID_RE.test(doc.swarm_id)
+  ) {
+    return null;
+  }
+  let db = "";
+  if (doc.db !== undefined && doc.db !== null && doc.db !== "") {
+    if (typeof doc.db !== "string" || doc.db.startsWith("-")) {
+      return null;
+    }
+    db = doc.db;
+  }
+  return { backend: doc.backend, swarmId: doc.swarm_id, db };
+}
+
+function isExecutableFile(filePath) {
+  try {
+    accessSync(filePath, fsConstants.X_OK);
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveRemoteBoardCli(anchor, appDataDir, env) {
+  if (typeof env.PSTACK_REMOTE_SWARM_CLI === "string" && env.PSTACK_REMOTE_SWARM_CLI.length > 0) {
+    return env.PSTACK_REMOTE_SWARM_CLI;
+  }
+  const cfgPath =
+    typeof env.PSTACK_REMOTE_BOARD_CONFIG === "string" && env.PSTACK_REMOTE_BOARD_CONFIG.length > 0
+      ? env.PSTACK_REMOTE_BOARD_CONFIG
+      : appDataDir
+        ? join(
+            appDataDir,
+            "builtin",
+            "plugins",
+            "swarm",
+            "sidecars",
+            "swarm_board",
+            "remote_board.json",
+          )
+        : null;
+  if (!cfgPath || !existsSync(cfgPath)) return null;
+  const cfg = readJsonObject(cfgPath);
+  if (typeof cfg.backend !== "string" || cfg.backend.length === 0 || cfg.backend !== anchor.backend) {
+    return null;
+  }
+  const cliEnvName = typeof cfg.cli_env === "string" ? cfg.cli_env : "";
+  const envOverride = cliEnvName ? env[cliEnvName] : "";
+  if (
+    typeof envOverride === "string" &&
+    envOverride.length > 0 &&
+    (!envOverride.includes("/") || isExecutableFile(envOverride))
+  ) {
+    return envOverride;
+  }
+  const cliList = Array.isArray(cfg.cli)
+    ? cfg.cli.filter((c) => typeof c === "string" && c.length > 0)
+    : [];
+  if (cliList.length === 0) return null;
+  const pathDirs = String(env.PATH || process.env.PATH || "")
+    .split(":")
+    .filter(Boolean);
+  for (const candidate of cliList) {
+    const hits = candidate.includes("/")
+      ? [candidate]
+      : pathDirs.map((dir) => join(dir, candidate));
+    const found = hits.find(isExecutableFile);
+    if (found) return found;
+  }
+  return cliList[cliList.length - 1];
+}
+
+function rosterContainsConversation(members, targetConversationId) {
+  if (!members || typeof members !== "object" || !targetConversationId) return false;
+  for (const info of Object.values(members)) {
+    if (!info || typeof info !== "object") continue;
+    const cid = info.conversation_id || info.conversationId;
+    if (cid === targetConversationId) return true;
+  }
+  return false;
+}
+
+function resolveRemoteSwarmRoster(anchorDoc, appDataDir, cacheDir, env, targetConversationId) {
+  const anchor = parseRemoteSwarmAnchor(anchorDoc);
+  if (!anchor) return null;
+  const cliBin = resolveRemoteBoardCli(anchor, appDataDir, env);
+  if (!cliBin) return null;
+
+  const rostersPath = join(cacheDir, "remote-rosters.json");
+  const rostersCache = readJsonObject(rostersPath);
+  const cachedEntry = rostersCache[anchor.swarmId];
+  const now = Date.now();
+  const hasValidCache =
+    Boolean(cachedEntry) &&
+    typeof cachedEntry === "object" &&
+    typeof cachedEntry.fetchedAt === "number" &&
+    Boolean(cachedEntry.members) &&
+    typeof cachedEntry.members === "object" &&
+    !Array.isArray(cachedEntry.members);
+
+  if (hasValidCache) {
+    const age = now - cachedEntry.fetchedAt;
+    const inRoster = rosterContainsConversation(cachedEntry.members, targetConversationId);
+    if (
+      (inRoster && age >= 0 && age < REMOTE_ROSTER_TTL_MS) ||
+      (!inRoster && age >= 0 && age < REMOTE_MISS_BACKOFF_MS)
+    ) {
+      return { members: cachedEntry.members };
+    }
+  }
+
+  try {
+    const cliArgs = [
+      "swarm",
+      "--json",
+      "--roster-only",
+      ...(anchor.db ? ["--db", anchor.db] : []),
+      anchor.swarmId,
+    ];
+    const stdout = execFileSync(cliBin, cliArgs, {
+      encoding: "utf8",
+      timeout: 2500,
+      env: { ...env, TERM: "dumb" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let matchedMembers = null;
+    for (const line of String(stdout || "").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const doc = JSON.parse(trimmed);
+        if (
+          doc &&
+          typeof doc === "object" &&
+          doc.swarm_id === anchor.swarmId &&
+          doc.members &&
+          typeof doc.members === "object" &&
+          !Array.isArray(doc.members)
+        ) {
+          matchedMembers = doc.members;
+        }
+      } catch {}
+    }
+    if (!matchedMembers) return null;
+    updateJsonKey(rostersPath, anchor.swarmId, {
+      fetchedAt: Date.now(),
+      members: matchedMembers,
+    });
+    return { members: matchedMembers };
+  } catch {
+    return null;
+  }
+}
+
+function inspectSwarmDirectory(swarmDir, ownerDirId, targetConversationId, context) {
+  const { appDataDir, cacheDir, env, injectedMap, plainSwarmRoots, isOwnSwarmDir } = context;
+  const membersPath = join(swarmDir, "members.json");
+  if (existsSync(membersPath)) {
+    const extracted = extractMembersFromDoc(
+      readJsonObject(membersPath),
+      targetConversationId,
+      ownerDirId,
+    );
+    const managed = isManagedPstackSwarm({
+      swarmDir,
+      coordId: extracted.coordId,
+      hasPstackPrefixedWorker: extracted.hasPstackPrefixedWorker,
+      hasTaskWorker: extracted.hasTaskWorker,
+      injectedMap,
+      plainSwarmRoots,
+    });
+    if (!managed) {
+      const targetIsWorker = Boolean(extracted.workerEntries[targetConversationId]);
+      const targetInSwarm = Boolean(
+        targetIsWorker ||
+          extracted.matchedCoordinator ||
+          extracted.coordId === targetConversationId ||
+          isOwnSwarmDir,
+      );
+      return {
+        kind: "unmanaged_swarm",
+        targetInSwarm,
+        targetIsWorker,
+        hasUnmatchedAnchor: false,
+      };
+    }
+    return {
+      kind: "managed_roster",
+      workerEntries: extracted.workerEntries,
+      matchedCoordinator: extracted.matchedCoordinator || isOwnSwarmDir,
+      hasUnmatchedAnchor: false,
+    };
+  }
+
+  const anchorPath = join(swarmDir, "swarm.json");
+  if (!existsSync(anchorPath)) {
+    return { kind: "none" };
+  }
+
+  const anchorDoc = readJsonObject(anchorPath);
+  const anchorCoordId = getAnchorCoordinatorId(anchorDoc, ownerDirId);
+  const remoteRoster = resolveRemoteSwarmRoster(
+    anchorDoc,
+    appDataDir,
+    cacheDir,
+    env,
+    targetConversationId,
+  );
+  if (remoteRoster) {
+    const extracted = extractMembersFromDoc(remoteRoster, targetConversationId, anchorCoordId);
+    const managed = isManagedPstackSwarm({
+      swarmDir,
+      coordId: extracted.coordId,
+      hasPstackPrefixedWorker: extracted.hasPstackPrefixedWorker,
+      hasTaskWorker: extracted.hasTaskWorker,
+      injectedMap,
+      plainSwarmRoots,
+    });
+    const matchesCoord = extracted.matchedCoordinator || anchorCoordId === targetConversationId;
+    const targetIsWorker = Boolean(extracted.workerEntries[targetConversationId]);
+    const targetInSwarm = Boolean(
+      targetIsWorker ||
+        matchesCoord ||
+        extracted.coordId === targetConversationId,
+    );
+    if (!managed) {
+      return {
+        kind: "unmanaged_swarm",
+        targetInSwarm,
+        targetIsWorker,
+        hasUnmatchedAnchor: !targetInSwarm,
+      };
+    }
+    return {
+      kind: "managed_roster",
+      workerEntries: extracted.workerEntries,
+      matchedCoordinator: matchesCoord,
+      hasUnmatchedAnchor: !targetInSwarm,
+    };
+  }
+
+  if (anchorCoordId === targetConversationId) {
+    const suppressedByPlainSwarm = Boolean(
+      plainSwarmRoots[anchorCoordId] &&
+        !injectedMap[anchorCoordId] &&
+        !existsSync(join(swarmDir, "pstack.json")),
+    );
+    if (suppressedByPlainSwarm) {
+      return {
+        kind: "unmanaged_swarm",
+        targetInSwarm: true,
+        targetIsWorker: false,
+        hasUnmatchedAnchor: false,
+      };
+    }
+    return { kind: "anchor_coordinator" };
+  }
+
+  return { kind: "anchor_unresolved" };
 }
 
 function resolveWorkerOrCoordinatorFromSwarm(
@@ -404,130 +755,196 @@ function resolveWorkerOrCoordinatorFromSwarm(
   appDataDir,
   cacheDir,
   hasPriorInjectedCapsule,
+  env,
+  injectedMap,
+  plainSwarmRoots,
 ) {
   if (typeof conversationId !== "string" || conversationId.length === 0) {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   const mapPath = join(cacheDir, "member-map.json");
   const cachedMap = readJsonObject(mapPath);
   const cachedName = cachedMap[conversationId];
   if (typeof cachedName === "string" && cachedName.length > 0 && cachedName !== "coordinator") {
-    return { workerName: cachedName, isKnownCoordinator: false };
+    return { workerName: cachedName, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   if (!appDataDir) {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   const candidateRoots = [payload.rootConversationId, payload.parentConversationId];
   const checkedRoots = new Set();
   let hasAnchorWithoutMembers = false;
+  let skipNonWorkerCache = false;
   for (const rootId of candidateRoots) {
-    if (typeof rootId !== "string" || rootId.length === 0 || rootId === conversationId || checkedRoots.has(rootId)) {
+    if (
+      typeof rootId !== "string" ||
+      rootId.length === 0 ||
+      rootId === conversationId ||
+      checkedRoots.has(rootId)
+    ) {
       continue;
     }
     checkedRoots.add(rootId);
     const swarmDir = join(appDataDir, "brain", rootId, ".system_generated", "swarm");
-    const membersPath = join(swarmDir, "members.json");
-    if (!existsSync(membersPath)) {
-      const anchorPath = join(swarmDir, "swarm.json");
-      if (existsSync(anchorPath)) {
-        if (anchorMatchesCoordinator(anchorPath, conversationId, rootId)) {
-          return { workerName: null, isKnownCoordinator: true };
-        }
-        hasAnchorWithoutMembers = true;
+    const res = inspectSwarmDirectory(swarmDir, rootId, conversationId, {
+      appDataDir,
+      cacheDir,
+      env,
+      injectedMap,
+      plainSwarmRoots,
+      isOwnSwarmDir: false,
+    });
+    if (res.kind === "managed_roster") {
+      updateJsonKeys(mapPath, res.workerEntries);
+      if (res.workerEntries[conversationId]) {
+        return {
+          workerName: res.workerEntries[conversationId],
+          isKnownCoordinator: false,
+          isUnmanagedSwarmWorker: false,
+        };
       }
-      continue;
-    }
-    const { workerEntries, matchedCoordinator } = extractMembersFromDoc(
-      readJsonObject(membersPath),
-      conversationId,
-    );
-    updateJsonKeys(mapPath, workerEntries);
-    if (workerEntries[conversationId]) {
-      return { workerName: workerEntries[conversationId], isKnownCoordinator: false };
-    }
-    if (matchedCoordinator) {
-      return { workerName: null, isKnownCoordinator: true };
+      if (res.matchedCoordinator) {
+        return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
+      }
+      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
+    } else if (res.kind === "anchor_coordinator") {
+      return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
+    } else if (res.kind === "anchor_unresolved") {
+      hasAnchorWithoutMembers = true;
+    } else if (res.kind === "unmanaged_swarm") {
+      if (res.targetInSwarm) {
+        return {
+          workerName: null,
+          isKnownCoordinator: false,
+          isUnmanagedSwarmWorker: Boolean(res.targetIsWorker),
+        };
+      }
+      skipNonWorkerCache = true;
+      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
     }
   }
 
   const ownSwarmDir = join(appDataDir, "brain", conversationId, ".system_generated", "swarm");
-  const ownMembersPath = join(ownSwarmDir, "members.json");
-  if (existsSync(ownMembersPath)) {
-    const { workerEntries } = extractMembersFromDoc(readJsonObject(ownMembersPath), conversationId);
-    updateJsonKeys(mapPath, workerEntries);
-    if (workerEntries[conversationId]) {
-      return { workerName: workerEntries[conversationId], isKnownCoordinator: false };
+  const ownRes = inspectSwarmDirectory(ownSwarmDir, conversationId, conversationId, {
+    appDataDir,
+    cacheDir,
+    env,
+    injectedMap,
+    plainSwarmRoots,
+    isOwnSwarmDir: true,
+  });
+  if (ownRes.kind === "managed_roster") {
+    updateJsonKeys(mapPath, ownRes.workerEntries);
+    if (ownRes.workerEntries[conversationId]) {
+      return {
+        workerName: ownRes.workerEntries[conversationId],
+        isKnownCoordinator: false,
+        isUnmanagedSwarmWorker: false,
+      };
     }
-    return { workerName: null, isKnownCoordinator: true };
-  }
-
-  const ownAnchorPath = join(ownSwarmDir, "swarm.json");
-  if (anchorMatchesCoordinator(ownAnchorPath, conversationId, conversationId)) {
-    return { workerName: null, isKnownCoordinator: true };
+    if (ownRes.matchedCoordinator) {
+      return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
+    }
+    if (ownRes.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
+  } else if (ownRes.kind === "anchor_coordinator") {
+    return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
+  } else if (ownRes.kind === "unmanaged_swarm") {
+    return {
+      workerName: null,
+      isKnownCoordinator: false,
+      isUnmanagedSwarmWorker: Boolean(ownRes.targetIsWorker),
+    };
+  } else if (ownRes.kind === "anchor_unresolved") {
+    hasAnchorWithoutMembers = true;
   }
 
   const nonWorkerRootsPath = join(cacheDir, "non-worker-roots.json");
   const nonWorkerRoots = readJsonObject(nonWorkerRootsPath);
   if (nonWorkerRoots[conversationId]) {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   const ownTranscriptPath = resolveOwnTranscriptPath(payload, appDataDir);
   if (transcriptIsUnforkedUserRoot(ownTranscriptPath, hasPriorInjectedCapsule)) {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   const brainDir = join(appDataDir, "brain");
   if (!existsSync(brainDir)) {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   let entries = [];
   try {
     entries = readdirSync(brainDir, { withFileTypes: true });
   } catch {
-    return { workerName: null, isKnownCoordinator: false };
+    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
   }
 
   const discoveredWorkers = {};
   let matchedCoordinator = false;
+  let matchedUnmanagedSwarm = false;
+  let matchedUnmanagedWorker = false;
   for (const entry of entries) {
-    if ((!entry.isDirectory() && !entry.isSymbolicLink()) || entry.name === conversationId || checkedRoots.has(entry.name)) {
+    if (
+      (!entry.isDirectory() && !entry.isSymbolicLink()) ||
+      entry.name === conversationId ||
+      checkedRoots.has(entry.name)
+    ) {
       continue;
     }
     const swarmDir = join(brainDir, entry.name, ".system_generated", "swarm");
-    const membersPath = join(swarmDir, "members.json");
-    if (!existsSync(membersPath)) {
-      const anchorPath = join(swarmDir, "swarm.json");
-      if (existsSync(anchorPath)) {
-        if (anchorMatchesCoordinator(anchorPath, conversationId, entry.name)) {
-          matchedCoordinator = true;
-        } else {
-          hasAnchorWithoutMembers = true;
-        }
+    const res = inspectSwarmDirectory(swarmDir, entry.name, conversationId, {
+      appDataDir,
+      cacheDir,
+      env,
+      injectedMap,
+      plainSwarmRoots,
+      isOwnSwarmDir: false,
+    });
+    if (res.kind === "managed_roster") {
+      Object.assign(discoveredWorkers, res.workerEntries);
+      if (res.matchedCoordinator) matchedCoordinator = true;
+      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
+    } else if (res.kind === "anchor_coordinator") {
+      matchedCoordinator = true;
+    } else if (res.kind === "anchor_unresolved") {
+      hasAnchorWithoutMembers = true;
+    } else if (res.kind === "unmanaged_swarm") {
+      if (res.targetInSwarm) {
+        matchedUnmanagedSwarm = true;
+        if (res.targetIsWorker) matchedUnmanagedWorker = true;
       }
-      continue;
+      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
     }
-    const extracted = extractMembersFromDoc(readJsonObject(membersPath), conversationId);
-    Object.assign(discoveredWorkers, extracted.workerEntries);
-    if (extracted.matchedCoordinator) matchedCoordinator = true;
   }
 
   updateJsonKeys(mapPath, discoveredWorkers);
   if (discoveredWorkers[conversationId]) {
-    return { workerName: discoveredWorkers[conversationId], isKnownCoordinator: false };
+    return {
+      workerName: discoveredWorkers[conversationId],
+      isKnownCoordinator: false,
+      isUnmanagedSwarmWorker: false,
+    };
   }
   if (matchedCoordinator) {
-    return { workerName: null, isKnownCoordinator: true };
+    return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
+  }
+  if (matchedUnmanagedSwarm) {
+    return {
+      workerName: null,
+      isKnownCoordinator: false,
+      isUnmanagedSwarmWorker: matchedUnmanagedWorker,
+    };
   }
 
-  if (!hasAnchorWithoutMembers) {
+  if (!hasAnchorWithoutMembers && !skipNonWorkerCache) {
     updateJsonKey(nonWorkerRootsPath, conversationId, true);
   }
-  return { workerName: null, isKnownCoordinator: false };
+  return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
 }
 
 function classifyWorkerMember(memberName) {
@@ -578,13 +995,39 @@ function classifySession(payload, env) {
     typeof injectedMap[conversationId] === "string" &&
     injectedMap[conversationId].length > 0;
 
-  const { workerName, isKnownCoordinator } = resolveWorkerOrCoordinatorFromSwarm(
-    conversationId,
-    payload,
-    appDataDir,
-    cacheDir,
-    alreadyInjected,
-  );
+  const matchesSlashCommand =
+    typeof payload.lastUserInput === "string" && PSTACK_SLASH_COMMAND_RE.test(payload.lastUserInput);
+  const forcedCoordinator = env.PSTACK_FORCE_COORDINATOR === "1";
+  const matchesBuiltinSwarmSlash =
+    typeof payload.lastUserInput === "string" && BUILTIN_SWARM_SLASH_RE.test(payload.lastUserInput);
+
+  const plainSwarmRootsPath = join(cacheDir, "plain-swarm-roots.json");
+  const plainSwarmRoots = readJsonObject(plainSwarmRootsPath);
+  if (conversationId.length > 0) {
+    if (matchesSlashCommand || forcedCoordinator) {
+      if (plainSwarmRoots[conversationId]) {
+        plainSwarmRoots[conversationId] = false;
+        updateJsonKey(plainSwarmRootsPath, conversationId, false);
+      }
+    } else if (matchesBuiltinSwarmSlash && !alreadyInjected) {
+      if (!plainSwarmRoots[conversationId]) {
+        plainSwarmRoots[conversationId] = true;
+        updateJsonKey(plainSwarmRootsPath, conversationId, true);
+      }
+    }
+  }
+
+  const { workerName, isKnownCoordinator, isUnmanagedSwarmWorker } =
+    resolveWorkerOrCoordinatorFromSwarm(
+      conversationId,
+      payload,
+      appDataDir,
+      cacheDir,
+      alreadyInjected,
+      env,
+      injectedMap,
+      plainSwarmRoots,
+    );
 
   if (workerName) {
     const { kind, capsule } = classifyWorkerMember(workerName);
@@ -599,9 +1042,17 @@ function classifySession(payload, env) {
     };
   }
 
-  const matchesSlashCommand =
-    typeof payload.lastUserInput === "string" && PSTACK_SLASH_COMMAND_RE.test(payload.lastUserInput);
-  const forcedCoordinator = env.PSTACK_FORCE_COORDINATOR === "1";
+  if (isUnmanagedSwarmWorker && !alreadyInjected && !forcedCoordinator) {
+    return {
+      sessionKind: "unmanaged",
+      kind: "unmanaged",
+      memberName: null,
+      capsule: null,
+      appDataDir,
+      cacheDir,
+      injectedMap,
+    };
+  }
 
   if (
     isKnownCoordinator ||
@@ -2305,6 +2756,138 @@ function resolveSimpleVarBinding(code, expr, isPython) {
   return isPython ? parseStaticPyString(lastRhs) : parseStaticJsString(lastRhs);
 }
 
+function resolveStaticArgValue(argExpr, code, isPython) {
+  const lit = isPython ? parseStaticPyString(argExpr || "") : parseStaticJsString(argExpr || "");
+  if (lit.ok) return lit.value;
+  const bound = resolveSimpleVarBinding(code, argExpr || "", isPython);
+  if (bound && bound.ok) return bound.value;
+  return null;
+}
+
+function resolveStaticJoinOrTemplate(expr, code, isPython) {
+  const trimmed = String(expr || "").trim();
+  if (!trimmed || trimmed.includes("..")) return null;
+
+  const joinMatch = trimmed.match(
+    /^(?:path\s*\.\s*join|os\s*\.\s*path\s*\.\s*join|join)\s*\(([\s\S]*)\)$/,
+  );
+  if (joinMatch) {
+    const innerArgs = parseCallArguments(`(${joinMatch[1]})`, 0);
+    if (!innerArgs || innerArgs.length === 0) return null;
+    const rootVal = resolveStaticArgValue(innerArgs[0], code, isPython);
+    if (rootVal === null) return null;
+    const parts = [rootVal];
+    for (let i = 1; i < innerArgs.length; i += 1) {
+      const staticPart = resolveStaticArgValue(innerArgs[i], code, isPython);
+      if (staticPart !== null) {
+        parts.push(staticPart);
+        continue;
+      }
+      const subTemplate = resolveStaticJoinOrTemplate(innerArgs[i], code, isPython);
+      if (subTemplate !== null && !isAbsolute(subTemplate)) {
+        parts.push(subTemplate);
+        continue;
+      }
+      return null;
+    }
+    return join(...parts);
+  }
+
+  if (!isPython && trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length >= 2) {
+    const inner = trimmed.slice(1, -1);
+    let out = "";
+    let i = 0;
+    while (i < inner.length) {
+      if (inner[i] === "\\" && i + 1 < inner.length) {
+        out += inner.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (inner[i] === "`") return null;
+      if (inner[i] === "$" && inner[i + 1] === "{") {
+        const closeIdx = findMatchingBrace(inner, i + 1);
+        if (closeIdx < 0) return null;
+        const slot = inner.slice(i + 2, closeIdx).trim();
+        const bound = resolveSimpleVarBinding(code, slot, false);
+        if (bound && bound.ok) {
+          out += bound.value;
+        } else if (
+          out.length > 0 &&
+          !out.endsWith("/") &&
+          !out.endsWith("\\") &&
+          !out.endsWith(".") &&
+          !/[/\\]/.test(slot)
+        ) {
+          out += "0";
+        } else {
+          return null;
+        }
+        i = closeIdx + 1;
+        continue;
+      }
+      out += inner[i];
+      i += 1;
+    }
+    return unescapeSimpleLiteral(out, false);
+  }
+
+  if (isPython && /^[fF](?:'''[\s\S]*'''|"""[\s\S]*"""|'[^']*'|"[^"]*")$/.test(trimmed)) {
+    const body = trimmed.slice(1);
+    const quote = body.startsWith("'''") || body.startsWith('"""') ? body.slice(0, 3) : body[0];
+    const inner = body.slice(quote.length, body.length - quote.length);
+    let out = "";
+    let i = 0;
+    while (i < inner.length) {
+      if (inner[i] === "\\" && i + 1 < inner.length) {
+        out += inner.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (inner[i] === "{") {
+        const closeIdx = findMatchingBrace(inner, i);
+        if (closeIdx < 0) return null;
+        const slot = inner.slice(i + 1, closeIdx).trim();
+        const bound = resolveSimpleVarBinding(code, slot, true);
+        if (bound && bound.ok) {
+          out += bound.value;
+        } else if (
+          out.length > 0 &&
+          !out.endsWith("/") &&
+          !out.endsWith("\\") &&
+          !out.endsWith(".") &&
+          !/[/\\]/.test(slot)
+        ) {
+          out += "0";
+        } else {
+          return null;
+        }
+        i = closeIdx + 1;
+        continue;
+      }
+      out += inner[i];
+      i += 1;
+    }
+    return unescapeSimpleLiteral(out, false);
+  }
+
+  return null;
+}
+
+function extractJsObjectProperty(objExpr, propName) {
+  const trimmed = String(objExpr || "").trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  const props = parseCallArguments(`(${trimmed.slice(1, -1)})`, 0);
+  if (!props) return null;
+  const propEsc = propName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const kvRe = new RegExp(`^(?:['"]${propEsc}['"]|${propEsc})\\s*:\\s*([\\s\\S]+)$`);
+  for (const prop of props) {
+    if (prop === propName) return propName;
+    const m = prop.match(kvRe);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
 function checkInlineNodeFs(code, allowPath, options = {}) {
   const { allowDynamicPaths = false, roleLabel = "read-only ro-* workers" } = options;
 
@@ -2343,15 +2926,23 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
   }
 
   const checkNodePathArg = (argExpr, opts) => {
-    const lit = parseStaticJsString(argExpr || "");
+    const rawExpr = String(argExpr || "");
+    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
+      return false;
+    }
+    const lit = parseStaticJsString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
     }
-    const bound = resolveSimpleVarBinding(code, argExpr || "", false);
+    const bound = resolveSimpleVarBinding(code, rawExpr, false);
     if (bound && bound.ok) {
       return allowPath(bound.value, opts);
     }
-    if (isSafeTmpTemplateOrJoin(argExpr || "", code, allowPath)) {
+    const joined = resolveStaticJoinOrTemplate(rawExpr, code, false);
+    if (joined !== null) {
+      return allowPath(joined, opts);
+    }
+    if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
       return true;
     }
     return allowDynamicPaths;
@@ -2388,32 +2979,94 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
     }
 
     if (NODE_SINGLE_PATH_FS_APIS.has(fnName)) {
-      const allowRoot = fnName === "mkdirSync" || fnName === "mkdir";
+      const isMkdir = fnName === "mkdirSync" || fnName === "mkdir";
+      const forbidRoArtifact =
+        fnName === "rmdirSync" ||
+        fnName === "rmdir" ||
+        fnName === "mkdtempSync" ||
+        fnName === "mkdtemp" ||
+        fnName === "chmodSync" ||
+        fnName === "chmod" ||
+        fnName === "chownSync" ||
+        fnName === "chown";
       const allowNull =
         fnName === "writeFileSync" ||
         fnName === "writeFile" ||
         fnName === "appendFileSync" ||
         fnName === "appendFile" ||
         fnName === "createWriteStream";
-      if (!checkNodePathArg(callArgs[0], { allowRootEqual: allowRoot, allowDevNull: allowNull })) {
+      if (
+        !checkNodePathArg(callArgs[0], {
+          allowRootEqual: isMkdir,
+          allowDevNull: allowNull,
+          allowArtifactDir: isMkdir,
+          allowArtifactRoot: isMkdir,
+          forbidReadOnlyArtifact: forbidRoArtifact,
+        })
+      ) {
         return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
 
     if (NODE_COPY_FS_APIS.has(fnName)) {
-      if (!checkNodePathArg(callArgs[1], { allowRootEqual: true, allowDevNull: true })) {
+      const forbidRoArtifact = fnName === "cpSync" || fnName === "cp";
+      const srcVal = resolveStaticArgValue(callArgs[0] || "", code, false);
+      const srcIsImg = Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal));
+      if (
+        !checkNodePathArg(callArgs[1], {
+          allowRootEqual: true,
+          allowDevNull: true,
+          allowArtifactDir: false,
+          forbidReadOnlyArtifact: forbidRoArtifact && !srcIsImg,
+        })
+      ) {
         return `Inline Node fs.${fnName} destination outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
 
     if (NODE_TWO_PATH_FS_APIS.has(fnName)) {
+      const isLink =
+        fnName === "symlinkSync" ||
+        fnName === "symlink" ||
+        fnName === "linkSync" ||
+        fnName === "link";
       if (
-        !checkNodePathArg(callArgs[0], { allowRootEqual: false, allowDevNull: false }) ||
-        !checkNodePathArg(callArgs[1], { allowRootEqual: true, allowDevNull: false })
+        !checkNodePathArg(callArgs[0], {
+          allowRootEqual: false,
+          allowDevNull: false,
+          forbidReadOnlyArtifact: isLink,
+        }) ||
+        !checkNodePathArg(callArgs[1], {
+          allowRootEqual: true,
+          allowDevNull: false,
+          allowArtifactDir: false,
+          forbidReadOnlyArtifact: isLink,
+        })
       ) {
         return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
+      }
+    }
+  }
+
+  const screenshotRe = /\.\s*screenshot\s*\(/g;
+  while ((match = screenshotRe.exec(code)) !== null) {
+    const openParenIdx = match.index + match[0].length - 1;
+    const callArgs = parseCallArguments(code, openParenIdx);
+    if (!callArgs) {
+      if (!allowDynamicPaths) {
+        return `Unparseable .screenshot() call in inline Node script is blocked for ${roleLabel}.`;
+      }
+      continue;
+    }
+    if (callArgs.length >= 1) {
+      const pathProp = extractJsObjectProperty(callArgs[0], "path");
+      if (
+        pathProp !== null &&
+        !checkNodePathArg(pathProp, { allowRootEqual: false, allowDevNull: false })
+      ) {
+        return `Inline Node .screenshot() path outside allowed roots is blocked for ${roleLabel}.`;
       }
     }
   }
@@ -2474,15 +3127,23 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
   }
 
   const checkPyPathArg = (argExpr, opts) => {
-    const lit = parseStaticPyString(argExpr || "");
+    const rawExpr = String(argExpr || "");
+    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
+      return false;
+    }
+    const lit = parseStaticPyString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
     }
-    const bound = resolveSimpleVarBinding(code, argExpr || "", true);
+    const bound = resolveSimpleVarBinding(code, rawExpr, true);
     if (bound && bound.ok) {
       return allowPath(bound.value, opts);
     }
-    if (isSafeTmpTemplateOrJoin(argExpr || "", code, allowPath)) {
+    const joined = resolveStaticJoinOrTemplate(rawExpr, code, true);
+    if (joined !== null) {
+      return allowPath(joined, opts);
+    }
+    if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
       return true;
     }
     return allowDynamicPaths;
@@ -2516,12 +3177,34 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       continue;
     }
     const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
-    const allowRoot = method === "mkdir";
-    if (!ctorArgs || ctorArgs.length !== 1 || !checkPyPathArg(ctorArgs[0], { allowRootEqual: allowRoot, allowDevNull: false })) {
+    const isMkdir = method === "mkdir";
+    const forbidRo =
+      method === "symlink_to" ||
+      method === "hardlink_to" ||
+      method === "rmdir" ||
+      method === "chmod" ||
+      method === "lchmod";
+    if (
+      !ctorArgs ||
+      ctorArgs.length !== 1 ||
+      !checkPyPathArg(ctorArgs[0], {
+        allowRootEqual: isMkdir,
+        allowDevNull: false,
+        allowArtifactDir: isMkdir,
+        allowArtifactRoot: isMkdir,
+        forbidReadOnlyArtifact: forbidRo,
+      })
+    ) {
       return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
     }
     if (method === "rename" || method === "replace") {
-      if (!checkPyPathArg(methodArgs[0] || "", { allowRootEqual: true, allowDevNull: false })) {
+      if (
+        !checkPyPathArg(methodArgs[0] || "", {
+          allowRootEqual: true,
+          allowDevNull: false,
+          allowArtifactDir: false,
+        })
+      ) {
         return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
       }
     }
@@ -2565,23 +3248,74 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     const { positionals } = splitPythonCallArgs(callArgs);
     if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
       if (!qualifier && !/\bshutil\b/.test(code)) continue;
-      if (!checkPyPathArg(positionals[1] || "", { allowRootEqual: true, allowDevNull: true })) {
+      const srcVal = resolveStaticArgValue(positionals[0] || "", code, true);
+      const srcIsImg = Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal));
+      const allowImgDir = srcIsImg && (fnName === "copy" || fnName === "copy2");
+      if (
+        !checkPyPathArg(positionals[1] || "", {
+          allowRootEqual: true,
+          allowDevNull: true,
+          allowArtifactDir: allowImgDir,
+          allowArtifactRoot: allowImgDir,
+          forbidReadOnlyArtifact: fnName === "copytree",
+        })
+      ) {
         return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
     if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
+      const isLink = fnName === "symlink" || fnName === "link";
       if (
-        !checkPyPathArg(positionals[0] || "", { allowRootEqual: false, allowDevNull: false }) ||
-        !checkPyPathArg(positionals[1] || "", { allowRootEqual: true, allowDevNull: false })
+        !checkPyPathArg(positionals[0] || "", {
+          allowRootEqual: false,
+          allowDevNull: false,
+          forbidReadOnlyArtifact: isLink,
+        }) ||
+        !checkPyPathArg(positionals[1] || "", {
+          allowRootEqual: true,
+          allowDevNull: false,
+          allowArtifactDir: false,
+          forbidReadOnlyArtifact: isLink,
+        })
       ) {
         return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
       }
       continue;
     }
-    const allowRoot = fnName === "mkdir" || fnName === "makedirs";
-    if (!checkPyPathArg(positionals[0] || "", { allowRootEqual: allowRoot, allowDevNull: false })) {
+    const isMkdir = fnName === "mkdir" || fnName === "makedirs";
+    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "chown"].includes(fnName);
+    if (
+      !checkPyPathArg(positionals[0] || "", {
+        allowRootEqual: isMkdir,
+        allowDevNull: false,
+        allowArtifactDir: isMkdir,
+        allowArtifactRoot: isMkdir,
+        forbidReadOnlyArtifact: forbidRo,
+      })
+    ) {
       return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
+    }
+  }
+
+  const screenshotRe = /\.\s*screenshot\s*\(/g;
+  while ((match = screenshotRe.exec(code)) !== null) {
+    const openParenIdx = match.index + match[0].length - 1;
+    const callArgs = parseCallArguments(code, openParenIdx);
+    if (!callArgs) {
+      if (!allowDynamicPaths) {
+        return `Unparseable .screenshot() call in inline Python script is blocked for ${roleLabel}.`;
+      }
+      continue;
+    }
+    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
+    const pathExpr = kwargs.path ?? positionals[0] ?? null;
+    if (
+      pathExpr !== null &&
+      pathExpr !== "None" &&
+      !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: false })
+    ) {
+      return `Inline Python .screenshot() path outside allowed roots is blocked for ${roleLabel}.`;
     }
   }
 
@@ -3085,28 +3819,48 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
   const { cmd, args } = inv;
   if (cmd === "mkdir") {
     const paths = extractPathsSkippingValueFlags(args, new Set(["-m", "--mode"]));
-    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: true, allowDevNull: false }))) {
+    if (
+      paths.length === 0 ||
+      paths.some(
+        (p) =>
+          !allowPath(p, {
+            allowRootEqual: true,
+            allowDevNull: false,
+            allowArtifactDir: true,
+            allowArtifactRoot: true,
+          }),
+      )
+    ) {
       return `Command 'mkdir' outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
   }
   if (cmd === "touch") {
     const paths = extractPathsSkippingValueFlags(args, new Set(["-d", "--date", "-r", "--reference", "-t"]));
-    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
+    ) {
       return `Command 'touch' outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
   }
   if (cmd === "chmod") {
     const paths = extractChmodTargets(args);
-    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
+    ) {
       return `Command 'chmod' outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
   }
   if (cmd === "truncate") {
     const paths = extractPathsSkippingValueFlags(args, new Set(["-s", "--size", "-r", "--reference"]));
-    if (paths.length === 0 || paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false }))) {
+    if (
+      paths.length === 0 ||
+      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
+    ) {
       return `Command 'truncate' outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
@@ -3123,7 +3877,10 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
   }
   if (cmd === "install") {
     const spec = extractInstallTargets(args);
-    if (!spec.valid || spec.targets.some((t) => !allowPath(t, { allowRootEqual: true, allowDevNull: false }))) {
+    if (
+      !spec.valid ||
+      spec.targets.some((t) => !allowPath(t, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
+    ) {
       return `Command 'install' targeting outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
@@ -3132,7 +3889,7 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
     const { fileTargets, dirTargets } = extractCurlWriteTargets(args);
     if (
       fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
     ) {
       return `Command 'curl' writing outside allowed paths is blocked for ${roleLabel}.`;
     }
@@ -3142,7 +3899,7 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
     const { fileTargets, dirTargets } = extractWgetWriteTargets(args);
     if (
       fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
     ) {
       return `Command 'wget' writing outside allowed paths is blocked for ${roleLabel}.`;
     }
@@ -3151,8 +3908,8 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
   if (cmd === "tar") {
     const { fileTargets, dirTargets } = extractTarWriteTargets(args);
     if (
-      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))
+      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true, forbidReadOnlyArtifact: true })) ||
+      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
     ) {
       return `Command 'tar' writing outside allowed paths is blocked for ${roleLabel}.`;
     }
@@ -3160,7 +3917,7 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
   }
   if (cmd === "unzip") {
     const dirTargets = extractUnzipWriteTargets(args);
-    if (dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false }))) {
+    if (dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))) {
       return `Command 'unzip' extracting outside allowed paths is blocked for ${roleLabel}.`;
     }
     return null;
@@ -3171,7 +3928,7 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
       if (/^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:/.test(spec.destination) || spec.destination.startsWith("rsync://")) {
         return `Command 'rsync' to remote destination is blocked for ${roleLabel}.`;
       }
-      if (!allowPath(spec.destination, { allowRootEqual: true, allowDevNull: false })) {
+      if (!allowPath(spec.destination, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true })) {
         return `Command 'rsync' targeting outside allowed paths is blocked for ${roleLabel}.`;
       }
     }
@@ -3179,10 +3936,21 @@ function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTo
   }
   if (cmd === "find") {
     const { searchRoots, hasDelete, fprintTargets, execCommands } = extractFindEffects(args);
-    if (hasDelete && searchRoots.some((r) => !allowPath(r, { allowRootEqual: true, allowDevNull: false }))) {
+    if (
+      hasDelete &&
+      searchRoots.some(
+        (r) =>
+          !allowPath(r, {
+            allowRootEqual: true,
+            allowDevNull: false,
+            forbidReadOnlyArtifact: true,
+            isRecursiveDelete: true,
+          }),
+      )
+    ) {
       return `Command 'find -delete' outside allowed paths is blocked for ${roleLabel}.`;
     }
-    if (fprintTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true }))) {
+    if (fprintTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true, forbidReadOnlyArtifact: true }))) {
       return `Command 'find -fprint/-fls' outside allowed paths is blocked for ${roleLabel}.`;
     }
     for (const innerTokens of execCommands) {
@@ -3476,30 +4244,50 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
       paths.length === 0 ||
       paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: false, allowDevNull: false }))
     ) {
-      return `Filesystem command '${cmd}' outside canonical temp roots is blocked for read-only ro-* workers.`;
+      return `Filesystem command '${cmd}' outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.`;
     }
     return null;
   }
 
   if (cmd === "cp") {
     const cpSpec = extractCpOrMvSpec(args);
+    const allSourcesImages =
+      cpSpec.sources.length > 0 && cpSpec.sources.every((s) => /\.(?:png|jpe?g|webp)$/i.test(s));
     if (
       !cpSpec.valid ||
-      cpSpec.destinations.some((d) => !allowReadOnlyTempPath(d, { allowRootEqual: true, allowDevNull: true }))
+      cpSpec.destinations.some(
+        (d) =>
+          !allowReadOnlyTempPath(d, {
+            allowRootEqual: true,
+            allowDevNull: true,
+            allowArtifactDir: allSourcesImages,
+            allowArtifactRoot: allSourcesImages,
+          }),
+      )
     ) {
-      return "Filesystem command 'cp' targeting paths outside canonical temp roots is blocked for read-only ro-* workers.";
+      return "Filesystem command 'cp' targeting paths outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
     }
     return null;
   }
 
   if (cmd === "mv") {
     const mvSpec = extractCpOrMvSpec(args);
+    const allSourcesImages =
+      mvSpec.sources.length > 0 && mvSpec.sources.every((s) => /\.(?:png|jpe?g|webp)$/i.test(s));
     if (
       !mvSpec.valid ||
       mvSpec.sources.some((s) => !allowReadOnlyTempPath(s, { allowRootEqual: false, allowDevNull: false })) ||
-      mvSpec.destinations.some((d) => !allowReadOnlyTempPath(d, { allowRootEqual: true, allowDevNull: false }))
+      mvSpec.destinations.some(
+        (d) =>
+          !allowReadOnlyTempPath(d, {
+            allowRootEqual: true,
+            allowDevNull: false,
+            allowArtifactDir: allSourcesImages,
+            allowArtifactRoot: allSourcesImages,
+          }),
+      )
     ) {
-      return "Filesystem command 'mv' outside canonical temp roots is blocked for read-only ro-* workers.";
+      return "Filesystem command 'mv' outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
     }
     return null;
   }
@@ -3507,7 +4295,7 @@ function isMutatingReadOnlyInvocation(inv, allowReadOnlyTempPath, validateInnerT
   if (cmd === "tee") {
     const files = extractPositionalPaths(args);
     if (files.some((f) => !allowReadOnlyTempPath(f, { allowRootEqual: false, allowDevNull: true }))) {
-      return "Command 'tee' targeting paths outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.";
+      return "Command 'tee' targeting paths outside /dev/null, canonical temp roots, or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
     }
     return null;
   }
@@ -3644,9 +4432,19 @@ function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase, 
 
   if (cmd === "rm" || cmd === "unlink" || cmd === "rmdir") {
     const paths = extractPositionalPaths(args);
+    const hasRecursiveFlag =
+      cmd === "rm" &&
+      args.some((a) => a === "--recursive" || (/^-[A-Za-z]+$/.test(a) && /[rR]/.test(a)));
     if (
       paths.length === 0 ||
-      paths.some((p) => !allowAuthorShellPath(p, { allowRootEqual: false, allowDevNull: false }))
+      paths.some(
+        (p) =>
+          !allowAuthorShellPath(p, {
+            allowRootEqual: false,
+            allowDevNull: false,
+            isRecursiveDelete: hasRecursiveFlag,
+          }),
+      )
     ) {
       return `Command '${cmd}' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.`;
     }
@@ -3769,6 +4567,10 @@ function extractMcpToolName(toolName, args) {
 }
 
 function handleSessionOrInvocation(payload, env) {
+  if (isPluginDisabled(env)) {
+    return {};
+  }
+
   const session = classifySession(payload, env, "");
   if (session.sessionKind === "unmanaged" || !session.capsule) {
     return {};
@@ -3820,24 +4622,62 @@ function parseToolArgs(rawArgs) {
   return typeof rawArgs === "object" ? rawArgs : {};
 }
 
-function resolveWorkerConfinementRoots(payload, env) {
+function isSafeConversationId(id) {
+  return (
+    typeof id === "string" &&
+    id.length > 0 &&
+    !/[/\\]/.test(id) &&
+    id !== "." &&
+    id !== ".."
+  );
+}
+
+function resolveWorkerConfinementRoots(payload, env, appDataDir) {
   const hasValidCwd =
     typeof payload.cwd === "string" && payload.cwd.length > 0 && existsSync(payload.cwd);
   const realCwd = hasValidCwd ? realpathSync(payload.cwd) : null;
   const fallbackBaseDir = realCwd || process.cwd();
+  const rawArtifactDir =
+    typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath.length > 0
+      ? payload.artifactDirectoryPath
+      : typeof appDataDir === "string" && appDataDir.length > 0 && isSafeConversationId(payload.conversationId)
+        ? join(appDataDir, "brain", payload.conversationId)
+        : "";
   const realArtifact =
-    typeof payload.artifactDirectoryPath === "string" &&
-    payload.artifactDirectoryPath.length > 0 &&
-    existsSync(payload.artifactDirectoryPath)
-      ? realpathSync(payload.artifactDirectoryPath)
-      : typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath.length > 0
-        ? resolveRealTargetPath(payload.artifactDirectoryPath, fallbackBaseDir)
-        : null;
+    rawArtifactDir.length > 0
+      ? existsSync(rawArtifactDir)
+        ? realpathSync(rawArtifactDir)
+        : resolveRealTargetPath(rawArtifactDir, fallbackBaseDir)
+      : null;
   const canonicalTempRoots = getCanonicalTempRoots(env);
   return { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots };
 }
 
+function isSystemGeneratedArtifactPath(resolvedPath, realArtifact) {
+  if (!resolvedPath || !realArtifact) return false;
+  return isInsideOrEqual(resolvedPath, join(realArtifact, ".system_generated"));
+}
+
+function isAllowedReadOnlyArtifactPath(
+  resolvedPath,
+  realArtifact,
+  realCwd,
+  { allowDirectory = false } = {},
+) {
+  if (!resolvedPath || !realArtifact) return false;
+  if (!isStrictlyInside(resolvedPath, realArtifact)) return false;
+  if (isSystemGeneratedArtifactPath(resolvedPath, realArtifact)) return false;
+  if (realCwd && isInsideOrEqual(resolvedPath, realCwd)) return false;
+  if (/\.(?:png|jpe?g|webp)$/i.test(resolvedPath)) return true;
+  if (allowDirectory === true && extname(resolvedPath) === "") return true;
+  return false;
+}
+
 function handlePreToolUse(payload, env) {
+  if (isPluginDisabled(env)) {
+    return { decision: "allow" };
+  }
+
   const toolCall = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall : {};
   const toolName = normalizeToolName(toolCall.name);
   const args = parseToolArgs(toolCall.args);
@@ -3856,7 +4696,7 @@ function handlePreToolUse(payload, env) {
 
   const { kind, memberName } = session;
   const { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots } =
-    resolveWorkerConfinementRoots(payload, env);
+    resolveWorkerConfinementRoots(payload, env, session.appDataDir);
 
   if (kind === "readonly") {
     if (toolName === "edit_file" || toolName === "write_file") {
@@ -3868,8 +4708,22 @@ function handlePreToolUse(payload, env) {
         };
       }
       const realTarget = resolveRealTargetPath(rawTarget, fallbackBaseDir);
+      if (!realTarget || isSystemGeneratedArtifactPath(realTarget, realArtifact)) {
+        return {
+          decision: "deny",
+          reason: `Read-only worker (${memberName || "ro-*"}) cannot call ${toolName} on protected or unresolvable path '${rawTarget}'.`,
+        };
+      }
+      if (realArtifact && isInsideOrEqual(realTarget, realArtifact)) {
+        if (toolName === "write_file" && isAllowedReadOnlyArtifactPath(realTarget, realArtifact, realCwd)) {
+          return { decision: "allow" };
+        }
+        return {
+          decision: "deny",
+          reason: `Read-only worker (${memberName || "ro-*"}) can only write screenshot image files (.png, .jpg, .jpeg, .webp) via write_file inside its artifact directory.`,
+        };
+      }
       if (
-        !realTarget ||
         !isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, {
           allowRootEqual: false,
           excludeRealCwd: true,
@@ -3891,10 +4745,30 @@ function handlePreToolUse(payload, env) {
         const { invocations, redirectTargets } = collectInvocations(code, 0, inheritedEnv, outerEnv);
 
         const makeAllowInvTempPath = (mergedEnv) => (rawToken, opts = {}) => {
-          const { allowRootEqual = false, allowDevNull = false } = opts;
+          const {
+            allowRootEqual = false,
+            allowDevNull = false,
+            allowArtifactDir = false,
+            allowArtifactRoot = false,
+            forbidReadOnlyArtifact = false,
+          } = opts;
           const resolved = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
           if (!resolved) return false;
           if (allowDevNull && resolved === "/dev/null") return true;
+          if (isSystemGeneratedArtifactPath(resolved, realArtifact)) return false;
+          if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
+            if (forbidReadOnlyArtifact) return false;
+            if (
+              allowArtifactRoot &&
+              resolved === realArtifact &&
+              !(realCwd && isInsideOrEqual(resolved, realCwd))
+            ) {
+              return true;
+            }
+            return isAllowedReadOnlyArtifactPath(resolved, realArtifact, realCwd, {
+              allowDirectory: Boolean(allowArtifactDir),
+            });
+          }
           return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
             allowRootEqual,
             excludeRealCwd: true,
@@ -3904,7 +4778,7 @@ function handlePreToolUse(payload, env) {
         for (const redirectTarget of redirectTargets) {
           const mergedEnv = { ...outerEnv, ...redirectTarget.env };
           if (!makeAllowInvTempPath(mergedEnv)(redirectTarget.target, { allowRootEqual: false, allowDevNull: true })) {
-            return "Output file redirection outside /dev/null or canonical temp roots is blocked for read-only ro-* workers.";
+            return "Output file redirection outside /dev/null, canonical temp roots, or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
           }
         }
 
@@ -3987,6 +4861,13 @@ function handlePreToolUse(payload, env) {
       return { decision: "deny", reason: "Target file path failed symlink resolution." };
     }
 
+    if (isSystemGeneratedArtifactPath(realTarget, realArtifact)) {
+      return {
+        decision: "deny",
+        reason: `Path '${rawTarget}' inside protected '.system_generated' artifact metadata is blocked for worker '${memberName || kind}'.`,
+      };
+    }
+
     const insideCwd = isStrictlyInside(realTarget, realCwd);
     const insideArtifact = realArtifact ? isStrictlyInside(realTarget, realArtifact) : false;
     const insideTemp =
@@ -4056,7 +4937,12 @@ function handlePreToolUse(payload, env) {
 
     if (kind === "author" || kind === "adversary") {
       const checkConfinedShellPath = (rawToken, mergedEnv, opts = {}) => {
-        const { allowRootEqual = false, allowDevNull = false, customBaseDir = null } = opts;
+        const {
+          allowRootEqual = false,
+          allowDevNull = false,
+          customBaseDir = null,
+          isRecursiveDelete = false,
+        } = opts;
         const activeBase = customBaseDir || realCwd;
         if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$")) {
           return false;
@@ -4064,14 +4950,19 @@ function handlePreToolUse(payload, env) {
         const resolved = resolveShellTargetPath(rawToken, activeBase || fallbackBaseDir, mergedEnv);
         if (!resolved) return false;
         if (allowDevNull && resolved === "/dev/null") return true;
+        if (isSystemGeneratedArtifactPath(resolved, realArtifact)) return false;
+        if (
+          isRecursiveDelete &&
+          realArtifact &&
+          isInsideOrEqual(join(realArtifact, ".system_generated"), resolved)
+        ) {
+          return false;
+        }
         if (realCwd && (allowRootEqual ? isInsideOrEqual(resolved, realCwd) : isStrictlyInside(resolved, realCwd))) {
           return true;
         }
-        if (
-          realArtifact &&
-          (allowRootEqual ? isInsideOrEqual(resolved, realArtifact) : isStrictlyInside(resolved, realArtifact))
-        ) {
-          return true;
+        if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
+          return allowRootEqual ? true : isStrictlyInside(resolved, realArtifact);
         }
         return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
           allowRootEqual,
