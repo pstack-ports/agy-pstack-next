@@ -4,9 +4,9 @@ description: >-
   Unifies runtime mechanism walkthroughs (how), historical provenance and
   multi-source code archaeology (why), and interactive Socratic explanations
   (teach) over a parallel read-only ro-* clue-sharing swarm mesh, with warm fork
-  handoff into implementation. Use for /understand, "how does X work", "where
-  should this live", "why is X shaped this way", "where did this number come
-  from", or "teach me X".
+  handoff into implementation. Use for /agy-pstack-next:understand, /understand,
+  "how does X work", "where should this live", "why is X shaped this way",
+  "where did this number come from", or "teach me X".
 ---
 
 # Understand

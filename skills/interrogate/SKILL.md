@@ -5,9 +5,9 @@ description: >-
   isolated adv-* exploit authors (workspace: "share") alongside read-only
   ro-blast caller, schema, and rollout mappers (workspace: "inherit"), uses live
   #seq board deduplication and cross-boundary exploit chaining, and gates every
-  surviving finding through ro-verify. Use for /interrogate, "adversarial
-  review", "break this", "stress test this diff", "blast radius", or "what could
-  this break".
+  surviving finding through ro-verify. Use for /agy-pstack-next:interrogate,
+  /interrogate, "adversarial review", "break this", "stress test this diff",
+  "blast radius", or "what could this break".
 ---
 
 # Interrogate

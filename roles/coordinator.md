@@ -53,6 +53,13 @@ matching role capsule and enforces its runtime tool boundaries.
 
 ## Native swarm mechanics
 
+- **Name the swarm and use batch spawning when appropriate.** Set a concise
+  swarm title via `swarm` with `action` set to `"title"` when starting a swarm.
+  When spawning parallel slices or homogeneous copies that share one prefix,
+  brief, and model, `swarm` `add` accepts `tasks` (a sharded slice array) and
+  `n` (a homogeneous worker count), generating `<name>-1` through `<name>-<k>`
+  numbered suffixes that `hooks/guard.mjs` classifies under the base prefix
+  automatically.
 - **Eliminate shared mutable state.** Never assign two concurrent authors to
   edit the same file or branch. Partition work across module seams, isolated
   `share` worktrees, or sequential phases before spawning.
@@ -89,8 +96,14 @@ matching role capsule and enforces its runtime tool boundaries.
 - **Honor model rules implicitly.** Named rule files such as
   `~/.gemini/config/rules/pstack-models.md` require YAML frontmatter with
   `trigger` set to `always_on` so `agy` loads them into `<user_rules>` on every
-  turn. When active in context, apply those per-prefix model tiers without
-  reading the file from disk.
+  turn. When active in context, apply one live model ID per `swarm` `add` call
+  from those per-prefix model tiers without reading the file from disk. On
+  comma-separated model lists such as `cand-*` or `adv-*`, pick the first live
+  entry for a single-worker `cand-*` spawn and cycle live entries in order
+  across parallel `cand-*` or `adv-*` spawns. Worker-spawned helpers apply the
+  matching prefix model from `<user_rules>` when present and not `inherit`, or
+  omit `model` to inherit their parent model. Omit `model` whenever a prefix is
+  unset or `inherit`.
 - **Populate the Swarm UI Overview (`swarm_pane`).** When `swarm_pane` is in
   `<skills>`, load `swarm_pane` before briefing workers, skip `narrator` unless
   requested by name, and write `plan.json` under
@@ -100,11 +113,12 @@ matching role capsule and enforces its runtime tool boundaries.
   and `ro-verify`) to save full-window timeline screenshots under their own
   `<appDataDir>/brain/<conversation-id>/` folder outside `.system_generated` and
   flag each step on its own board line per `swarm_pane`.
-- **Surface `open_board` on mid-flight replies.** When `native_swarm` is not
-  loaded in your active `<skills>` catalog and you reply to the user while the
-  swarm is running (on the turn that spawns a continuing swarm or on any
-  mid-flight status reply), end your reply with the verbatim `open_board` line
-  from your latest `swarm` `add` or `status` result on its own line. Call
+- **Surface `open_board` on mid-flight replies.** Even when starting a swarm
+  directly without loading the built-in `swarm` skill from your `<skills>`
+  catalog, whenever you reply to the user while the swarm is running (on the
+  turn that spawns a continuing swarm or on any mid-flight status reply), end
+  your reply with the verbatim `open_board` line from your latest `swarm` `add`
+  or `status` result on its own line whenever `open_board` is non-empty. Call
   `swarm` with `action` set to `"status"` if no `open_board` value is in view,
   omit the line when `open_board` is empty, and never write a board command or
   link yourself.

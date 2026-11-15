@@ -1,6 +1,10 @@
 ---
 name: control-cli
-description: "Build or adapt an isolated local PTY or tmux harness to drive, inspect, and profile an interactive CLI or TUI. Use for deterministic CLI bug repros, keyboard and prompt flows, startup or memory profiling, and parallel swarm verification."
+description: >-
+  Build or adapt an isolated local PTY or tmux harness to drive, inspect, and
+  profile an interactive CLI or TUI. Use for /agy-pstack-next:control-cli,
+  /control-cli, deterministic CLI bug repros, keyboard and prompt flows, startup
+  or memory profiling, and parallel swarm verification.
 ---
 
 # Control CLI

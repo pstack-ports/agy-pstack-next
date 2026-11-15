@@ -1,6 +1,11 @@
 ---
 name: technical-writing
-description: "Layered technical-writing standard combining Diataxis modes, Google developer style, STE single-thought instruction rules, Global English syntax, zero-slop prose hygiene, and ro-* technical accuracy checks. Use for docs, guides, RFCs, READMEs, PR bodies, and commit messages."
+description: >-
+  Layered technical-writing standard combining Diataxis modes, Google developer
+  style, STE single-thought instruction rules, Global English syntax, zero-slop
+  prose hygiene, and ro-* technical accuracy checks. Use for
+  /agy-pstack-next:technical-writing, /technical-writing, docs, guides, RFCs,
+  READMEs, PR bodies, and commit messages.
 ---
 
 # Technical Writing

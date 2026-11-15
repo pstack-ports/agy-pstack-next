@@ -5,8 +5,8 @@ description: >-
   design axes in isolated share worktrees, evaluate via peer #seq critique and a
   cross-family ro-judge against design red flags, and synthesize via warm fork
   and donor cherry-pick. Supports sketch and full fidelity modes. Use for
-  /crucible, "design this", "architect this", "race prototypes", or comparing
-  structural options before locking in a shape.
+  /agy-pstack-next:crucible, /crucible, "design this", "architect this", "race
+  prototypes", or comparing structural options before locking in a shape.
 ---
 
 # Crucible
