@@ -3118,7 +3118,11 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
 function splitPythonCallArgs(callArgs) {
   const positionals = [];
   const kwargs = {};
-  for (const arg of callArgs) {
+  const trimmed =
+    callArgs.length > 0 && callArgs[callArgs.length - 1] === ""
+      ? callArgs.slice(0, -1)
+      : callArgs;
+  for (const arg of trimmed) {
     const kwMatch = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*([\s\S]*)$/);
     if (kwMatch) {
       kwargs[kwMatch[1]] = kwMatch[2].trim();
@@ -3258,6 +3262,18 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
         continue;
       }
     }
+    if (method === "replace") {
+      const effectiveArgs =
+        methodArgs.length > 0 && methodArgs[methodArgs.length - 1] === ""
+          ? methodArgs.slice(0, -1)
+          : methodArgs;
+      if (
+        effectiveArgs.length >= 2 &&
+        effectiveArgs.every((a) => a.length > 0 && !a.startsWith("*"))
+      ) {
+        continue;
+      }
+    }
     const prefix = code.slice(0, match.index);
     const recv = resolvePythonPathReceiverArg(prefix);
     const isMkdir = method === "mkdir";
@@ -3325,10 +3341,11 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       if (
         !targetExpr ||
         !checkPyPathArg(targetExpr, {
-          allowRootEqual: true,
+          allowRootEqual: false,
           allowDevNull: false,
           allowArtifactDir: false,
           allowArtifactRoot: false,
+          disallowArtifactRoot: true,
           forbidReadOnlyArtifact: !srcOkForRoArtifact,
         })
       ) {
@@ -3363,8 +3380,8 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
   while ((match = osShutilRe.exec(code)) !== null) {
     const qualifier = match[1] || "";
     const fnName = match[2];
-    const beforeChar = match.index > 0 ? code[match.index - 1] : "";
-    if (!qualifier && (beforeChar === "." || !hasFsImport)) {
+    const isMemberCall = !qualifier && /\.\s*$/.test(code.slice(0, match.index));
+    if (!qualifier && (isMemberCall || !hasFsImport)) {
       continue;
     }
     const openParenIdx = match.index + match[0].length - 1;
@@ -3425,12 +3442,12 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
           customBaseDir: symlinkBaseDir,
         }) ||
         !checkPyPathArg(dstExpr, {
-          allowRootEqual: true,
+          allowRootEqual: fnName === "move",
           allowDevNull: false,
           allowArtifactDir: allowMoveDir,
           allowArtifactRoot: allowMoveDir,
           forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
-          disallowArtifactRoot: isLink,
+          disallowArtifactRoot: isLink || fnName !== "move",
         })
       ) {
         return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
