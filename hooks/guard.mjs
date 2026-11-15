@@ -479,12 +479,23 @@ function getAnchorCoordinatorId(doc, ownerDirId) {
   if (typeof explicitCoord === "string" && explicitCoord.length > 0) {
     return explicitCoord;
   }
+  if (
+    doc.backend === "local" &&
+    typeof doc.swarm_id === "string" &&
+    doc.swarm_id.length > 0 &&
+    !doc.swarm_id.startsWith("-") &&
+    REMOTE_SWARM_ID_RE.test(doc.swarm_id)
+  ) {
+    return doc.swarm_id;
+  }
   return ownerDirId;
 }
 
 function parseRemoteSwarmAnchor(doc) {
   if (!doc || typeof doc !== "object") return null;
-  if (typeof doc.backend !== "string" || doc.backend.length === 0) return null;
+  if (typeof doc.backend !== "string" || doc.backend.length === 0 || doc.backend === "local") {
+    return null;
+  }
   if (
     typeof doc.swarm_id !== "string" ||
     doc.swarm_id.startsWith("-") ||
@@ -744,6 +755,10 @@ function inspectSwarmDirectory(swarmDir, ownerDirId, targetConversationId, conte
       };
     }
     return { kind: "anchor_coordinator" };
+  }
+
+  if (anchorDoc?.backend === "local") {
+    return { kind: "none" };
   }
 
   return { kind: "anchor_unresolved" };
