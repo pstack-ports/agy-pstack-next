@@ -3126,4 +3126,143 @@ if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else 
       sb.cleanup();
     }
   });
+
+  test("blocks Python Path subclasses, comment and continuation dot obfuscation, reflection dispatch, and aliased os or shutil escapes across worker roles", () => {
+    const sb = makeSandbox();
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-py-struct", {
+        coordinator: { conversation_id: "coord-py-struct", role: "coordinator" },
+        "ro-s": { conversation_id: "ro-s-id", role: "worker" },
+        "impl-s": { conversation_id: "impl-s-id", role: "worker" },
+        "adv-s": { conversation_id: "adv-s-id", role: "worker" },
+        "sicko-s": { conversation_id: "sicko-s-id", role: "worker" },
+      });
+
+      const runRolePy = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            rootConversationId: "coord-py-struct",
+            cwd: sb.worktree,
+            toolCall: { id: "py-str", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const outsideDst = join(sb.outsideDir, "dst");
+      const outsideFile = join(sb.outsideDir, "f");
+      const worktreeDst = join(sb.worktree, "dst");
+
+      const deniedForAllRoles = [
+        `python3 -c "from pathlib import Path\nclass S(Path):\n pass\nS.replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath\nclass S(PosixPath):\n pass\nS.replace(PosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import pathlib\nclass S(pathlib.Path):\n pass\nS.replace(pathlib.Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath\nclass S1(PosixPath):\n pass\nclass S2(S1):\n pass\nS2.replace(PosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath\nclass S1(PosixPath):\n pass\nclass S2(S1):\n pass\nS2('/tmp/src').replace('${outsideDst}')"`,
+        `python3 -c "from pathlib import Path\nclass S1(Path):\n pass\nclass S2(S1):\n pass\nS2('${outsideFile}').write_text('x')"`,
+        `python3 -c "from pathlib import Path\n(Path.#c\nreplace)(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path\n(Path('${outsideFile}').#c\nwrite_text)('x')"`,
+        `python3 -c "import os\n(os.#c\nreplace)('/tmp/src', '${outsideDst}')"`,
+        `python3 -c 'from pathlib import Path\nPath.\\\nreplace(Path("/tmp/src"), "${outsideDst}")'`,
+        `python3 -c 'from pathlib import Path\nPath("${outsideFile}").\\\nwrite_text("x")'`,
+        `python3 -c 'import os\nos.\\\nreplace("/tmp/src", "${outsideDst}")'`,
+        `python3 -c "from pathlib import Path; (Path.replace)(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; (os.replace)('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; ((os.replace))('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os\n((os.#c\nreplace))('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; (Path('${outsideFile}').write_text)('x')"`,
+        `python3 -c 'from pathlib import Path\nPath.replace\\\n(Path("/tmp/src"), "${outsideDst}")'`,
+        `python3 -c "import os\n(os.replace #c\n)('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; getattr(os, 'replace')('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; getattr(Path, 'replace')(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; setattr(os, 'x', 1)"`,
+        `python3 -c "import os; delattr(os, 'x')"`,
+        `python3 -c "import os; vars(os)['replace']('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; globals()['Path'].replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; locals()['Path'].replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; os.__dict__['replace']('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.__dict__['replace'](Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; os.__getattribute__('replace')('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); p.__getattr__('replace')('${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.__subclasses__()[0].replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.__mro__[0].replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath; PosixPath.__bases__[0].replace(PosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath; PosixPath.__base__.replace(PosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import operator; from pathlib import Path; operator.methodcaller('replace', '${outsideDst}')(Path('/tmp/src'))"`,
+        `python3 -c "import operator, os; operator.attrgetter('replace')(os)('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from operator import methodcaller; from pathlib import Path; methodcaller('replace', '${outsideDst}')(Path('/tmp/src'))"`,
+        `python3 -c "from operator import attrgetter; import os; attrgetter('replace')(os)('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from os import replace as r; r('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from os import replace as r; r('${outsideDst}', '/tmp/dst')"`,
+        `python3 -c "from os import rename as r; r('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from posix import replace as r; r('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from shutil import move as mv; mv('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from shutil import copy as cp; cp('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from os import (\n replace as r,\n)\nr('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; r = os.replace; r('/tmp/src', '/tmp/dst')"`,
+        `python3 -c "import os; r = os.replace; r('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/a'); f = p.write_text; f('x')"`,
+        `python3 -c "from pathlib import Path; p = Path('${outsideFile}'); f = p.write_text; f('x')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); f = p.replace; f('${outsideDst}')"`,
+      ];
+
+      for (const convId of ["ro-s-id", "impl-s-id", "adv-s-id", "sicko-s-id"]) {
+        for (const cmd of deniedForAllRoles) {
+          assert.equal(runRolePy(convId, cmd).decision, "deny", `expected ${convId} deny for ${cmd}`);
+        }
+      }
+
+      for (const convId of ["ro-s-id", "impl-s-id", "adv-s-id"]) {
+        assert.equal(
+          runRolePy(convId, `python3 -c "from os import replace as r; r('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+        assert.equal(
+          runRolePy(convId, `python3 -c "from posix import rename as rn; rn('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+        assert.equal(
+          runRolePy(convId, `python3 -c "from shutil import move as mv; mv('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+        assert.equal(
+          runRolePy(convId, `python3 -c "from shutil import copy as cp; cp('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+      }
+
+      assert.equal(
+        runRolePy("ro-s-id", `python3 -c "from os import replace as r; r('/tmp/src', '${worktreeDst}')"`).decision,
+        "deny",
+      );
+      for (const convId of ["impl-s-id", "adv-s-id"]) {
+        assert.equal(
+          runRolePy(convId, `python3 -c "from os import replace as r; r('/tmp/src', '${worktreeDst}')"`).decision,
+          "allow",
+        );
+      }
+      for (const cmd of [
+        `python3 -c "from os import replace as r; r('/tmp/src', '/tmp/dst')"`,
+        `python3 -c "from shutil import copy as cp; cp('/tmp/src', '/tmp/dst')"`,
+      ]) {
+        assert.equal(runRolePy("sicko-s-id", cmd).decision, "deny");
+      }
+
+      const legitReadOnlySnippets = [
+        `python3 -c "# inspect string\ns = 'hello # world'\n# second comment\nprint(s.replace('hello', 'hi'))"`,
+        `python3 -c 's = "alpha beta"\nprint(s.\\\nreplace("alpha", "gamma"))'`,
+        `python3 -c "s = 'getattr __dict__ vars globals locals methodcaller attrgetter'\nprint(s.replace('getattr', 'safe'))"`,
+        `python3 -c "s = '(os.replace) and f = os.replace'\n# harmless comment mentioning getattr and __dict__\nprint((s.replace)('os.replace', 'noop'))"`,
+      ];
+
+      for (const convId of ["ro-s-id", "impl-s-id", "adv-s-id", "sicko-s-id"]) {
+        for (const cmd of legitReadOnlySnippets) {
+          assert.equal(runRolePy(convId, cmd).decision, "allow", `expected ${convId} allow for ${cmd}`);
+        }
+      }
+    } finally {
+      sb.cleanup();
+    }
+  });
 });
