@@ -3021,4 +3021,109 @@ if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else 
       sb.cleanup();
     }
   });
+
+  test("blocks unbound Python Path classes, parenthesized or aliased os and Path receivers, and type or __class__ escapes across all worker roles", () => {
+    const sb = makeSandbox();
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-py-unbound", {
+        coordinator: { conversation_id: "coord-py-unbound", role: "coordinator" },
+        "ro-u": { conversation_id: "ro-u-id", role: "worker" },
+        "impl-u": { conversation_id: "impl-u-id", role: "worker" },
+        "adv-u": { conversation_id: "adv-u-id", role: "worker" },
+        "sicko-u": { conversation_id: "sicko-u-id", role: "worker" },
+      });
+
+      const runRolePy = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            rootConversationId: "coord-py-unbound",
+            cwd: sb.worktree,
+            toolCall: { id: "py-unb", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const outsideDst = join(sb.outsideDir, "dst");
+      const outsideFile = join(sb.outsideDir, "f");
+
+      const deniedForAllRoles = [
+        `python3 -c "from pathlib import Path; Path.replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.replace(Path('/tmp/src'), '/Users/repo/dst')"`,
+        `python3 -c "import pathlib; pathlib.Path.replace(pathlib.Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PosixPath; PosixPath.replace(PosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PurePath; PurePath.replace(PurePath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import WindowsPath; WindowsPath.replace(WindowsPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PurePosixPath; PurePosixPath.replace(PurePosixPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import PureWindowsPath; PureWindowsPath.replace(PureWindowsPath('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.rename(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; Path.write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path; (Path).replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import pathlib; ((pathlib).Path).replace(pathlib.Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; (os).replace('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; (os).rename('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; (os).replace('${outsideDst}', '/tmp/dst')"`,
+        `python3 -c "import os; (os).rename('${outsideDst}', '/tmp/dst')"`,
+        `python3 -c "import os; m = os; m.replace('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; m = os; m.rename('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; m = os; m.replace('${outsideDst}', '/tmp/dst')"`,
+        `python3 -c "import shutil; m = shutil; m.move('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; P = Path; P.replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; P = Path; P.write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path as P; P.replace(P('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); p.__class__.replace(p, '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); type(p).replace(p, '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); C = p.__class__; C.replace(p, '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; p = Path('/tmp/src'); T = type(p); T.replace(p, '${outsideDst}')"`,
+        `python3 -c "import sys, os; sys.modules.get('os').replace('/tmp/src', '${outsideDst}')"`,
+      ];
+
+      for (const convId of ["ro-u-id", "impl-u-id", "adv-u-id", "sicko-u-id"]) {
+        for (const cmd of deniedForAllRoles) {
+          assert.equal(runRolePy(convId, cmd).decision, "deny", `expected ${convId} deny for ${cmd}`);
+        }
+      }
+
+      for (const convId of ["ro-u-id", "impl-u-id", "adv-u-id"]) {
+        assert.equal(
+          runRolePy(convId, `python3 -c "import os; (os).replace('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+        assert.equal(
+          runRolePy(convId, `python3 -c "import os; m = os; m.rename('/tmp/src', '/tmp/dst')"`).decision,
+          "allow",
+        );
+      }
+      assert.equal(
+        runRolePy("sicko-u-id", `python3 -c "import os; (os).replace('/tmp/src', '/tmp/dst')"`).decision,
+        "deny",
+      );
+
+      const legitStrReplaceCmds = [
+        `python3 -c "print('hello'.replace('e', 'a'))"`,
+        `python3 -c "print(('hello').replace('e', 'a'))"`,
+        `python3 -c "name = 'world'; print(f'hi {name}'.replace('hi', 'hello'))"`,
+        `python3 -c "from pathlib import Path; print(Path('README.md').read_text().replace('a', 'b'))"`,
+        `python3 -c "s = '  foo  '; print(s.strip().replace('foo', 'bar'))"`,
+        `python3 -c "s = 'FOO'; print(s.lower().replace('foo', 'bar'))"`,
+        `python3 -c "s = 'foo'; print(s.upper().replace('FOO', 'BAR'))"`,
+        `python3 -c "raw = b'foo'; print(raw.decode('utf-8').replace('foo', 'bar'))"`,
+        `python3 -c "print('hello {}'.format('world').replace('world', 'swarm'))"`,
+        `python3 -c "items = ['a', 'b']; print(','.join(items).replace(',', ';'))"`,
+        `python3 -c "import os; print(os.environ.get('PATH', '').replace('/usr', '/opt'))"`,
+        `python3 -c "d = {'k': 'val'}; print(d.get('k', '').replace('val', 'ok'))"`,
+        `python3 -c "print(str(123).replace('2', '9'))"`,
+        `python3 -c "s = 'foobar'; print(s.replace('foo', 'bar').replace('bar', 'baz'))"`,
+      ];
+
+      for (const convId of ["ro-u-id", "impl-u-id", "adv-u-id", "sicko-u-id"]) {
+        for (const cmd of legitStrReplaceCmds) {
+          assert.equal(runRolePy(convId, cmd).decision, "allow", `expected ${convId} allow for ${cmd}`);
+        }
+      }
+    } finally {
+      sb.cleanup();
+    }
+  });
 });
