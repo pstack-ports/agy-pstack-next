@@ -2679,7 +2679,1420 @@ const NODE_MUTATION_NAME_RE =
   /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b/;
 
 const PYTHON_MUTATION_NAME_RE =
-  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|lchmod|symlink_to|hardlink_to|link_to)\b/;
+  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|symlink_to|hardlink_to|link_to)\b/;
+
+const PYTHON_PATH_CLASS_NAMES = new Set([
+  "Path",
+  "PurePath",
+  "PosixPath",
+  "WindowsPath",
+  "PurePosixPath",
+  "PureWindowsPath",
+]);
+
+const PYTHON_FS_MODULE_NAMES = new Set(["os", "posix", "shutil"]);
+
+const PYTHON_OS_SHUTIL_FN_NAMES = new Set([
+  "remove",
+  "unlink",
+  "rmdir",
+  "removedirs",
+  "mkdir",
+  "makedirs",
+  "chmod",
+  "lchmod",
+  "chown",
+  "truncate",
+  "rename",
+  "renames",
+  "replace",
+  "rmtree",
+  "move",
+  "copy",
+  "copy2",
+  "copyfile",
+  "copytree",
+  "symlink",
+  "link",
+]);
+
+const PYTHON_STRING_RETURNING_METHODS = new Set([
+  "read_text",
+  "read",
+  "readline",
+  "strip",
+  "lstrip",
+  "rstrip",
+  "lower",
+  "upper",
+  "casefold",
+  "title",
+  "capitalize",
+  "swapcase",
+  "decode",
+  "format",
+  "format_map",
+  "join",
+  "removeprefix",
+  "removesuffix",
+  "expandtabs",
+  "zfill",
+  "center",
+  "ljust",
+  "rjust",
+  "translate",
+]);
+
+const PYTHON_STATEMENT_KEYWORDS = new Set([
+  "and",
+  "as",
+  "assert",
+  "await",
+  "case",
+  "del",
+  "elif",
+  "else",
+  "for",
+  "from",
+  "if",
+  "import",
+  "in",
+  "is",
+  "lambda",
+  "not",
+  "or",
+  "raise",
+  "return",
+  "while",
+  "with",
+  "yield",
+]);
+
+const PYTHON_REFLECTION_IDENT_RE =
+  /\b(?:getattr|setattr|delattr|vars|globals|locals|methodcaller|attrgetter|__dict__|__getattribute__|__getattr__|__setattr__|__delattr__|__subclasses__|__mro__|__bases__|__base__|__builtins__)\b/;
+
+const PYTHON_EVAL_EXEC_RE = /(?:^|[^\w.])(?:builtins\s*\.\s*)?(?:eval|exec)\b/;
+
+const PYTHON_UNBOUND_MUTATION_ATTR_RE =
+  /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/;
+
+const PYTHON_UNBOUND_OPEN_RE =
+  /(?:(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|_?io\s*\.\s*|codecs\s*\.\s*)?open\b(?!\s*\()|\b(?:builtins|_?io|codecs)\s*\.\s*open\b(?!\s*\())/;
+
+function findMatchingCloseForward(str, openIdx) {
+  let depth = 0;
+  let quote = null;
+  let i = openIdx;
+  while (i < str.length) {
+    const ch = str[i];
+    if (quote) {
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (quote.length === 3) {
+        if (str.slice(i, i + 3) === quote) {
+          quote = null;
+          i += 3;
+          continue;
+        }
+      } else if (ch === quote) {
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+    if (str.slice(i, i + 3) === "'''" || str.slice(i, i + 3) === '"""') {
+      quote = str.slice(i, i + 3);
+      i += 3;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+function stripBalancedOuterParens(expr) {
+  let cur = String(expr || "").trim();
+  while (cur.startsWith("(") && cur.endsWith(")")) {
+    if (findMatchingCloseForward(cur, 0) !== cur.length - 1) break;
+    cur = cur.slice(1, -1).trim();
+  }
+  return cur;
+}
+
+function unwrapPythonExprParensAndWalrus(rawExpr) {
+  let cur = stripBalancedOuterParens(rawExpr);
+  while (cur) {
+    const m = cur.match(/^[A-Za-z_][A-Za-z0-9_]*\s*:=\s*([\s\S]+)$/);
+    if (!m) break;
+    cur = stripBalancedOuterParens(m[1]);
+  }
+  return cur;
+}
+
+function findFStringExprSpan(str, openBraceIdx) {
+  let parenDepth = 0;
+  let braceDepth = 1;
+  let inFormatSpec = false;
+  let exprEndIdx = -1;
+  let j = openBraceIdx + 1;
+  while (j < str.length) {
+    const ch = str[j];
+    if (!inFormatSpec) {
+      let nestedPrefix = "";
+      if (/[A-Za-z_]/.test(ch)) {
+        const wStart = j;
+        while (j < str.length && /[A-Za-z0-9_]/.test(str[j])) j += 1;
+        const word = str.slice(wStart, j);
+        if (!/^[rRbBuUfFtT]{1,2}$/.test(word) || (str[j] !== "'" && str[j] !== '"')) {
+          continue;
+        }
+        nestedPrefix = word;
+      }
+      if (str[j] === "'" || str[j] === '"') {
+        const q =
+          str.slice(j, j + 3) === "'''" || str.slice(j, j + 3) === '"""'
+            ? str.slice(j, j + 3)
+            : str[j];
+        const nestedIsFormat = /[fFtT]/.test(nestedPrefix);
+        j += q.length;
+        while (j < str.length) {
+          if (str[j] === "\\") {
+            j += 2;
+            continue;
+          }
+          if (q.length === 3) {
+            if (str.slice(j, j + 3) === q) {
+              j += 3;
+              break;
+            }
+          } else if (str[j] === q) {
+            j += 1;
+            break;
+          }
+          if (nestedIsFormat && str[j] === "{") {
+            if (str[j + 1] === "{") {
+              j += 2;
+              continue;
+            }
+            const innerSpan = findFStringExprSpan(str, j);
+            if (innerSpan) {
+              j = innerSpan.closeBrace + 1;
+              continue;
+            }
+          }
+          j += 1;
+        }
+        continue;
+      }
+      if (ch === "#") {
+        while (j < str.length && str[j] !== "\n" && str[j] !== "\r") j += 1;
+        continue;
+      }
+      if (ch === "(" || ch === "[") {
+        parenDepth += 1;
+        j += 1;
+        continue;
+      }
+      if (ch === ")" || ch === "]") {
+        parenDepth = Math.max(0, parenDepth - 1);
+        j += 1;
+        continue;
+      }
+      if (ch === "{") {
+        braceDepth += 1;
+        j += 1;
+        continue;
+      }
+      if (ch === "}") {
+        braceDepth -= 1;
+        if (braceDepth === 0) {
+          return {
+            exprStart: openBraceIdx + 1,
+            exprEnd: exprEndIdx < 0 ? j : exprEndIdx,
+            closeBrace: j,
+          };
+        }
+        j += 1;
+        continue;
+      }
+      if (parenDepth === 0 && braceDepth === 1) {
+        if (ch === ":") {
+          exprEndIdx = j;
+          inFormatSpec = true;
+          j += 1;
+          continue;
+        }
+        if (ch === "!" && /^[rsa]\s*[:}]/.test(str.slice(j + 1, j + 6))) {
+          exprEndIdx = j;
+          inFormatSpec = true;
+          j += 1;
+          continue;
+        }
+      }
+      j += 1;
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      j += 1;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth -= 1;
+      if (braceDepth === 0) {
+        return {
+          exprStart: openBraceIdx + 1,
+          exprEnd: exprEndIdx < 0 ? j : exprEndIdx,
+          closeBrace: j,
+        };
+      }
+      j += 1;
+      continue;
+    }
+    j += 1;
+  }
+  return null;
+}
+
+function scanPythonTokensRange(code, startIdx, limitIdx, tokens, openStack) {
+  let i = startIdx;
+  const end = Math.min(limitIdx, code.length);
+  while (i < end) {
+    const ch = code[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "#") {
+      while (i < end && code[i] !== "\n") i += 1;
+      continue;
+    }
+    let prefix = "";
+    let strStart = -1;
+    let quoteIdx = -1;
+    if (/[A-Za-z_]/.test(ch)) {
+      const wStart = i;
+      while (i < end && /[A-Za-z0-9_]/.test(code[i])) i += 1;
+      const word = code.slice(wStart, i);
+      if (
+        i < end &&
+        /^[rRbBuUfFtT]{1,2}$/.test(word) &&
+        (code[i] === "'" || code[i] === '"' || code[i] === "`")
+      ) {
+        prefix = word;
+        strStart = wStart;
+        quoteIdx = i;
+      } else {
+        tokens.push({ kind: "ident", start: wStart, end: i, text: word });
+        continue;
+      }
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      strStart = i;
+      quoteIdx = i;
+    }
+
+    if (quoteIdx >= 0) {
+      const q =
+        quoteIdx + 3 <= code.length &&
+        (code.slice(quoteIdx, quoteIdx + 3) === "'''" ||
+          code.slice(quoteIdx, quoteIdx + 3) === '"""')
+          ? code.slice(quoteIdx, quoteIdx + 3)
+          : code[quoteIdx];
+      const isFormat = /[fFtT]/.test(prefix);
+      if (!isFormat) {
+        i = quoteIdx + q.length;
+        let closed = false;
+        while (i < end) {
+          if (code[i] === "\\") {
+            i += 2;
+            continue;
+          }
+          if (q.length === 3) {
+            if (i + 3 <= end && code.slice(i, i + 3) === q) {
+              i += 3;
+              closed = true;
+              break;
+            }
+          } else if (code[i] === q) {
+            i += 1;
+            closed = true;
+            break;
+          }
+          i += 1;
+        }
+        tokens.push({ kind: "string", start: strStart, end: Math.min(i, end), closed, isFormat: false });
+        continue;
+      }
+
+      let j = quoteIdx + q.length;
+      let fullStrEnd = -1;
+      const interpSpans = [];
+      while (j < code.length) {
+        if (code[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (q.length === 3) {
+          if (code.slice(j, j + 3) === q) {
+            fullStrEnd = j + 3;
+            break;
+          }
+        } else if (code[j] === q) {
+          fullStrEnd = j + 1;
+          break;
+        }
+        if (code[j] === "{") {
+          if (code[j + 1] === "{") {
+            j += 2;
+            continue;
+          }
+          const span = findFStringExprSpan(code, j);
+          if (span) {
+            interpSpans.push({ openBrace: j, exprStart: span.exprStart, exprEnd: span.exprEnd, closeBrace: span.closeBrace });
+            let sj = span.exprEnd;
+            while (sj < span.closeBrace) {
+              if (code[sj] === "{" && code[sj + 1] !== "{") {
+                const subSpan = findFStringExprSpan(code, sj);
+                if (subSpan) {
+                  interpSpans.push({
+                    openBrace: sj,
+                    exprStart: subSpan.exprStart,
+                    exprEnd: subSpan.exprEnd,
+                    closeBrace: subSpan.closeBrace,
+                  });
+                  sj = subSpan.closeBrace + 1;
+                  continue;
+                }
+              }
+              sj += 1;
+            }
+            j = span.closeBrace + 1;
+            continue;
+          }
+          interpSpans.push({ openBrace: j, exprStart: j + 1, exprEnd: code.length, closeBrace: code.length });
+          break;
+        }
+        if (code[j] === "}" && code[j + 1] === "}") {
+          j += 2;
+          continue;
+        }
+        j += 1;
+      }
+
+      if (fullStrEnd >= 0 && fullStrEnd <= end) {
+        tokens.push({ kind: "string", start: strStart, end: fullStrEnd, closed: true, isFormat: true });
+        i = fullStrEnd;
+        continue;
+      }
+
+      let activeSpan = null;
+      for (const sp of interpSpans) {
+        if (sp.openBrace < end && end <= sp.closeBrace) {
+          if (!activeSpan || sp.openBrace > activeSpan.openBrace) {
+            activeSpan = sp;
+          }
+        }
+      }
+      if (activeSpan && end <= activeSpan.exprEnd) {
+        const openIdx = tokens.length;
+        tokens.push({ kind: "open", start: activeSpan.openBrace, end: activeSpan.openBrace + 1, ch: "{" });
+        openStack.push(openIdx);
+        scanPythonTokensRange(code, activeSpan.exprStart, end, tokens, openStack);
+        i = end;
+        continue;
+      }
+
+      tokens.push({ kind: "string", start: strStart, end, closed: false, isFormat: true });
+      i = end;
+      continue;
+    }
+
+    if (ch === "(" || ch === "[" || ch === "{") {
+      const idx = tokens.length;
+      tokens.push({ kind: "open", start: i, end: i + 1, ch });
+      openStack.push(idx);
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      const openTokenIdx = openStack.length > 0 ? openStack.pop() : -1;
+      tokens.push({ kind: "close", start: i, end: i + 1, ch, openTokenIdx });
+      i += 1;
+      continue;
+    }
+    if (ch === ".") {
+      tokens.push({ kind: "dot", start: i, end: i + 1 });
+      i += 1;
+      continue;
+    }
+    tokens.push({ kind: "other", start: i, end: i + 1, ch });
+    i += 1;
+  }
+}
+
+function scanPythonTokensBefore(code, limitIdx) {
+  const tokens = [];
+  const openStack = [];
+  scanPythonTokensRange(code, 0, limitIdx, tokens, openStack);
+  return tokens;
+}
+
+function stripPythonCommentsAndContinuations(rawCode) {
+  let out = "";
+  let bracketDepth = 0;
+  let i = 0;
+  while (i < rawCode.length) {
+    const ch = rawCode[i];
+    let prefix = "";
+    let strStart = -1;
+    let quoteIdx = -1;
+    if (/[A-Za-z_]/.test(ch)) {
+      const wStart = i;
+      while (i < rawCode.length && /[A-Za-z0-9_]/.test(rawCode[i])) i += 1;
+      const word = rawCode.slice(wStart, i);
+      if (/^[rRbBuUfFtT]{1,2}$/.test(word) && (rawCode[i] === "'" || rawCode[i] === '"')) {
+        prefix = word;
+        strStart = wStart;
+        quoteIdx = i;
+      } else {
+        out += word;
+        continue;
+      }
+    } else if (ch === "'" || ch === '"') {
+      strStart = i;
+      quoteIdx = i;
+    }
+
+    if (quoteIdx >= 0) {
+      const q =
+        rawCode.slice(quoteIdx, quoteIdx + 3) === "'''" ||
+        rawCode.slice(quoteIdx, quoteIdx + 3) === '"""'
+          ? rawCode.slice(quoteIdx, quoteIdx + 3)
+          : rawCode[quoteIdx];
+      const isFormat = /[fFtT]/.test(prefix);
+      i = quoteIdx + q.length;
+      if (!isFormat) {
+        while (i < rawCode.length) {
+          if (rawCode[i] === "\\") {
+            i += 2;
+            continue;
+          }
+          if (q.length === 3) {
+            if (rawCode.slice(i, i + 3) === q) {
+              i += 3;
+              break;
+            }
+          } else if (rawCode[i] === q) {
+            i += 1;
+            break;
+          }
+          i += 1;
+        }
+        out += rawCode.slice(strStart, Math.min(i, rawCode.length));
+        continue;
+      }
+
+      out += prefix + q;
+      while (i < rawCode.length) {
+        if (rawCode[i] === "\\") {
+          out += rawCode.slice(i, Math.min(i + 2, rawCode.length));
+          i += 2;
+          continue;
+        }
+        if (q.length === 3) {
+          if (rawCode.slice(i, i + 3) === q) {
+            out += q;
+            i += 3;
+            break;
+          }
+        } else if (rawCode[i] === q) {
+          out += q;
+          i += 1;
+          break;
+        }
+        if (rawCode[i] === "{") {
+          if (rawCode[i + 1] === "{") {
+            out += "{{";
+            i += 2;
+            continue;
+          }
+          const span = findFStringExprSpan(rawCode, i);
+          if (span) {
+            const normExpr = normalizeInlinePythonCode(rawCode.slice(span.exprStart, span.exprEnd));
+            const specRaw = rawCode.slice(span.exprEnd, span.closeBrace);
+            let normSpec = "";
+            let sj = 0;
+            while (sj < specRaw.length) {
+              if (specRaw[sj] === "{" && specRaw[sj + 1] !== "{") {
+                const subSpan = findFStringExprSpan(specRaw, sj);
+                if (subSpan) {
+                  normSpec += `{${normalizeInlinePythonCode(specRaw.slice(subSpan.exprStart, subSpan.exprEnd))}${specRaw.slice(subSpan.exprEnd, subSpan.closeBrace + 1)}`;
+                  sj = subSpan.closeBrace + 1;
+                  continue;
+                }
+              }
+              normSpec += specRaw[sj];
+              sj += 1;
+            }
+            out += `{${normExpr}${normSpec}}`;
+            i = span.closeBrace + 1;
+            continue;
+          }
+        }
+        if (rawCode[i] === "}" && rawCode[i + 1] === "}") {
+          out += "}}";
+          i += 2;
+          continue;
+        }
+        out += rawCode[i];
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === "\\") {
+      if (rawCode[i + 1] === "\r" && rawCode[i + 2] === "\n") {
+        out += " ";
+        i += 3;
+        continue;
+      }
+      if (rawCode[i + 1] === "\n" || rawCode[i + 1] === "\r") {
+        out += " ";
+        i += 2;
+        continue;
+      }
+    }
+    if (ch === "#") {
+      out += " ";
+      while (i < rawCode.length && rawCode[i] !== "\n" && rawCode[i] !== "\r") i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      bracketDepth += 1;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "\r" || ch === "\n") {
+      if (ch === "\r" && rawCode[i + 1] === "\n") i += 2;
+      else i += 1;
+      out += bracketDepth > 0 ? " " : "\n";
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+function unwrapParenthesizedPythonRefs(code) {
+  const chars = code.split("");
+  const maxPasses = Math.max(1, Math.floor(chars.length / 2) + 1);
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const cur = chars.join("");
+    const tokens = scanPythonTokensBefore(cur, cur.length);
+    let changed = false;
+    for (let closeIdx = 0; closeIdx < tokens.length; closeIdx += 1) {
+      const closeTok = tokens[closeIdx];
+      if (closeTok.kind !== "close" || closeTok.ch !== ")" || closeTok.openTokenIdx < 0) continue;
+      const openIdx = closeTok.openTokenIdx;
+      const openTok = tokens[openIdx];
+      if (openTok.ch !== "(" || openIdx + 1 >= closeIdx) continue;
+      const prev = openIdx > 0 ? tokens[openIdx - 1] : null;
+      const isGroupingOpen =
+        prev === null ||
+        prev.kind === "open" ||
+        prev.kind === "other" ||
+        (prev.kind === "ident" && PYTHON_STATEMENT_KEYWORDS.has(prev.text) && prev.text !== "import");
+      if (!isGroupingOpen) continue;
+
+      const topTokens = [];
+      let validPrimary = true;
+      let k = openIdx + 1;
+      while (k < closeIdx) {
+        const t = tokens[k];
+        if (t.kind === "open") {
+          let matchClose = -1;
+          for (let m = k + 1; m < closeIdx; m += 1) {
+            if (tokens[m].kind === "close" && tokens[m].openTokenIdx === k) {
+              matchClose = m;
+              break;
+            }
+          }
+          if (matchClose < 0) {
+            validPrimary = false;
+            break;
+          }
+          topTokens.push({ kind: "group" });
+          k = matchClose + 1;
+          continue;
+        }
+        if (
+          t.kind === "ident" &&
+          !PYTHON_STATEMENT_KEYWORDS.has(t.text) &&
+          t.text !== "class" &&
+          t.text !== "def"
+        ) {
+          topTokens.push(t);
+          k += 1;
+          continue;
+        }
+        if (t.kind === "string") {
+          if (topTokens.length > 0 && topTokens[topTokens.length - 1].kind === "string") {
+            validPrimary = false;
+            break;
+          }
+          topTokens.push(t);
+          k += 1;
+          continue;
+        }
+        if (t.kind === "dot") {
+          topTokens.push(t);
+          k += 1;
+          continue;
+        }
+        validPrimary = false;
+        break;
+      }
+      if (
+        !validPrimary ||
+        topTokens.length === 0 ||
+        topTokens[0].kind === "dot" ||
+        topTokens[topTokens.length - 1].kind === "dot"
+      ) {
+        continue;
+      }
+
+      const endsWithAttr =
+        topTokens.length >= 3 &&
+        topTokens[topTokens.length - 1].kind === "ident" &&
+        topTokens[topTokens.length - 2].kind === "dot";
+      const nextTok = closeIdx + 1 < tokens.length ? tokens[closeIdx + 1] : null;
+      const followedByChain =
+        nextTok !== null &&
+        (nextTok.kind === "dot" ||
+          (nextTok.kind === "open" && (nextTok.ch === "(" || nextTok.ch === "[")) ||
+          (nextTok.kind === "close" && nextTok.ch === ")"));
+      if (endsWithAttr || followedByChain) {
+        chars[openTok.start] = " ";
+        chars[closeTok.start] = " ";
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return cur;
+  }
+  return chars.join("");
+}
+
+function normalizeInlinePythonCode(rawCode) {
+  const stripped = stripPythonCommentsAndContinuations(String(rawCode || ""));
+  return unwrapParenthesizedPythonRefs(stripped);
+}
+
+function maskSlicePreservingNewlines(slice) {
+  let out = "";
+  for (let idx = 0; idx < slice.length; idx += 1) {
+    out += slice[idx] === "\n" ? "\n" : " ";
+  }
+  return out;
+}
+
+function maskPythonNonCodeStrings(code) {
+  let out = "";
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    let prefix = "";
+    let quoteIdx = -1;
+    if (/[A-Za-z_]/.test(ch)) {
+      const wStart = i;
+      while (i < code.length && /[A-Za-z0-9_]/.test(code[i])) i += 1;
+      const word = code.slice(wStart, i);
+      if (/^[rRbBuUfFtT]{1,2}$/.test(word) && (code[i] === "'" || code[i] === '"')) {
+        prefix = word;
+        quoteIdx = i;
+      } else {
+        out += word;
+        continue;
+      }
+    } else if (ch === "'" || ch === '"') {
+      quoteIdx = i;
+    }
+
+    if (quoteIdx >= 0) {
+      const q =
+        code.slice(quoteIdx, quoteIdx + 3) === "'''" || code.slice(quoteIdx, quoteIdx + 3) === '"""'
+          ? code.slice(quoteIdx, quoteIdx + 3)
+          : code[quoteIdx];
+      const isFormat = /[fFtT]/.test(prefix);
+      out += prefix + q;
+      i = quoteIdx + q.length;
+      if (!isFormat) {
+        const innerStart = i;
+        let closed = false;
+        while (i < code.length) {
+          if (code[i] === "\\") {
+            if (i + 1 < code.length) {
+              i += 2;
+            } else {
+              i += 1;
+            }
+            continue;
+          }
+          if (q.length === 3) {
+            if (code.slice(i, i + 3) === q) {
+              out += maskSlicePreservingNewlines(code.slice(innerStart, i)) + q;
+              i += 3;
+              closed = true;
+              break;
+            }
+          } else if (code[i] === q) {
+            out += maskSlicePreservingNewlines(code.slice(innerStart, i)) + q;
+            i += 1;
+            closed = true;
+            break;
+          }
+          i += 1;
+        }
+        if (!closed) {
+          out += maskSlicePreservingNewlines(code.slice(innerStart));
+        }
+        continue;
+      }
+
+      while (i < code.length) {
+        if (code[i] === "\\") {
+          const escSlice = code.slice(i, Math.min(i + 2, code.length));
+          out += maskSlicePreservingNewlines(escSlice);
+          i += escSlice.length;
+          continue;
+        }
+        if (q.length === 3) {
+          if (code.slice(i, i + 3) === q) {
+            out += q;
+            i += 3;
+            break;
+          }
+        } else if (code[i] === q) {
+          out += q;
+          i += 1;
+          break;
+        }
+        if (code[i] === "{") {
+          if (code[i + 1] === "{") {
+            out += "  ";
+            i += 2;
+            continue;
+          }
+          const span = findFStringExprSpan(code, i);
+          if (span) {
+            const maskedExpr = maskPythonNonCodeStrings(code.slice(span.exprStart, span.exprEnd));
+            const specRaw = code.slice(span.exprEnd, span.closeBrace);
+            let maskedSpec = "";
+            let sj = 0;
+            while (sj < specRaw.length) {
+              if (specRaw[sj] === "{" && specRaw[sj + 1] !== "{") {
+                const subSpan = findFStringExprSpan(specRaw, sj);
+                if (subSpan) {
+                  maskedSpec += `{${maskPythonNonCodeStrings(specRaw.slice(subSpan.exprStart, subSpan.exprEnd))}${maskSlicePreservingNewlines(specRaw.slice(subSpan.exprEnd, subSpan.closeBrace))}}`;
+                  sj = subSpan.closeBrace + 1;
+                  continue;
+                }
+              }
+              maskedSpec += specRaw[sj] === "\n" ? "\n" : " ";
+              sj += 1;
+            }
+            out += `{${maskedExpr}${maskedSpec}}`;
+            i = span.closeBrace + 1;
+            continue;
+          }
+          out += code.slice(i);
+          i = code.length;
+          break;
+        }
+        if (code[i] === "}" && code[i + 1] === "}") {
+          out += "  ";
+          i += 2;
+          continue;
+        }
+        out += code[i] === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+function extractPythonReceiverBeforeDot(code, dotIdx) {
+  const tokens = scanPythonTokensBefore(code, dotIdx);
+  if (tokens.length === 0) return "";
+  let cur = tokens.length - 1;
+  const endCharIdx = tokens[cur].end;
+  let startCharIdx = null;
+  while (cur >= 0) {
+    const tok = tokens[cur];
+    if (tok.kind === "string") {
+      startCharIdx = tok.start;
+      break;
+    }
+    if (tok.kind === "close") {
+      if (tok.openTokenIdx < 0) return null;
+      startCharIdx = tokens[tok.openTokenIdx].start;
+      cur = tok.openTokenIdx - 1;
+      if (
+        cur >= 0 &&
+        (tokens[cur].kind === "ident" || tokens[cur].kind === "close" || tokens[cur].kind === "string")
+      ) {
+        continue;
+      }
+      if (cur >= 0 && tokens[cur].kind === "dot") {
+        startCharIdx = tokens[cur].start;
+        cur -= 1;
+        continue;
+      }
+      break;
+    }
+    if (tok.kind === "ident") {
+      if (cur === 0 || tokens[cur - 1].kind !== "dot") {
+        if (PYTHON_STATEMENT_KEYWORDS.has(tok.text)) break;
+        startCharIdx = tok.start;
+        break;
+      }
+      startCharIdx = tokens[cur - 1].start;
+      cur -= 2;
+      if (cur < 0) return null;
+      continue;
+    }
+    break;
+  }
+  if (startCharIdx === null) return "";
+  return code.slice(startCharIdx, endCharIdx);
+}
+
+function isSinglePyStringLiteralExpr(expr) {
+  const trimmed = stripBalancedOuterParens(expr);
+  if (!trimmed) return false;
+  const tokens = scanPythonTokensBefore(trimmed, trimmed.length);
+  return tokens.length === 1 && tokens[0].kind === "string" && tokens[0].closed === true;
+}
+
+function isPythonPathlibModuleExpr(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (symbols.pathlibModuleIdents.has(expr)) return true;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (
+    tokens.length >= 3 &&
+    tokens[tokens.length - 1].kind === "ident" &&
+    tokens[tokens.length - 2].kind === "dot"
+  ) {
+    const subAttr = tokens[tokens.length - 1].text;
+    const base = expr.slice(0, tokens[tokens.length - 2].start);
+    if ((subAttr === "_local" || subAttr === "_abc") && isPythonPathlibModuleExpr(base, symbols)) {
+      return true;
+    }
+  }
+  if (
+    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"]\s*\)$/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  return /^sys\s*\.\s*modules\s*(?:\[\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"]\s*\]|\.\s*get\s*\(\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"])/.test(
+    expr,
+  );
+}
+
+function isPythonFsModuleExpr(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (symbols.fsModuleIdents.has(expr)) return true;
+  if (
+    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)$/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  return /^sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
+    expr,
+  );
+}
+
+function receiverReferencesFsModule(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (isPythonFsModuleExpr(expr, symbols)) return true;
+  if (
+    /\b(?:__import__|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)|sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const tok = tokens[idx];
+    if (tok.kind !== "ident") continue;
+    if (symbols.fsModuleReturningFuncs && symbols.fsModuleReturningFuncs.has(tok.text)) return true;
+    if (symbols.fsModuleIdents.has(tok.text)) {
+      const t1 = idx + 1 < tokens.length ? tokens[idx + 1] : null;
+      const t2 = idx + 2 < tokens.length ? tokens[idx + 2] : null;
+      if (
+        t1 &&
+        t1.kind === "dot" &&
+        t2 &&
+        t2.kind === "ident" &&
+        (t2.text === "path" ||
+          t2.text === "environ" ||
+          t2.text === "sep" ||
+          t2.text === "linesep" ||
+          t2.text === "devnull" ||
+          t2.text === "getpid" ||
+          t2.text === "getcwd")
+      ) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function isPythonPathClassExpr(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (symbols.pathClassIdents.has(expr)) return true;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length === 0) return false;
+  const last = tokens[tokens.length - 1];
+  if (last.kind === "ident" && tokens.length >= 3 && tokens[tokens.length - 2].kind === "dot") {
+    const attr = last.text;
+    const base = expr.slice(0, tokens[tokens.length - 2].start);
+    if (attr === "__class__") return true;
+    if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
+      return true;
+    }
+  }
+  if (last.kind === "close" && last.ch === ")" && last.openTokenIdx > 0) {
+    const callee = unwrapPythonExprParensAndWalrus(expr.slice(0, tokens[last.openTokenIdx].start));
+    if (callee === "type" || callee === "builtins.type") return true;
+    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(callee)) return true;
+  }
+  return false;
+}
+
+function receiverReferencesUnboundPathClass(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (isPythonPathClassExpr(expr, symbols)) return true;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const tok = tokens[idx];
+    if (tok.kind !== "ident") continue;
+    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(tok.text)) return true;
+    if (tok.text === "__class__" || tok.text === "type") return true;
+    if (symbols.pathClassIdents.has(tok.text)) {
+      const nextTok = idx + 1 < tokens.length ? tokens[idx + 1] : null;
+      if (!nextTok || nextTok.kind !== "open" || nextTok.ch !== "(") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isPythonPathCtorCallExpr(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return null;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length < 2) return null;
+  const last = tokens[tokens.length - 1];
+  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return null;
+  const callee = unwrapPythonExprParensAndWalrus(expr.slice(0, tokens[last.openTokenIdx].start));
+  let isPathCallee = symbols.pathClassIdents.has(callee) || PYTHON_PATH_CLASS_NAMES.has(callee);
+  if (!isPathCallee) {
+    const calleeTokens = scanPythonTokensBefore(callee, callee.length);
+    if (
+      calleeTokens.length >= 3 &&
+      calleeTokens[calleeTokens.length - 1].kind === "ident" &&
+      calleeTokens[calleeTokens.length - 2].kind === "dot"
+    ) {
+      const attr = calleeTokens[calleeTokens.length - 1].text;
+      const base = callee.slice(0, calleeTokens[calleeTokens.length - 2].start);
+      if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
+        isPathCallee = true;
+      }
+    }
+  }
+  if (!isPathCallee) return null;
+  return parseCallArguments(expr, tokens[last.openTokenIdx].start);
+}
+
+function collectPythonSymbolBindings(code, preMasked = null) {
+  const masked = preMasked ?? maskPythonNonCodeStrings(code);
+  const pathClassIdents = new Set(PYTHON_PATH_CLASS_NAMES);
+  const pathInstanceIdents = new Set();
+  const pathClassReturningFuncs = new Set();
+  const fsModuleReturningFuncs = new Set();
+  const fsModuleIdents = new Set(PYTHON_FS_MODULE_NAMES);
+  const pathlibModuleIdents = new Set(["pathlib", "pathlib._local", "pathlib._abc"]);
+  const fsFuncAliases = new Map();
+  const openAliases = new Set();
+  const fsOpenAliases = new Set();
+  const taintedIdents = new Set([
+    ...pathClassIdents,
+    ...fsModuleIdents,
+    ...pathlibModuleIdents,
+    "sys",
+    "builtins",
+    "importlib",
+    "posixpath",
+    "ntpath",
+    "genericpath",
+    "io",
+    "_io",
+    "codecs",
+    "operator",
+    "type",
+  ]);
+
+  const plainImportRe = /(?:^|[\n;])\s*import\s+([^\n;#]+)/g;
+  let im;
+  while ((im = plainImportRe.exec(masked)) !== null) {
+    for (const part of im[1].split(",")) {
+      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+      if (!m) continue;
+      const mod = m[1];
+      const bound = m[2] || mod.split(".")[0];
+      taintedIdents.add(bound);
+      if (PYTHON_FS_MODULE_NAMES.has(mod)) fsModuleIdents.add(bound);
+      if (mod === "pathlib" || mod.startsWith("pathlib.")) {
+        pathlibModuleIdents.add(bound);
+        if (!m[2]) pathlibModuleIdents.add(mod);
+      }
+    }
+  }
+
+  const fromImportRe = /\bfrom\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+([^\n;#]+)/g;
+  while ((im = fromImportRe.exec(masked)) !== null) {
+    const mod = im[1];
+    const clause = stripBalancedOuterParens(im[2]);
+    for (const part of clause.split(",")) {
+      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+      if (!m) continue;
+      const orig = m[1];
+      const bound = m[2] || orig;
+      taintedIdents.add(bound);
+      if (
+        (mod === "pathlib" || mod.startsWith("pathlib.") || pathlibModuleIdents.has(mod)) &&
+        PYTHON_PATH_CLASS_NAMES.has(orig)
+      ) {
+        pathClassIdents.add(bound);
+      }
+      if (mod === "pathlib" && (orig === "_local" || orig === "_abc")) {
+        pathlibModuleIdents.add(bound);
+      }
+      if (PYTHON_FS_MODULE_NAMES.has(mod) && PYTHON_OS_SHUTIL_FN_NAMES.has(orig)) {
+        fsFuncAliases.set(bound, { fnName: orig, mod });
+      }
+      if (PYTHON_FS_MODULE_NAMES.has(mod) && orig === "open") {
+        fsOpenAliases.add(bound);
+      }
+      if (["io", "_io", "builtins", "codecs"].includes(mod) && orig === "open") {
+        openAliases.add(bound);
+      }
+      if (PYTHON_FS_MODULE_NAMES.has(orig)) fsModuleIdents.add(bound);
+      if (orig === "pathlib") pathlibModuleIdents.add(bound);
+    }
+  }
+
+  const classDefs = [];
+  const classDefRe = /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let cm;
+  while ((cm = classDefRe.exec(masked)) !== null) {
+    const clsName = cm[1];
+    const openParenIdx = cm.index + cm[0].length - 1;
+    const baseArgs = parseCallArguments(code, openParenIdx);
+    if (baseArgs === null) {
+      pathClassIdents.add(clsName);
+      taintedIdents.add(clsName);
+    } else {
+      classDefs.push([clsName, baseArgs]);
+    }
+  }
+
+  const defHeaders = [];
+  const defRe = /\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let dm;
+  while ((dm = defRe.exec(masked)) !== null) {
+    defHeaders.push({ name: dm[1], index: dm.index });
+  }
+  const defReturns = [];
+  if (defHeaders.length > 0) {
+    const retRe = /\breturn\s+([^\n;#]+)/g;
+    let rm;
+    while ((rm = retRe.exec(masked)) !== null) {
+      let owner = null;
+      for (const dh of defHeaders) {
+        if (dh.index < rm.index) owner = dh.name;
+      }
+      if (owner) {
+        const retStart = rm.index + rm[0].length - rm[1].length;
+        defReturns.push([owner, code.slice(retStart, retStart + rm[1].length).trim()]);
+      }
+    }
+  }
+
+  const pairs = [];
+  const assignStmtRe = /(?:^|[\n;])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*|\s*=\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*=(?!=)\s*([^\n;#]+)/g;
+  let am;
+  while ((am = assignStmtRe.exec(masked)) !== null) {
+    const lhsRaw = am[1].trim();
+    const rhsStart = am.index + am[0].length - am[2].length;
+    const rhsRaw = code.slice(rhsStart, rhsStart + am[2].length).trim();
+    if (lhsRaw.includes(",")) {
+      const lhsNames = lhsRaw.split(",").map((s) => s.trim());
+      const rhsTuple = parseCallArguments(`(${stripBalancedOuterParens(rhsRaw)})`, 0);
+      if (rhsTuple && rhsTuple.length === lhsNames.length) {
+        for (let idx = 0; idx < lhsNames.length; idx += 1) {
+          pairs.push([lhsNames[idx], rhsTuple[idx]]);
+        }
+      } else {
+        for (const name of lhsNames) pairs.push([name, rhsRaw]);
+      }
+    } else {
+      for (const name of lhsRaw.split("=").map((s) => s.trim())) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) pairs.push([name, rhsRaw]);
+      }
+    }
+  }
+
+  const walrusRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([^,)\]\n;#]+)/g;
+  while ((am = walrusRe.exec(masked)) !== null) {
+    const rhsStart = am.index + am[0].length - am[2].length;
+    pairs.push([am[1], code.slice(rhsStart, rhsStart + am[2].length).trim()]);
+  }
+
+  const forLoopRe = /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^\n:#]+):/g;
+  const forPairs = [];
+  while ((am = forLoopRe.exec(masked)) !== null) {
+    const iterStart = am.index + am[0].length - 1 - am[2].length;
+    forPairs.push([am[1], code.slice(iterStart, iterStart + am[2].length).trim()]);
+  }
+
+  const symbols = {
+    pathClassIdents,
+    pathInstanceIdents,
+    pathClassReturningFuncs,
+    fsModuleReturningFuncs,
+    fsModuleIdents,
+    pathlibModuleIdents,
+    fsFuncAliases,
+    openAliases,
+    fsOpenAliases,
+    taintedIdents,
+  };
+  const maxPasses = pairs.length + classDefs.length + forPairs.length + defReturns.length + 8;
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const beforeSize =
+      pathClassIdents.size +
+      pathInstanceIdents.size +
+      pathClassReturningFuncs.size +
+      fsModuleReturningFuncs.size +
+      fsModuleIdents.size +
+      pathlibModuleIdents.size +
+      fsFuncAliases.size +
+      openAliases.size +
+      fsOpenAliases.size +
+      taintedIdents.size;
+    for (const [lhs, rhs] of pairs) {
+      if (isPythonFsModuleExpr(rhs, symbols)) {
+        fsModuleIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else if (isPythonPathlibModuleExpr(rhs, symbols)) {
+        pathlibModuleIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else if (isPythonPathClassExpr(rhs, symbols)) {
+        pathClassIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else {
+        const stripped = unwrapPythonExprParensAndWalrus(rhs);
+        const maskedStripped = maskPythonNonCodeStrings(stripped);
+        if (fsFuncAliases.has(stripped)) {
+          fsFuncAliases.set(lhs, fsFuncAliases.get(stripped));
+          taintedIdents.add(lhs);
+        } else if (openAliases.has(stripped)) {
+          openAliases.add(lhs);
+          taintedIdents.add(lhs);
+        } else if (fsOpenAliases.has(stripped)) {
+          fsOpenAliases.add(lhs);
+          taintedIdents.add(lhs);
+        } else if (isPythonPathCtorCallExpr(stripped, symbols) !== null || pathInstanceIdents.has(stripped)) {
+          pathInstanceIdents.add(lhs);
+          taintedIdents.add(lhs);
+        } else if (
+          taintedIdents.has(stripped) ||
+          receiverReferencesUnboundPathClass(stripped, symbols) ||
+          receiverReferencesFsModule(stripped, symbols) ||
+          /\b(?:__import__|import_module|globals|locals|vars|getattr|type)\s*\(|\b(?:__class__|__base__|__bases__|__mro__|__subclasses__|__dict__)\b|sys\s*\.\s*modules/.test(
+            maskedStripped,
+          )
+        ) {
+          taintedIdents.add(lhs);
+        }
+      }
+    }
+    for (const [fnName, retExpr] of defReturns) {
+      if (receiverReferencesUnboundPathClass(retExpr, symbols)) {
+        pathClassReturningFuncs.add(fnName);
+        taintedIdents.add(fnName);
+      }
+      if (receiverReferencesFsModule(retExpr, symbols)) {
+        fsModuleReturningFuncs.add(fnName);
+        taintedIdents.add(fnName);
+      }
+    }
+    for (const [clsName, baseArgs] of classDefs) {
+      for (const rawBase of baseArgs) {
+        const baseExpr = unwrapPythonExprParensAndWalrus(rawBase);
+        if (!baseExpr) continue;
+        if (
+          isPythonPathClassExpr(baseExpr, symbols) ||
+          isPythonPathlibModuleExpr(baseExpr, symbols)
+        ) {
+          pathClassIdents.add(clsName);
+          taintedIdents.add(clsName);
+          break;
+        }
+        const baseTokens = scanPythonTokensBefore(baseExpr, baseExpr.length);
+        if (
+          baseTokens.some(
+            (tok) =>
+              tok.kind === "ident" &&
+              (pathClassIdents.has(tok.text) || pathlibModuleIdents.has(tok.text)),
+          )
+        ) {
+          pathClassIdents.add(clsName);
+          taintedIdents.add(clsName);
+          break;
+        }
+      }
+    }
+    for (const [loopVar, iterExpr] of forPairs) {
+      const iterTokens = scanPythonTokensBefore(iterExpr, iterExpr.length);
+      for (const tok of iterTokens) {
+        if (tok.kind !== "ident") continue;
+        if (pathClassIdents.has(tok.text) || tok.text === "type" || tok.text === "__class__") {
+          pathClassIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        } else if (fsModuleIdents.has(tok.text)) {
+          fsModuleIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        } else if (pathlibModuleIdents.has(tok.text)) {
+          pathlibModuleIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        }
+      }
+    }
+    const afterSize =
+      pathClassIdents.size +
+      pathInstanceIdents.size +
+      pathClassReturningFuncs.size +
+      fsModuleReturningFuncs.size +
+      fsModuleIdents.size +
+      pathlibModuleIdents.size +
+      fsFuncAliases.size +
+      openAliases.size +
+      fsOpenAliases.size +
+      taintedIdents.size;
+    if (afterSize === beforeSize) break;
+  }
+
+  return symbols;
+}
+
+function isValidStrReplaceArgs(methodArgs) {
+  const effective =
+    methodArgs.length > 0 && methodArgs[methodArgs.length - 1] === ""
+      ? methodArgs.slice(0, -1)
+      : methodArgs;
+  if (effective.length !== 2 && effective.length !== 3) return false;
+  if (effective.some((a) => a.length === 0 || a.startsWith("*"))) return false;
+  const { positionals, kwargs } = splitPythonCallArgs(effective);
+  const kwKeys = Object.keys(kwargs);
+  if (kwKeys.length === 0) {
+    return positionals.length === 2 || positionals.length === 3;
+  }
+  return positionals.length === 2 && kwKeys.length === 1 && kwKeys[0] === "count";
+}
+
+function isSafeStrReplaceReceiver(rawExpr, symbols, depth = 0) {
+  if (depth > 6 || rawExpr === null) return false;
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return false;
+  if (isPythonPathClassExpr(expr, symbols) || isPythonFsModuleExpr(expr, symbols)) return false;
+  if (isSinglePyStringLiteralExpr(expr)) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
+    return !symbols.taintedIdents.has(expr);
+  }
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length < 2) return false;
+  const last = tokens[tokens.length - 1];
+  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return false;
+  const callArgs = parseCallArguments(expr, tokens[last.openTokenIdx].start);
+  if (!callArgs) return false;
+  if (last.openTokenIdx === 1 && tokens[0].kind === "ident") {
+    const fn = tokens[0].text;
+    return ["str", "repr", "chr", "format", "ascii"].includes(fn) && !symbols.taintedIdents.has(fn);
+  }
+  if (
+    last.openTokenIdx >= 3 &&
+    tokens[last.openTokenIdx - 1].kind === "ident" &&
+    tokens[last.openTokenIdx - 2].kind === "dot"
+  ) {
+    const methodName = tokens[last.openTokenIdx - 1].text;
+    const subRecv = stripBalancedOuterParens(expr.slice(0, tokens[last.openTokenIdx - 2].start));
+    if (!subRecv) return false;
+    if (methodName === "replace") {
+      return isValidStrReplaceArgs(callArgs) && isSafeStrReplaceReceiver(subRecv, symbols, depth + 1);
+    }
+    if (methodName === "get") {
+      if (subRecv === "os.environ" || subRecv === "posix.environ") return true;
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(subRecv) && !symbols.taintedIdents.has(subRecv);
+    }
+    if (methodName === "dumps" && subRecv === "json") return true;
+    if (PYTHON_STRING_RETURNING_METHODS.has(methodName)) {
+      return !isPythonPathClassExpr(subRecv, symbols) && !isPythonFsModuleExpr(subRecv, symbols);
+    }
+  }
+  return false;
+}
 
 function isVarBoundToVerifiedTmpRoot(varName, code) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return false;
@@ -2742,9 +4155,20 @@ function isSafeTmpTemplateOrJoin(expr, code, allowPath) {
   return false;
 }
 
-function unwrapPythonPathCtor(expr) {
-  const trimmed = String(expr || "").trim();
-  const m = trimmed.match(/^(?:pathlib\s*\.\s*)?Path\s*\(([\s\S]*)\)$/);
+function unwrapPythonPathCtor(expr, symbols = null) {
+  const trimmed = stripBalancedOuterParens(expr);
+  if (!trimmed) return "";
+  if (symbols) {
+    const ctorArgs = isPythonPathCtorCallExpr(trimmed, symbols);
+    if (ctorArgs) {
+      if (ctorArgs.length === 0) return trimmed;
+      if (ctorArgs.length === 1) return ctorArgs[0].trim();
+      return `os.path.join(${ctorArgs.join(", ")})`;
+    }
+  }
+  const m = trimmed.match(
+    /^(?:pathlib\s*\.\s*)?(?:Path|PurePath|PosixPath|WindowsPath|PurePosixPath|PureWindowsPath)\s*\(([\s\S]*)\)$/,
+  );
   if (!m) return trimmed;
   const args = parseCallArguments(`(${m[1]})`, 0);
   if (!args || args.length === 0) return trimmed;
@@ -3118,7 +4542,11 @@ function checkInlineNodeFs(code, allowPath, options = {}) {
 function splitPythonCallArgs(callArgs) {
   const positionals = [];
   const kwargs = {};
-  for (const arg of callArgs) {
+  const trimmed =
+    callArgs.length > 0 && callArgs[callArgs.length - 1] === ""
+      ? callArgs.slice(0, -1)
+      : callArgs;
+  for (const arg of trimmed) {
     const kwMatch = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*([\s\S]*)$/);
     if (kwMatch) {
       kwargs[kwMatch[1]] = kwMatch[2].trim();
@@ -3130,37 +4558,18 @@ function splitPythonCallArgs(callArgs) {
 }
 
 function hasDisallowedPythonAlias(code) {
-  if (
-    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/.test(
-      code,
-    ) ||
-    /(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|io\s*\.\s*)?open\b(?!\s*\()/.test(code)
-  ) {
-    return true;
-  }
-  const importRe = /\bimport\s+(?:os|posix|shutil)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+  const fromImportRe = /\bfrom\s+pathlib(?:\.[A-Za-z0-9_]+)?\s+import\s+([^\n;]+)/g;
   let im;
-  while ((im = importRe.exec(code)) !== null) {
-    const alias = im[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`\\b${alias}\\s*\\.\\s*${PYTHON_MUTATION_NAME_RE.source}`).test(code)) {
+  while ((im = fromImportRe.exec(code)) !== null) {
+    const clause = im[1];
+    if (/\bas\b/.test(clause) && PYTHON_MUTATION_NAME_RE.test(clause)) {
       return true;
     }
-  }
-  const fromImportRe = /\bfrom\s+(os|posix|shutil|pathlib)\s+import\s+([^\n;]+)/g;
-  while ((im = fromImportRe.exec(code)) !== null) {
-    const mod = im[1];
-    const clause = im[2];
-    if (!/\bas\b/.test(clause)) continue;
-    if (mod === "pathlib") {
-      if (PYTHON_MUTATION_NAME_RE.test(clause)) return true;
-      continue;
-    }
-    if (PYTHON_MUTATION_NAME_RE.test(clause)) return true;
   }
   return false;
 }
 
-function checkInlinePythonFs(code, allowPath, options = {}) {
+function checkInlinePythonFs(rawCode, allowPath, options = {}) {
   const {
     allowDynamicPaths = false,
     roleLabel = "read-only ro-* workers",
@@ -3168,12 +4577,25 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     registerReadOnlyMkdir = null,
   } = options;
 
-  if (!allowDynamicPaths && hasDisallowedPythonAlias(code)) {
+  const code = normalizeInlinePythonCode(rawCode);
+  const maskedCode = maskPythonNonCodeStrings(code);
+
+  if (PYTHON_REFLECTION_IDENT_RE.test(maskedCode) || PYTHON_EVAL_EXEC_RE.test(maskedCode)) {
+    return `Dynamic Python reflection or attribute dispatch in inline Python script is blocked for ${roleLabel}.`;
+  }
+
+  if (PYTHON_UNBOUND_MUTATION_ATTR_RE.test(maskedCode) || PYTHON_UNBOUND_OPEN_RE.test(maskedCode)) {
     return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
   }
 
+  if (!allowDynamicPaths && hasDisallowedPythonAlias(maskedCode)) {
+    return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
+  }
+
+  const pySymbols = collectPythonSymbolBindings(code, maskedCode);
+
   const checkPyPathArg = (argExpr, opts) => {
-    const rawExpr = unwrapPythonPathCtor(argExpr || "");
+    const rawExpr = unwrapPythonPathCtor(argExpr || "", pySymbols);
     const lit = parseStaticPyString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
@@ -3195,61 +4617,211 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     return allowDynamicPaths;
   };
 
-  const resolvePythonPathReceiverArg = (prefixStr) => {
-    const ctorMatch = prefixStr.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
-    if (ctorMatch) {
-      const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
-      if (!ctorArgs || ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
+  const resolvePythonPathReceiverArg = (rawRecv) => {
+    if (rawRecv === null) return { valid: false, found: true, expr: null };
+    const recvExpr = unwrapPythonExprParensAndWalrus(rawRecv);
+    const ctorArgs = isPythonPathCtorCallExpr(recvExpr, pySymbols);
+    if (ctorArgs !== null) {
+      if (ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
       return { valid: true, found: true, expr: ctorArgs[0] };
     }
-    const varMatch = prefixStr.match(/(?:^|[^\w.])([A-Za-z_][A-Za-z0-9_]*)\s*$/);
-    if (varMatch) {
-      const varEsc = varMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const assignRe = new RegExp(
-        `(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*(?:pathlib\\s*\\.\\s*)?Path\\s*\\(\\s*([^()]*)\\s*\\)`,
-        "g",
-      );
-      let lastBody = null;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(recvExpr)) {
+      const varEsc = recvExpr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const assignRe = new RegExp(`(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*([^\\n;#]+)`, "g");
+      let lastRhs = null;
       let am;
       while ((am = assignRe.exec(code)) !== null) {
-        lastBody = am[1];
+        lastRhs = am[1].trim();
       }
-      if (lastBody !== null) {
-        const boundArgs = parseCallArguments(`(${lastBody})`, 0);
-        if (boundArgs && boundArgs.length === 1) {
-          return { valid: true, found: true, expr: boundArgs[0] };
+      if (lastRhs !== null) {
+        const boundCtorArgs = isPythonPathCtorCallExpr(lastRhs, pySymbols);
+        if (boundCtorArgs !== null && boundCtorArgs.length === 1) {
+          return { valid: true, found: true, expr: boundCtorArgs[0] };
         }
       }
     }
     return { valid: true, found: false, expr: null };
   };
 
+  const validateOsShutilCall = (fnName, qualifier, callArgs) => {
+    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
+    if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
+      if (!qualifier && !/\bshutil\b/.test(maskedCode)) return null;
+      const srcExpr = positionals[0] ?? kwargs.src ?? "";
+      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
+      const isCopyTree = fnName === "copytree";
+      const srcVal = !isCopyTree ? resolveStaticArgValue(srcExpr, code, true) : null;
+      const srcOkForRoArtifact =
+        !isCopyTree &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
+      const allowImgDir = srcOkForRoArtifact && (fnName === "copy" || fnName === "copy2");
+      if (
+        !dstExpr ||
+        !checkPyPathArg(dstExpr, {
+          allowRootEqual: true,
+          allowDevNull: true,
+          allowArtifactDir: allowImgDir,
+          allowArtifactRoot: allowImgDir,
+          forbidReadOnlyArtifact: isCopyTree || !srcOkForRoArtifact,
+        })
+      ) {
+        return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
+      }
+      return null;
+    }
+    if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
+      const srcExpr = positionals[0] ?? kwargs.src ?? "";
+      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
+      const isSymlink = fnName === "symlink";
+      const isLink = isSymlink || fnName === "link";
+      const srcVal = !isLink ? resolveStaticArgValue(srcExpr, code, true) : null;
+      const dstVal = isSymlink ? resolveStaticArgValue(dstExpr, code, true) : null;
+      const symlinkBaseDir =
+        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
+      const srcOkForRoArtifact =
+        !isLink &&
+        (allowReadOnlyArtifactCopySource
+          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
+          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
+      const allowMoveDir = srcOkForRoArtifact && fnName === "move";
+      if (
+        !srcExpr ||
+        !dstExpr ||
+        !checkPyPathArg(srcExpr, {
+          allowRootEqual: false,
+          allowDevNull: false,
+          forbidReadOnlyArtifact: isLink,
+          disallowArtifactRoot: isLink,
+          customBaseDir: symlinkBaseDir,
+        }) ||
+        !checkPyPathArg(dstExpr, {
+          allowRootEqual: fnName === "move",
+          allowDevNull: false,
+          allowArtifactDir: allowMoveDir,
+          allowArtifactRoot: allowMoveDir,
+          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
+          disallowArtifactRoot: isLink || fnName !== "move",
+        })
+      ) {
+        return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
+      }
+      return null;
+    }
+    const singleExpr = positionals[0] ?? kwargs.path ?? kwargs.name ?? "";
+    const isMkdir = fnName === "mkdir" || fnName === "makedirs";
+    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "lchmod", "chown"].includes(fnName);
+    if (
+      !singleExpr ||
+      !checkPyPathArg(singleExpr, {
+        allowRootEqual: isMkdir,
+        allowDevNull: false,
+        allowArtifactDir: isMkdir,
+        requireArtifactDir: isMkdir,
+        allowArtifactRoot: isMkdir,
+        forbidReadOnlyArtifact: forbidRo,
+      })
+    ) {
+      return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
+    }
+    if (isMkdir && registerReadOnlyMkdir) {
+      const mkdirVal =
+        resolveStaticArgValue(singleExpr, code, true) ??
+        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(singleExpr, pySymbols), code, true);
+      if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
+    }
+    return null;
+  };
+
+  const validatePyOpenArgs = (openArgs) => {
+    const { positionals, kwargs } = splitPythonCallArgs(openArgs);
+    const modeExpr = positionals[1] ?? kwargs.mode ?? null;
+    if (modeExpr === null) return null;
+    const modeLit = parseStaticPyString(modeExpr);
+    if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
+      return null;
+    }
+    const pathExpr = positionals[0] ?? kwargs.file ?? "";
+    if (!checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
+      return `Inline Python open() for write outside allowed roots is blocked for ${roleLabel}.`;
+    }
+    return null;
+  };
+
   if (registerReadOnlyMkdir) {
     const preMkdirRe = /(?:(?:os|posix)\s*\.\s*|\b)(?:mkdir|makedirs)\s*\(/g;
     let pm;
-    while ((pm = preMkdirRe.exec(code)) !== null) {
+    while ((pm = preMkdirRe.exec(maskedCode)) !== null) {
       const mArgs = parseCallArguments(code, pm.index + pm[0].length - 1);
       if (!mArgs) continue;
       const { positionals: pPos, kwargs: pKw } = splitPythonCallArgs(mArgs);
       const dExpr = pPos[0] ?? pKw.path ?? pKw.name ?? "";
       const dVal =
         resolveStaticArgValue(dExpr, code, true) ??
-        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr), code, true);
+        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr, pySymbols), code, true);
       if (dVal) registerReadOnlyMkdir(dVal);
+    }
+    for (const [alias, entry] of pySymbols.fsFuncAliases.entries()) {
+      if (entry.fnName !== "mkdir" && entry.fnName !== "makedirs") continue;
+      const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const aliasCallRe = new RegExp(`(?:^|[^\\w.])${aliasEsc}\\s*\\(`, "g");
+      while ((pm = aliasCallRe.exec(maskedCode)) !== null) {
+        const mArgs = parseCallArguments(code, pm.index + pm[0].length - 1);
+        if (!mArgs) continue;
+        const { positionals: pPos, kwargs: pKw } = splitPythonCallArgs(mArgs);
+        const dExpr = pPos[0] ?? pKw.path ?? pKw.name ?? "";
+        const dVal =
+          resolveStaticArgValue(dExpr, code, true) ??
+          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr, pySymbols), code, true);
+        if (dVal) registerReadOnlyMkdir(dVal);
+      }
     }
   }
 
   const pathMethodRe =
     /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|open)\s*\(/g;
   let match;
-  while ((match = pathMethodRe.exec(code)) !== null) {
+  while ((match = pathMethodRe.exec(maskedCode)) !== null) {
     const method = match[1];
     const openParenIdx = match.index + match[0].length - 1;
     const methodArgs = parseCallArguments(code, openParenIdx);
     if (!methodArgs) {
       return `Unparseable .${method}() call in inline Python script is blocked for ${roleLabel}.`;
     }
+    const rawRecv = extractPythonReceiverBeforeDot(code, match.index);
+    if (rawRecv === null) {
+      return `Unparseable .${method}() receiver in inline Python script is blocked for ${roleLabel}.`;
+    }
+    if (receiverReferencesUnboundPathClass(rawRecv, pySymbols)) {
+      return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+    }
+    if (PYTHON_OS_SHUTIL_FN_NAMES.has(method) && isPythonFsModuleExpr(rawRecv, pySymbols)) {
+      continue;
+    }
+    if (receiverReferencesFsModule(rawRecv, pySymbols)) {
+      return `Wrapped filesystem module .${method}() call in inline Python script is blocked for ${roleLabel}.`;
+    }
     if (method === "open") {
+      const recvTrimmed = unwrapPythonExprParensAndWalrus(rawRecv);
+      if (
+        recvTrimmed === "io" ||
+        recvTrimmed === "_io" ||
+        recvTrimmed === "builtins" ||
+        recvTrimmed === "codecs"
+      ) {
+        const openDeny = validatePyOpenArgs(methodArgs);
+        if (openDeny) return openDeny;
+        continue;
+      }
+      if (isPythonFsModuleExpr(rawRecv, pySymbols)) {
+        const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
+        const pathExpr = positionals[0] ?? kwargs.path ?? "";
+        if (!pathExpr || !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
+          return `Inline Python os.open() outside allowed roots is blocked for ${roleLabel}.`;
+        }
+        continue;
+      }
       const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
       const modeExpr = positionals[0] ?? kwargs.mode ?? null;
       if (modeExpr === null) continue;
@@ -3258,8 +4830,32 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
         continue;
       }
     }
-    const prefix = code.slice(0, match.index);
-    const recv = resolvePythonPathReceiverArg(prefix);
+    if (
+      method === "replace" &&
+      isValidStrReplaceArgs(methodArgs) &&
+      isSafeStrReplaceReceiver(rawRecv, pySymbols)
+    ) {
+      continue;
+    }
+    if (
+      ["write_text", "write_bytes", "unlink", "rmdir", "mkdir", "touch", "chmod", "lchmod"].includes(
+        method,
+      )
+    ) {
+      const { positionals: uPos, kwargs: uKw } = splitPythonCallArgs(methodArgs);
+      const selfCandidate = uPos[0] ?? uKw.self ?? null;
+      if (selfCandidate !== null) {
+        const trimmedSelf = unwrapPythonExprParensAndWalrus(selfCandidate);
+        if (
+          isPythonPathCtorCallExpr(trimmedSelf, pySymbols) !== null ||
+          pySymbols.pathInstanceIdents.has(trimmedSelf) ||
+          resolvePythonPathReceiverArg(trimmedSelf).found
+        ) {
+          return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+        }
+      }
+    }
+    const recv = resolvePythonPathReceiverArg(rawRecv);
     const isMkdir = method === "mkdir";
     const isLinkMethod =
       method === "symlink_to" || method === "hardlink_to" || method === "link_to";
@@ -3288,7 +4884,7 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       if (isMkdir && registerReadOnlyMkdir) {
         const mkdirVal =
           resolveStaticArgValue(recv.expr, code, true) ??
-          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(recv.expr), code, true);
+          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(recv.expr, pySymbols), code, true);
         if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
       }
     } else if (!allowDynamicPaths) {
@@ -3297,6 +4893,9 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
 
     if (isLinkMethod) {
       const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
+      if (mPos.length >= 2 || Object.hasOwn(mKw, "self")) {
+        return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+      }
       const targetExpr = mPos[0] ?? mKw.target ?? "";
       const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
       const symlinkBaseDir =
@@ -3317,18 +4916,37 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       }
     } else if (method === "rename" || method === "replace") {
       const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
-      const targetExpr = mPos[0] ?? mKw.target ?? "";
-      const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
+      const isTwoArgCall = mPos.length >= 2 || (mPos.length === 1 && Object.hasOwn(mKw, "target"));
+      const srcArgExpr = isTwoArgCall ? mPos[0] : null;
+      const targetExpr = isTwoArgCall ? (mPos[1] ?? mKw.target ?? "") : (mPos[0] ?? mKw.target ?? "");
+      const recvVal = srcArgExpr
+        ? resolveStaticArgValue(srcArgExpr, code, true)
+        : recv.found
+          ? resolveStaticArgValue(recv.expr, code, true)
+          : null;
       const srcOkForRoArtifact = allowReadOnlyArtifactCopySource
         ? Boolean(recvVal && allowReadOnlyArtifactCopySource(recvVal))
         : Boolean(recvVal && /\.(?:png|jpe?g|webp)$/i.test(recvVal));
       if (
-        !targetExpr ||
-        !checkPyPathArg(targetExpr, {
-          allowRootEqual: true,
+        srcArgExpr !== null &&
+        !checkPyPathArg(srcArgExpr, {
+          allowRootEqual: false,
           allowDevNull: false,
           allowArtifactDir: false,
           allowArtifactRoot: false,
+          disallowArtifactRoot: true,
+        })
+      ) {
+        return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
+      }
+      if (
+        !targetExpr ||
+        !checkPyPathArg(targetExpr, {
+          allowRootEqual: false,
+          allowDevNull: false,
+          allowArtifactDir: false,
+          allowArtifactRoot: false,
+          disallowArtifactRoot: true,
           forbidReadOnlyArtifact: !srcOkForRoArtifact,
         })
       ) {
@@ -3337,132 +4955,121 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     }
   }
 
-  const openRe = /(?:^|[^\w.])(?:io\s*\.\s*|builtins\s*\.\s*)?open\s*\(/g;
-  while ((match = openRe.exec(code)) !== null) {
+  const openRe = /(?:^|[^\w.])(?:_?io\s*\.\s*|builtins\s*\.\s*|codecs\s*\.\s*)?open\s*\(/g;
+  while ((match = openRe.exec(maskedCode)) !== null) {
     const openParenIdx = match.index + match[0].length - 1;
     const openArgs = parseCallArguments(code, openParenIdx);
     if (!openArgs) {
       return `Unparseable open() call in inline Python script is blocked for ${roleLabel}.`;
     }
-    const { positionals, kwargs } = splitPythonCallArgs(openArgs);
-    const modeExpr = positionals[1] ?? kwargs.mode ?? null;
-    if (modeExpr === null) continue;
-    const modeLit = parseStaticPyString(modeExpr);
-    if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
-      continue;
-    }
-    const pathExpr = positionals[0] ?? kwargs.file ?? "";
-    if (!checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
-      return `Inline Python open() for write outside allowed roots is blocked for ${roleLabel}.`;
-    }
+    const openDeny = validatePyOpenArgs(openArgs);
+    if (openDeny) return openDeny;
   }
 
-  const hasFsImport = /\b(?:os|posix|shutil)\b/.test(code);
+  const hasFsImport = /\b(?:os|posix|shutil)\b/.test(maskedCode);
   const osShutilRe =
-    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
-  while ((match = osShutilRe.exec(code)) !== null) {
-    const qualifier = match[1] || "";
+    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
+  while ((match = osShutilRe.exec(maskedCode)) !== null) {
+    let qualifier = match[1] || "";
     const fnName = match[2];
-    const beforeChar = match.index > 0 ? code[match.index - 1] : "";
-    if (!qualifier && (beforeChar === "." || !hasFsImport)) {
-      continue;
+    if (!qualifier) {
+      const dotMatch = maskedCode.slice(0, match.index).match(/\.\s*$/);
+      if (dotMatch) {
+        const memberRecv = extractPythonReceiverBeforeDot(code, match.index - dotMatch[0].length);
+        if (!isPythonFsModuleExpr(memberRecv, pySymbols)) {
+          if (receiverReferencesFsModule(memberRecv, pySymbols)) {
+            return `Wrapped filesystem module .${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
+          }
+          continue;
+        }
+        qualifier = "fs_alias";
+      } else if (!hasFsImport) {
+        continue;
+      }
     }
     const openParenIdx = match.index + match[0].length - 1;
     const callArgs = parseCallArguments(code, openParenIdx);
     if (!callArgs) {
       return `Unparseable ${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
     }
-    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
-    if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
-      if (!qualifier && !/\bshutil\b/.test(code)) continue;
-      const srcExpr = positionals[0] ?? kwargs.src ?? "";
-      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
-      const isCopyTree = fnName === "copytree";
-      const srcVal = !isCopyTree ? resolveStaticArgValue(srcExpr, code, true) : null;
-      const srcOkForRoArtifact =
-        !isCopyTree &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      const allowImgDir = srcOkForRoArtifact && (fnName === "copy" || fnName === "copy2");
-      if (
-        !dstExpr ||
-        !checkPyPathArg(dstExpr, {
-          allowRootEqual: true,
-          allowDevNull: true,
-          allowArtifactDir: allowImgDir,
-          allowArtifactRoot: allowImgDir,
-          forbidReadOnlyArtifact: isCopyTree || !srcOkForRoArtifact,
-        })
-      ) {
-        return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
+    const callDeny = validateOsShutilCall(fnName, qualifier, callArgs);
+    if (callDeny) return callDeny;
+  }
+
+  if (
+    pySymbols.fsFuncAliases.size > 0 ||
+    pySymbols.openAliases.size > 0 ||
+    pySymbols.fsOpenAliases.size > 0
+  ) {
+    const bodyMasked = maskedCode
+      .replace(/\bfrom\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+[^\n;]+/g, (s) => " ".repeat(s.length))
+      .replace(/(?:^|[\n;])\s*import\s+[^\n;]+/g, (s) =>
+        s.replace(/[^\n]/g, " "),
+      );
+
+    const checkAliasUsages = (alias, validateCallFn, fnLabel) => {
+      const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const refRe = new RegExp(`(?:^|[^\\w.])(${aliasEsc})\\b`, "g");
+      let rm;
+      while ((rm = refRe.exec(bodyMasked)) !== null) {
+        const aliasEnd = rm.index + rm[0].length;
+        const aliasStart = aliasEnd - rm[1].length;
+        const beforeTrimmed = bodyMasked.slice(0, aliasStart).trimEnd();
+        if (beforeTrimmed.endsWith(".")) continue;
+        const afterAlias = bodyMasked.slice(aliasEnd);
+        const callMatch = afterAlias.match(/^\s*\(/);
+        if (callMatch) {
+          const openParenIdx = aliasEnd + callMatch[0].length - 1;
+          const callArgs = parseCallArguments(code, openParenIdx);
+          if (!callArgs) {
+            return `Unparseable ${fnLabel}() call in inline Python script is blocked for ${roleLabel}.`;
+          }
+          const deny = validateCallFn(callArgs);
+          if (deny) return deny;
+          continue;
+        }
+        const isSimpleAssignRhs =
+          /(?:^|[\n;])\s*[A-Za-z_][A-Za-z0-9_]*\s*=$/.test(beforeTrimmed) &&
+          /^\s*(?:$|[\n;])/.test(afterAlias);
+        const isSimpleAssignLhs =
+          /(?:^|[\n;])$/.test(beforeTrimmed) && /^\s*=(?!=)/.test(afterAlias);
+        if (isSimpleAssignRhs || isSimpleAssignLhs) continue;
+        return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
       }
-      continue;
+      return null;
+    };
+
+    for (const [alias, entry] of pySymbols.fsFuncAliases.entries()) {
+      const deny = checkAliasUsages(
+        alias,
+        (callArgs) => validateOsShutilCall(entry.fnName, entry.mod, callArgs),
+        entry.fnName,
+      );
+      if (deny) return deny;
     }
-    if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
-      const srcExpr = positionals[0] ?? kwargs.src ?? "";
-      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
-      const isSymlink = fnName === "symlink";
-      const isLink = isSymlink || fnName === "link";
-      const srcVal = !isLink ? resolveStaticArgValue(srcExpr, code, true) : null;
-      const dstVal = isSymlink ? resolveStaticArgValue(dstExpr, code, true) : null;
-      const symlinkBaseDir =
-        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
-      const srcOkForRoArtifact =
-        !isLink &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      const allowMoveDir = srcOkForRoArtifact && fnName === "move";
-      if (
-        !srcExpr ||
-        !dstExpr ||
-        !checkPyPathArg(srcExpr, {
-          allowRootEqual: false,
-          allowDevNull: false,
-          forbidReadOnlyArtifact: isLink,
-          disallowArtifactRoot: isLink,
-          customBaseDir: symlinkBaseDir,
-        }) ||
-        !checkPyPathArg(dstExpr, {
-          allowRootEqual: true,
-          allowDevNull: false,
-          allowArtifactDir: allowMoveDir,
-          allowArtifactRoot: allowMoveDir,
-          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
-          disallowArtifactRoot: isLink,
-        })
-      ) {
-        return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      continue;
+    for (const alias of pySymbols.openAliases) {
+      const deny = checkAliasUsages(alias, validatePyOpenArgs, "open");
+      if (deny) return deny;
     }
-    const singleExpr = positionals[0] ?? kwargs.path ?? kwargs.name ?? "";
-    const isMkdir = fnName === "mkdir" || fnName === "makedirs";
-    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "chown"].includes(fnName);
-    if (
-      !singleExpr ||
-      !checkPyPathArg(singleExpr, {
-        allowRootEqual: isMkdir,
-        allowDevNull: false,
-        allowArtifactDir: isMkdir,
-        requireArtifactDir: isMkdir,
-        allowArtifactRoot: isMkdir,
-        forbidReadOnlyArtifact: forbidRo,
-      })
-    ) {
-      return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
-    }
-    if (isMkdir && registerReadOnlyMkdir) {
-      const mkdirVal =
-        resolveStaticArgValue(singleExpr, code, true) ??
-        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(singleExpr), code, true);
-      if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
+    for (const alias of pySymbols.fsOpenAliases) {
+      const deny = checkAliasUsages(
+        alias,
+        (callArgs) => {
+          const { positionals, kwargs } = splitPythonCallArgs(callArgs);
+          const pathExpr = positionals[0] ?? kwargs.path ?? "";
+          if (!pathExpr || !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
+            return `Inline Python os.open() outside allowed roots is blocked for ${roleLabel}.`;
+          }
+          return null;
+        },
+        "open",
+      );
+      if (deny) return deny;
     }
   }
 
   const screenshotRe = /\.\s*screenshot\s*\(/g;
-  while ((match = screenshotRe.exec(code)) !== null) {
+  while ((match = screenshotRe.exec(maskedCode)) !== null) {
     const openParenIdx = match.index + match[0].length - 1;
     const callArgs = parseCallArguments(code, openParenIdx);
     if (!callArgs) {

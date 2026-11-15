@@ -1,6 +1,11 @@
 ---
 name: verify-gen
-description: "Create or maintain project-local behavioral E2E verification skills and formal property or state-machine verification skills. Supports default behavioral generation, --formal invariant checking (TLA+, PBT, SMT, statecharts), and --maintain diff-driven drift upkeep."
+description: >-
+  Create or maintain project-local behavioral E2E verification skills and formal
+  property or state-machine verification skills. Supports default behavioral
+  generation, --formal invariant checking (TLA+, PBT, SMT, statecharts), and
+  --maintain diff-driven drift upkeep. Use for /agy-pstack-next:verify-gen,
+  /verify-gen, generating E2E verification skills, or maintaining formal checks.
 ---
 
 # Generate and Maintain Verification Skills

@@ -8,16 +8,6 @@
   },
   "homepage": "https://github.com/pstack-ports/agy-pstack-next",
   "repository": "https://github.com/pstack-ports/agy-pstack-next",
-  "license": "MIT",
-  "keywords": [
-    "pstack",
-    "swarm",
-    "workflow",
-    "hooks",
-    "verification",
-    "crucible",
-    "interrogate"
-  ],
   "logo": "assets/logo.png",
   "suggestedPrompts": [
     "/agy-pstack-next:setup-pstack configure per-role swarm models, global guard hooks, and autonomy gates",

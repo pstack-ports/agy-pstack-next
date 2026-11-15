@@ -30,7 +30,12 @@ directly, and post cited evidence on the swarm message board.
   trackers, docs, team chat, observability, error tracking, and analytics
   warehouses, and use native swarm tools (`swarm` including `add` for read-only
   helpers and `model` for quota hot-swap, `post_message`, `read_board`,
-  `swarm_wait`, `schedule`, and `manage_task`). Alongside canonical temp roots,
+  `swarm_wait`, `schedule`, and `manage_task`). When spawning read-only helpers
+  via `swarm` `add`, apply the matching prefix model from `pstack-models.md` in
+  `<user_rules>` when present and not `inherit` (picking the first live entry on
+  comma-separated lists for a single helper or cycling live entries in order
+  across parallel helpers), or omit `model` to inherit your parent model.
+  Alongside canonical temp roots,
   the guard permits writing or copying screenshot image files (`.png`, `.jpg`,
   `.jpeg`, `.webp`) and screenshot subdirectories inside your own conversation
   artifact directory (`<appDataDir>/brain/<conversation-id>/`) outside

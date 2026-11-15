@@ -1,6 +1,10 @@
 ---
 name: control-ui
-description: "Build or adapt an isolated local browser or CDP harness to drive and inspect a web, IDE, or Electron UI. Use for UI verification, screenshots, ARIA snapshots, perf profiles, visual parity diffs, or reproducing UI bugs across parallel swarm workers."
+description: >-
+  Build or adapt an isolated local browser or CDP harness to drive and inspect a
+  web, IDE, or Electron UI. Use for /agy-pstack-next:control-ui, /control-ui, UI
+  verification, screenshots, ARIA snapshots, perf profiles, visual parity diffs,
+  or reproducing UI bugs across parallel swarm workers.
 ---
 
 # Control UI

@@ -1,6 +1,11 @@
 ---
 name: statechart
-description: "Check a TLA+ model of a stateful flow, protocol, or service with TLC and render it as a Mermaid statechart in user terms. Marks every state that breaks an invariant and gives the shortest path to each bug. Pairs with /pstack, /crucible, /interrogate, and /verify-gen --formal."
+description: >-
+  Check a TLA+ model of a stateful flow, protocol, or service with TLC and
+  render it as a Mermaid statechart in user terms. Marks every state that breaks
+  an invariant and gives the shortest path to each bug. Use for
+  /agy-pstack-next:statechart, /statechart, or formal state modeling paired with
+  /pstack, /crucible, /interrogate, and /verify-gen --formal.
 ---
 
 # Statechart

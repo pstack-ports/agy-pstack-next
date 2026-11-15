@@ -1,6 +1,10 @@
 ---
 name: make-bot-ui
-description: "Build a custom web page or dashboard whose buttons wake an Antigravity agent over agy agentapi or an external webhook, with server-side secret isolation and optional Tailscale exposure."
+description: >-
+  Build a custom web page or dashboard whose buttons wake an Antigravity agent
+  over agy agentapi or an external webhook, with server-side secret isolation
+  and optional Tailscale exposure. Use for /agy-pstack-next:make-bot-ui,
+  /make-bot-ui, or building an agent-waking control page.
 ---
 
 # How to Make a Bot UI

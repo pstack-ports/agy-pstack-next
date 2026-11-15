@@ -38,7 +38,7 @@ Order candidate hypotheses by the seven performance levers, cheapest and safest 
 
 ### Parallel candidate execution (`cand-*`, `workspace: "share"`)
 
-- Spawn `2` to `4` parallel `cand-*` workers (`cand-1`, `cand-2`, `cand-3`, `workspace: "share"`) when orthogonal mechanisms target the bottleneck.
+- Spawn `2` to `4` parallel `cand-*` workers (`cand-1`, `cand-2`, `cand-3`, `workspace: "share"`) when orthogonal mechanisms target the bottleneck, or a single `cand-1` worker for one targeted fix. When `pstack-models.md` in `<user_rules>` configures a comma-separated model list for `cand-*`, pick the first live entry for a single-worker `cand-*` spawn and cycle live entries in order across parallel `cand-*` spawns (or omit `model` when unset or `inherit`).
 - Give each `cand-*` **one falsifiable mechanism** ("pre-index node IDs in a `Map` to eliminate O(N) scan in `resolveEdges`"), the frozen benchmark command, the behavioral test command, and strict instructions never to edit the benchmark harness or bundle unrelated tweaks.
 - Each `cand-*` commits its minimal change cleanly in its `share` worktree, runs a sanity check, and posts its commit SHA, `pwd` worktree path, and observed numbers to the board (`#seq`).
 

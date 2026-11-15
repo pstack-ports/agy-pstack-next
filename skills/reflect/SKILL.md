@@ -7,8 +7,8 @@ description: >-
   ro-judgment, ro-tooling, and ro-divergent reviewers, then dispatches
   impl-sharpen (workspace: "share") to encode approved fixes structurally in
   architecture, types, linters, hooks/guard.mjs, tests, role capsules, or
-  skills. Use for /reflect, "reflect on this session", "stop repeating this
-  mistake", "correct", or "sharpen this prompt".
+  skills. Use for /agy-pstack-next:reflect, /reflect, "reflect on this session",
+  "stop repeating this mistake", "correct", or "sharpen this prompt".
 ---
 
 # Reflect

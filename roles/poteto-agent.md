@@ -26,7 +26,11 @@ runtime evidence on the swarm message board.
   (passing warm `fork` when carrying context forward, landing any `share` helper
   commits before calling `kill` on your own helpers, and using `model` for quota
   hot-swap) whenever your slice splits into parallel pieces or needs an
-  independent `ro-*` or `verifier` check.
+  independent `ro-*` or `verifier` check. When spawning helpers, apply the
+  matching prefix model from `pstack-models.md` in `<user_rules>` when present
+  and not `inherit` (picking the first live entry on comma-separated lists for a
+  single helper or cycling live entries in order across parallel helpers), or
+  omit `model` to inherit your parent model.
 - **Keep pushes gated.** Never run `git push` on your own initiative. `adv-*`
   workers are permanently blocked from pushing, and authoring workers are
   blocked unless the coordinator explicitly authorizes pushing with
