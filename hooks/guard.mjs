@@ -2679,7 +2679,545 @@ const NODE_MUTATION_NAME_RE =
   /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b/;
 
 const PYTHON_MUTATION_NAME_RE =
-  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|lchmod|symlink_to|hardlink_to|link_to)\b/;
+  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|symlink_to|hardlink_to|link_to)\b/;
+
+const PYTHON_PATH_CLASS_NAMES = new Set([
+  "Path",
+  "PurePath",
+  "PosixPath",
+  "WindowsPath",
+  "PurePosixPath",
+  "PureWindowsPath",
+]);
+
+const PYTHON_FS_MODULE_NAMES = new Set(["os", "posix", "shutil"]);
+
+const PYTHON_OS_SHUTIL_FN_NAMES = new Set([
+  "remove",
+  "unlink",
+  "rmdir",
+  "removedirs",
+  "mkdir",
+  "makedirs",
+  "chmod",
+  "lchmod",
+  "chown",
+  "truncate",
+  "rename",
+  "renames",
+  "replace",
+  "rmtree",
+  "move",
+  "copy",
+  "copy2",
+  "copyfile",
+  "copytree",
+  "symlink",
+  "link",
+]);
+
+const PYTHON_STRING_RETURNING_METHODS = new Set([
+  "read_text",
+  "read",
+  "readline",
+  "strip",
+  "lstrip",
+  "rstrip",
+  "lower",
+  "upper",
+  "casefold",
+  "title",
+  "capitalize",
+  "swapcase",
+  "decode",
+  "format",
+  "format_map",
+  "join",
+  "removeprefix",
+  "removesuffix",
+  "expandtabs",
+  "zfill",
+  "center",
+  "ljust",
+  "rjust",
+  "translate",
+]);
+
+const PYTHON_STATEMENT_KEYWORDS = new Set([
+  "and",
+  "as",
+  "assert",
+  "await",
+  "case",
+  "del",
+  "elif",
+  "else",
+  "for",
+  "from",
+  "if",
+  "import",
+  "in",
+  "is",
+  "lambda",
+  "not",
+  "or",
+  "raise",
+  "return",
+  "while",
+  "with",
+  "yield",
+]);
+
+function findMatchingCloseForward(str, openIdx) {
+  let depth = 0;
+  let quote = null;
+  let i = openIdx;
+  while (i < str.length) {
+    const ch = str[i];
+    if (quote) {
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (quote.length === 3) {
+        if (str.slice(i, i + 3) === quote) {
+          quote = null;
+          i += 3;
+          continue;
+        }
+      } else if (ch === quote) {
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+    if (str.slice(i, i + 3) === "'''" || str.slice(i, i + 3) === '"""') {
+      quote = str.slice(i, i + 3);
+      i += 3;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+function stripBalancedOuterParens(expr) {
+  let cur = String(expr || "").trim();
+  while (cur.startsWith("(") && cur.endsWith(")")) {
+    if (findMatchingCloseForward(cur, 0) !== cur.length - 1) break;
+    cur = cur.slice(1, -1).trim();
+  }
+  return cur;
+}
+
+function scanPythonTokensBefore(code, limitIdx) {
+  const tokens = [];
+  const openStack = [];
+  let i = 0;
+  const end = Math.min(limitIdx, code.length);
+  while (i < end) {
+    const ch = code[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "#") {
+      while (i < end && code[i] !== "\n") i += 1;
+      continue;
+    }
+    const strPrefix = code.slice(i, Math.min(end, i + 5)).match(/^([rRbBuUfF]{0,2})('''|"""|'|"|`)/);
+    if (strPrefix) {
+      const start = i;
+      const q = strPrefix[2];
+      i += strPrefix[0].length;
+      while (i < end) {
+        if (code[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (q.length === 3) {
+          if (code.slice(i, i + 3) === q) {
+            i += 3;
+            break;
+          }
+        } else if (code[i] === q) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      tokens.push({ kind: "string", start, end: Math.min(i, end) });
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      const start = i;
+      while (i < end && /[A-Za-z0-9_]/.test(code[i])) i += 1;
+      tokens.push({ kind: "ident", start, end: i, text: code.slice(start, i) });
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      const idx = tokens.length;
+      tokens.push({ kind: "open", start: i, end: i + 1, ch });
+      openStack.push(idx);
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      const openTokenIdx = openStack.length > 0 ? openStack.pop() : -1;
+      tokens.push({ kind: "close", start: i, end: i + 1, ch, openTokenIdx });
+      i += 1;
+      continue;
+    }
+    if (ch === ".") {
+      tokens.push({ kind: "dot", start: i, end: i + 1 });
+      i += 1;
+      continue;
+    }
+    tokens.push({ kind: "other", start: i, end: i + 1, ch });
+    i += 1;
+  }
+  return tokens;
+}
+
+function extractPythonReceiverBeforeDot(code, dotIdx) {
+  const tokens = scanPythonTokensBefore(code, dotIdx);
+  if (tokens.length === 0) return "";
+  let cur = tokens.length - 1;
+  const endCharIdx = tokens[cur].end;
+  let startCharIdx = null;
+  while (cur >= 0) {
+    const tok = tokens[cur];
+    if (tok.kind === "string") {
+      startCharIdx = tok.start;
+      break;
+    }
+    if (tok.kind === "close") {
+      if (tok.openTokenIdx < 0) return null;
+      startCharIdx = tokens[tok.openTokenIdx].start;
+      cur = tok.openTokenIdx - 1;
+      if (
+        cur >= 0 &&
+        (tokens[cur].kind === "ident" || tokens[cur].kind === "close" || tokens[cur].kind === "string")
+      ) {
+        continue;
+      }
+      if (cur >= 0 && tokens[cur].kind === "dot") {
+        startCharIdx = tokens[cur].start;
+        cur -= 1;
+        continue;
+      }
+      break;
+    }
+    if (tok.kind === "ident") {
+      if (cur === 0 || tokens[cur - 1].kind !== "dot") {
+        if (PYTHON_STATEMENT_KEYWORDS.has(tok.text)) break;
+        startCharIdx = tok.start;
+        break;
+      }
+      startCharIdx = tokens[cur - 1].start;
+      cur -= 2;
+      if (cur < 0) return null;
+      continue;
+    }
+    break;
+  }
+  if (startCharIdx === null) return "";
+  return code.slice(startCharIdx, endCharIdx);
+}
+
+function isSinglePyStringLiteralExpr(expr) {
+  const trimmed = stripBalancedOuterParens(expr);
+  if (!trimmed) return false;
+  const tokens = scanPythonTokensBefore(trimmed, trimmed.length);
+  return tokens.length === 1 && tokens[0].kind === "string";
+}
+
+function isPythonPathlibModuleExpr(rawExpr, symbols) {
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return false;
+  if (symbols.pathlibModuleIdents.has(expr)) return true;
+  if (
+    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"]pathlib['"]\s*\)$/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  return /^sys\s*\.\s*modules\s*(?:\[\s*['"]pathlib['"]\s*\]|\.\s*get\s*\(\s*['"]pathlib['"])/.test(expr);
+}
+
+function isPythonFsModuleExpr(rawExpr, symbols) {
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return false;
+  if (symbols.fsModuleIdents.has(expr)) return true;
+  if (
+    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)$/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  return /^sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
+    expr,
+  );
+}
+
+function isPythonPathClassExpr(rawExpr, symbols) {
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return false;
+  if (symbols.pathClassIdents.has(expr)) return true;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length === 0) return false;
+  const last = tokens[tokens.length - 1];
+  if (last.kind === "ident" && tokens.length >= 3 && tokens[tokens.length - 2].kind === "dot") {
+    const attr = last.text;
+    const base = expr.slice(0, tokens[tokens.length - 2].start);
+    if (attr === "__class__") return true;
+    if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
+      return true;
+    }
+  }
+  if (last.kind === "close" && last.ch === ")" && last.openTokenIdx > 0) {
+    const callee = stripBalancedOuterParens(expr.slice(0, tokens[last.openTokenIdx].start));
+    if (callee === "type" || callee === "builtins.type") return true;
+    if (callee === "getattr") {
+      const args = parseCallArguments(expr, tokens[last.openTokenIdx].start);
+      if (args && args.length >= 2) {
+        const attrLit = parseStaticPyString(args[1]);
+        if (attrLit.ok && PYTHON_PATH_CLASS_NAMES.has(attrLit.value)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isPythonPathCtorCallExpr(rawExpr, symbols) {
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return null;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length < 2) return null;
+  const last = tokens[tokens.length - 1];
+  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return null;
+  const callee = stripBalancedOuterParens(expr.slice(0, tokens[last.openTokenIdx].start));
+  let isPathCallee = symbols.pathClassIdents.has(callee) || PYTHON_PATH_CLASS_NAMES.has(callee);
+  if (!isPathCallee) {
+    const calleeTokens = scanPythonTokensBefore(callee, callee.length);
+    if (
+      calleeTokens.length >= 3 &&
+      calleeTokens[calleeTokens.length - 1].kind === "ident" &&
+      calleeTokens[calleeTokens.length - 2].kind === "dot"
+    ) {
+      const attr = calleeTokens[calleeTokens.length - 1].text;
+      const base = callee.slice(0, calleeTokens[calleeTokens.length - 2].start);
+      if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
+        isPathCallee = true;
+      }
+    }
+  }
+  if (!isPathCallee) return null;
+  return parseCallArguments(expr, tokens[last.openTokenIdx].start);
+}
+
+function collectPythonSymbolBindings(code) {
+  const pathClassIdents = new Set(PYTHON_PATH_CLASS_NAMES);
+  const fsModuleIdents = new Set(PYTHON_FS_MODULE_NAMES);
+  const pathlibModuleIdents = new Set(["pathlib"]);
+  const taintedIdents = new Set([
+    ...pathClassIdents,
+    ...fsModuleIdents,
+    ...pathlibModuleIdents,
+    "sys",
+    "builtins",
+    "importlib",
+    "posixpath",
+    "ntpath",
+    "genericpath",
+    "io",
+    "type",
+  ]);
+
+  const plainImportRe = /(?:^|[\n;])\s*import\s+([^\n;#]+)/g;
+  let im;
+  while ((im = plainImportRe.exec(code)) !== null) {
+    for (const part of im[1].split(",")) {
+      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+      if (!m) continue;
+      const mod = m[1];
+      const bound = m[2] || mod.split(".")[0];
+      taintedIdents.add(bound);
+      if (PYTHON_FS_MODULE_NAMES.has(mod)) fsModuleIdents.add(bound);
+      if (mod === "pathlib") pathlibModuleIdents.add(bound);
+    }
+  }
+
+  const fromImportRe = /\bfrom\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+([^\n;#]+)/g;
+  while ((im = fromImportRe.exec(code)) !== null) {
+    const mod = im[1];
+    const clause = stripBalancedOuterParens(im[2]);
+    for (const part of clause.split(",")) {
+      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+      if (!m) continue;
+      const orig = m[1];
+      const bound = m[2] || orig;
+      taintedIdents.add(bound);
+      if (mod === "pathlib" && PYTHON_PATH_CLASS_NAMES.has(orig)) pathClassIdents.add(bound);
+      if (PYTHON_FS_MODULE_NAMES.has(orig)) fsModuleIdents.add(bound);
+      if (orig === "pathlib") pathlibModuleIdents.add(bound);
+    }
+  }
+
+  const pairs = [];
+  const assignStmtRe = /(?:^|[\n;])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*|\s*=\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*=(?!=)\s*([^\n;#]+)/g;
+  let am;
+  while ((am = assignStmtRe.exec(code)) !== null) {
+    const lhsRaw = am[1].trim();
+    const rhsRaw = am[2].trim();
+    if (lhsRaw.includes(",")) {
+      const lhsNames = lhsRaw.split(",").map((s) => s.trim());
+      const rhsTuple = parseCallArguments(`(${stripBalancedOuterParens(rhsRaw)})`, 0);
+      if (rhsTuple && rhsTuple.length === lhsNames.length) {
+        for (let idx = 0; idx < lhsNames.length; idx += 1) {
+          pairs.push([lhsNames[idx], rhsTuple[idx]]);
+        }
+      } else {
+        for (const name of lhsNames) pairs.push([name, rhsRaw]);
+      }
+    } else {
+      for (const name of lhsRaw.split("=").map((s) => s.trim())) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) pairs.push([name, rhsRaw]);
+      }
+    }
+  }
+
+  const walrusRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([^,)\]\n;#]+)/g;
+  while ((am = walrusRe.exec(code)) !== null) {
+    pairs.push([am[1], am[2].trim()]);
+  }
+
+  const forLoopRe = /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^\n:#]+):/g;
+  const forPairs = [];
+  while ((am = forLoopRe.exec(code)) !== null) {
+    forPairs.push([am[1], am[2].trim()]);
+  }
+
+  const symbols = { pathClassIdents, fsModuleIdents, pathlibModuleIdents, taintedIdents };
+  for (let pass = 0; pass < 4; pass += 1) {
+    const beforeSize =
+      pathClassIdents.size + fsModuleIdents.size + pathlibModuleIdents.size + taintedIdents.size;
+    for (const [lhs, rhs] of pairs) {
+      if (isPythonFsModuleExpr(rhs, symbols)) {
+        fsModuleIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else if (isPythonPathlibModuleExpr(rhs, symbols)) {
+        pathlibModuleIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else if (isPythonPathClassExpr(rhs, symbols)) {
+        pathClassIdents.add(lhs);
+        taintedIdents.add(lhs);
+      } else {
+        const stripped = stripBalancedOuterParens(rhs);
+        if (
+          taintedIdents.has(stripped) ||
+          isPythonPathCtorCallExpr(stripped, symbols) !== null ||
+          /\b(?:__import__|import_module|globals|locals|vars|getattr|type)\s*\(|\b(?:__class__|__base__|__bases__|__mro__|__subclasses__|__dict__)\b|sys\s*\.\s*modules/.test(
+            stripped,
+          )
+        ) {
+          taintedIdents.add(lhs);
+        }
+      }
+    }
+    for (const [loopVar, iterExpr] of forPairs) {
+      const iterTokens = scanPythonTokensBefore(iterExpr, iterExpr.length);
+      for (const tok of iterTokens) {
+        if (tok.kind !== "ident") continue;
+        if (pathClassIdents.has(tok.text) || tok.text === "type" || tok.text === "__class__") {
+          pathClassIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        } else if (fsModuleIdents.has(tok.text)) {
+          fsModuleIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        } else if (pathlibModuleIdents.has(tok.text)) {
+          pathlibModuleIdents.add(loopVar);
+          taintedIdents.add(loopVar);
+        }
+      }
+    }
+    const afterSize =
+      pathClassIdents.size + fsModuleIdents.size + pathlibModuleIdents.size + taintedIdents.size;
+    if (afterSize === beforeSize) break;
+  }
+
+  return symbols;
+}
+
+function isValidStrReplaceArgs(methodArgs) {
+  const effective =
+    methodArgs.length > 0 && methodArgs[methodArgs.length - 1] === ""
+      ? methodArgs.slice(0, -1)
+      : methodArgs;
+  if (effective.length !== 2 && effective.length !== 3) return false;
+  if (effective.some((a) => a.length === 0 || a.startsWith("*"))) return false;
+  const { positionals, kwargs } = splitPythonCallArgs(effective);
+  const kwKeys = Object.keys(kwargs);
+  if (kwKeys.length === 0) {
+    return positionals.length === 2 || positionals.length === 3;
+  }
+  return positionals.length === 2 && kwKeys.length === 1 && kwKeys[0] === "count";
+}
+
+function isSafeStrReplaceReceiver(rawExpr, symbols, depth = 0) {
+  if (depth > 6 || rawExpr === null) return false;
+  const expr = stripBalancedOuterParens(rawExpr);
+  if (!expr) return false;
+  if (isPythonPathClassExpr(expr, symbols) || isPythonFsModuleExpr(expr, symbols)) return false;
+  if (isSinglePyStringLiteralExpr(expr)) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
+    return !symbols.taintedIdents.has(expr);
+  }
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  if (tokens.length < 2) return false;
+  const last = tokens[tokens.length - 1];
+  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return false;
+  const callArgs = parseCallArguments(expr, tokens[last.openTokenIdx].start);
+  if (!callArgs) return false;
+  if (last.openTokenIdx === 1 && tokens[0].kind === "ident") {
+    const fn = tokens[0].text;
+    return ["str", "repr", "chr", "format", "ascii"].includes(fn) && !symbols.taintedIdents.has(fn);
+  }
+  if (
+    last.openTokenIdx >= 3 &&
+    tokens[last.openTokenIdx - 1].kind === "ident" &&
+    tokens[last.openTokenIdx - 2].kind === "dot"
+  ) {
+    const methodName = tokens[last.openTokenIdx - 1].text;
+    const subRecv = stripBalancedOuterParens(expr.slice(0, tokens[last.openTokenIdx - 2].start));
+    if (!subRecv) return false;
+    if (methodName === "replace") {
+      return isValidStrReplaceArgs(callArgs) && isSafeStrReplaceReceiver(subRecv, symbols, depth + 1);
+    }
+    if (methodName === "get") {
+      if (subRecv === "os.environ" || subRecv === "posix.environ") return true;
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(subRecv) && !symbols.taintedIdents.has(subRecv);
+    }
+    if (methodName === "dumps" && subRecv === "json") return true;
+    if (PYTHON_STRING_RETURNING_METHODS.has(methodName)) {
+      return !isPythonPathClassExpr(subRecv, symbols) && !isPythonFsModuleExpr(subRecv, symbols);
+    }
+  }
+  return false;
+}
 
 function isVarBoundToVerifiedTmpRoot(varName, code) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return false;
@@ -2742,9 +3280,20 @@ function isSafeTmpTemplateOrJoin(expr, code, allowPath) {
   return false;
 }
 
-function unwrapPythonPathCtor(expr) {
-  const trimmed = String(expr || "").trim();
-  const m = trimmed.match(/^(?:pathlib\s*\.\s*)?Path\s*\(([\s\S]*)\)$/);
+function unwrapPythonPathCtor(expr, symbols = null) {
+  const trimmed = stripBalancedOuterParens(expr);
+  if (!trimmed) return "";
+  if (symbols) {
+    const ctorArgs = isPythonPathCtorCallExpr(trimmed, symbols);
+    if (ctorArgs) {
+      if (ctorArgs.length === 0) return trimmed;
+      if (ctorArgs.length === 1) return ctorArgs[0].trim();
+      return `os.path.join(${ctorArgs.join(", ")})`;
+    }
+  }
+  const m = trimmed.match(
+    /^(?:pathlib\s*\.\s*)?(?:Path|PurePath|PosixPath|WindowsPath|PurePosixPath|PureWindowsPath)\s*\(([\s\S]*)\)$/,
+  );
   if (!m) return trimmed;
   const args = parseCallArguments(`(${m[1]})`, 0);
   if (!args || args.length === 0) return trimmed;
@@ -3176,8 +3725,10 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
   }
 
+  const pySymbols = collectPythonSymbolBindings(code);
+
   const checkPyPathArg = (argExpr, opts) => {
-    const rawExpr = unwrapPythonPathCtor(argExpr || "");
+    const rawExpr = unwrapPythonPathCtor(argExpr || "", pySymbols);
     const lit = parseStaticPyString(rawExpr);
     if (lit.ok) {
       return allowPath(lit.value, opts);
@@ -3199,29 +3750,26 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     return allowDynamicPaths;
   };
 
-  const resolvePythonPathReceiverArg = (prefixStr) => {
-    const ctorMatch = prefixStr.match(/(?:pathlib\s*\.\s*)?Path\s*\(\s*([^()]*)\s*\)\s*$/);
-    if (ctorMatch) {
-      const ctorArgs = parseCallArguments(`(${ctorMatch[1]})`, 0);
-      if (!ctorArgs || ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
+  const resolvePythonPathReceiverArg = (rawRecv) => {
+    if (rawRecv === null) return { valid: false, found: true, expr: null };
+    const recvExpr = stripBalancedOuterParens(rawRecv);
+    const ctorArgs = isPythonPathCtorCallExpr(recvExpr, pySymbols);
+    if (ctorArgs !== null) {
+      if (ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
       return { valid: true, found: true, expr: ctorArgs[0] };
     }
-    const varMatch = prefixStr.match(/(?:^|[^\w.])([A-Za-z_][A-Za-z0-9_]*)\s*$/);
-    if (varMatch) {
-      const varEsc = varMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const assignRe = new RegExp(
-        `(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*(?:pathlib\\s*\\.\\s*)?Path\\s*\\(\\s*([^()]*)\\s*\\)`,
-        "g",
-      );
-      let lastBody = null;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(recvExpr)) {
+      const varEsc = recvExpr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const assignRe = new RegExp(`(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*([^\\n;#]+)`, "g");
+      let lastRhs = null;
       let am;
       while ((am = assignRe.exec(code)) !== null) {
-        lastBody = am[1];
+        lastRhs = am[1].trim();
       }
-      if (lastBody !== null) {
-        const boundArgs = parseCallArguments(`(${lastBody})`, 0);
-        if (boundArgs && boundArgs.length === 1) {
-          return { valid: true, found: true, expr: boundArgs[0] };
+      if (lastRhs !== null) {
+        const boundCtorArgs = isPythonPathCtorCallExpr(lastRhs, pySymbols);
+        if (boundCtorArgs !== null && boundCtorArgs.length === 1) {
+          return { valid: true, found: true, expr: boundCtorArgs[0] };
         }
       }
     }
@@ -3253,6 +3801,16 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     if (!methodArgs) {
       return `Unparseable .${method}() call in inline Python script is blocked for ${roleLabel}.`;
     }
+    const rawRecv = extractPythonReceiverBeforeDot(code, match.index);
+    if (rawRecv === null) {
+      return `Unparseable .${method}() receiver in inline Python script is blocked for ${roleLabel}.`;
+    }
+    if (isPythonPathClassExpr(rawRecv, pySymbols)) {
+      return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+    }
+    if (PYTHON_OS_SHUTIL_FN_NAMES.has(method) && isPythonFsModuleExpr(rawRecv, pySymbols)) {
+      continue;
+    }
     if (method === "open") {
       const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
       const modeExpr = positionals[0] ?? kwargs.mode ?? null;
@@ -3262,20 +3820,14 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
         continue;
       }
     }
-    if (method === "replace") {
-      const effectiveArgs =
-        methodArgs.length > 0 && methodArgs[methodArgs.length - 1] === ""
-          ? methodArgs.slice(0, -1)
-          : methodArgs;
-      if (
-        effectiveArgs.length >= 2 &&
-        effectiveArgs.every((a) => a.length > 0 && !a.startsWith("*"))
-      ) {
-        continue;
-      }
+    if (
+      method === "replace" &&
+      isValidStrReplaceArgs(methodArgs) &&
+      isSafeStrReplaceReceiver(rawRecv, pySymbols)
+    ) {
+      continue;
     }
-    const prefix = code.slice(0, match.index);
-    const recv = resolvePythonPathReceiverArg(prefix);
+    const recv = resolvePythonPathReceiverArg(rawRecv);
     const isMkdir = method === "mkdir";
     const isLinkMethod =
       method === "symlink_to" || method === "hardlink_to" || method === "link_to";
@@ -3333,11 +3885,29 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
       }
     } else if (method === "rename" || method === "replace") {
       const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
-      const targetExpr = mPos[0] ?? mKw.target ?? "";
-      const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
+      const isTwoArgCall = mPos.length >= 2 || (mPos.length === 1 && Object.hasOwn(mKw, "target"));
+      const srcArgExpr = isTwoArgCall ? mPos[0] : null;
+      const targetExpr = isTwoArgCall ? (mPos[1] ?? mKw.target ?? "") : (mPos[0] ?? mKw.target ?? "");
+      const recvVal = srcArgExpr
+        ? resolveStaticArgValue(srcArgExpr, code, true)
+        : recv.found
+          ? resolveStaticArgValue(recv.expr, code, true)
+          : null;
       const srcOkForRoArtifact = allowReadOnlyArtifactCopySource
         ? Boolean(recvVal && allowReadOnlyArtifactCopySource(recvVal))
         : Boolean(recvVal && /\.(?:png|jpe?g|webp)$/i.test(recvVal));
+      if (
+        srcArgExpr !== null &&
+        !checkPyPathArg(srcArgExpr, {
+          allowRootEqual: false,
+          allowDevNull: false,
+          allowArtifactDir: false,
+          allowArtifactRoot: false,
+          disallowArtifactRoot: true,
+        })
+      ) {
+        return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
+      }
       if (
         !targetExpr ||
         !checkPyPathArg(targetExpr, {
@@ -3376,13 +3946,21 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
 
   const hasFsImport = /\b(?:os|posix|shutil)\b/.test(code);
   const osShutilRe =
-    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
+    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
   while ((match = osShutilRe.exec(code)) !== null) {
-    const qualifier = match[1] || "";
+    let qualifier = match[1] || "";
     const fnName = match[2];
-    const isMemberCall = !qualifier && /\.\s*$/.test(code.slice(0, match.index));
-    if (!qualifier && (isMemberCall || !hasFsImport)) {
-      continue;
+    if (!qualifier) {
+      const dotMatch = code.slice(0, match.index).match(/\.\s*$/);
+      if (dotMatch) {
+        const memberRecv = extractPythonReceiverBeforeDot(code, match.index - dotMatch[0].length);
+        if (!isPythonFsModuleExpr(memberRecv, pySymbols)) {
+          continue;
+        }
+        qualifier = "fs_alias";
+      } else if (!hasFsImport) {
+        continue;
+      }
     }
     const openParenIdx = match.index + match[0].length - 1;
     const callArgs = parseCallArguments(code, openParenIdx);
@@ -3456,7 +4034,7 @@ function checkInlinePythonFs(code, allowPath, options = {}) {
     }
     const singleExpr = positionals[0] ?? kwargs.path ?? kwargs.name ?? "";
     const isMkdir = fnName === "mkdir" || fnName === "makedirs";
-    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "chown"].includes(fnName);
+    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "lchmod", "chown"].includes(fnName);
     if (
       !singleExpr ||
       !checkPyPathArg(singleExpr, {
