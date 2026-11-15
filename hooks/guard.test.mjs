@@ -2929,6 +2929,219 @@ if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else 
     }
   });
 
+  test("handles agy 1.5.9 local swarm.json anchors without invoking remote CLI or blocking non-worker-roots cache while preserving remote spanner anchors", () => {
+    const sb = makeSandbox();
+    try {
+      const coordCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "coordinator.md"), "utf8");
+      const agentCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "poteto-agent.md"), "utf8");
+      const researchCapsule = readFileSync(join(PLUGIN_ROOT, "roles", "research.md"), "utf8");
+      const cacheDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next");
+
+      const callsLog = join(sb.root, "local-vs-remote-cli-calls.jsonl");
+      const mockCli = join(sb.root, "mock-swarm-cli.mjs");
+      writeFileSync(
+        mockCli,
+        `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(callsLog)}, JSON.stringify(args) + "\\n", "utf8");
+const swarmId = args[args.length - 1];
+if (swarmId === "swm_remote_v1") {
+  process.stdout.write(JSON.stringify({
+    swarm_id: swarmId,
+    members: {
+      coordinator: { conversation_id: "remote-v1-coord", role: "coordinator" },
+      "ro-1": { conversation_id: "remote-v1-ro", role: "worker" },
+    },
+  }) + "\\n");
+}
+`,
+        "utf8",
+      );
+      chmodSync(mockCli, 0o755);
+
+      const writeAnchor = (dirId, doc) => {
+        const dir = join(sb.appDataDir, "brain", dirId, ".system_generated", "swarm");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "swarm.json"), JSON.stringify(doc), "utf8");
+      };
+
+      writeAnchor("local-full-coord", {
+        version: 1,
+        backend: "local",
+        swarm_id: "local-full-coord",
+        created_at: "2026-11-15T08:00:00.000Z",
+      });
+      writeSwarmMembers(sb.appDataDir, "local-full-coord", {
+        coordinator: { conversation_id: "local-full-coord", role: "coordinator" },
+        "impl-1": { conversation_id: "local-full-impl", role: "worker" },
+        "ro-1": { conversation_id: "local-full-ro", role: "worker" },
+      });
+
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "local-full-coord" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "local-full-impl",
+            rootConversationId: "local-full-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: agentCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "local-full-ro",
+            rootConversationId: "local-full-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+      );
+      assert.equal(
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "local-full-ro",
+            cwd: sb.worktree,
+            toolCall: { id: "lr-1", name: "write_file", args: { Path: join(sb.worktree, "blocked.txt") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ).decision,
+        "deny",
+      );
+
+      writeAnchor("local-orphan-coord", {
+        version: 1,
+        backend: "local",
+        swarm_id: "local-orphan-coord",
+        created_at: "2026-11-15T08:01:00.000Z",
+      });
+      writeAnchor("local-orphan-dir", {
+        version: 1,
+        backend: "local",
+        swarm_id: "local-orphan-coord-alias",
+        created_at: "2026-11-15T08:01:30.000Z",
+      });
+      writeAnchor("plain-local-coord", {
+        version: 1,
+        backend: "local",
+        swarm_id: "plain-local-coord",
+        created_at: "2026-11-15T08:01:45.000Z",
+      });
+
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "local-orphan-coord" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "local-orphan-coord-alias",
+            rootConversationId: "local-orphan-dir",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: coordCapsule } }] },
+      );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "plain-local-coord",
+            lastUserInput: "/swarm local plain title",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        {},
+      );
+      assert.deepEqual(
+        runGuard(
+          { hookEventName: "SessionStart", conversationId: "unrelated-conv" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        {},
+      );
+      assert.equal(existsSync(callsLog), false, "local swarm.json must never invoke remote CLI");
+
+      const nonWorkersAfterLocalOrphan = existsSync(join(cacheDir, "non-worker-roots.json"))
+        ? JSON.parse(readFileSync(join(cacheDir, "non-worker-roots.json"), "utf8"))
+        : {};
+      assert.equal(nonWorkersAfterLocalOrphan["unrelated-conv"], true);
+
+      writeAnchor("remote-v1-coord", {
+        version: 1,
+        backend: "spanner",
+        swarm_id: "swm_remote_v1",
+        created_at: "2026-11-15T08:02:00.000Z",
+        db: "projects/p/instances/i/databases/d",
+        coordinator_conversation_id: "remote-v1-coord",
+      });
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-v1-ro",
+            rootConversationId: "remote-v1-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        { injectSteps: [{ systemMessage: { systemMessage: researchCapsule } }] },
+      );
+      const callsAfterRemoteResolved = readFileSync(callsLog, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(callsAfterRemoteResolved.length, 1);
+      assert.deepEqual(callsAfterRemoteResolved[0], [
+        "swarm",
+        "--json",
+        "--roster-only",
+        "--db",
+        "projects/p/instances/i/databases/d",
+        "swm_remote_v1",
+      ]);
+
+      writeAnchor("remote-missing-coord", {
+        version: 1,
+        backend: "spanner",
+        swarm_id: "swm_remote_missing",
+        created_at: "2026-11-15T08:03:00.000Z",
+        coordinator_conversation_id: "remote-missing-coord",
+      });
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "SessionStart",
+            conversationId: "remote-unresolved-conv",
+            rootConversationId: "remote-missing-coord",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
+        ),
+        {},
+      );
+      const nonWorkersAfterRemoteUnresolved = existsSync(join(cacheDir, "non-worker-roots.json"))
+        ? JSON.parse(readFileSync(join(cacheDir, "non-worker-roots.json"), "utf8"))
+        : {};
+      assert.equal(nonWorkersAfterRemoteUnresolved["remote-unresolved-conv"], undefined);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
   test("allows multi-argument Python str.replace in inline scripts while blocking 1-arg Path.replace and escaping rename or replace targets", () => {
     const sb = makeSandbox();
     try {
