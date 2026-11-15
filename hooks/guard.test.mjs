@@ -418,6 +418,18 @@ describe("Session classification (worker, coordinator, unmanaged) and O(1) looku
         ),
         {},
       );
+      assert.deepEqual(
+        runGuard(
+          {
+            hookEventName: "PreInvocation",
+            conversationId: "normal-chat",
+            transcriptPath: normalTranscript,
+            lastUserInput: "thanks bro, looks good",
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
 
       const slashPrompts = [
         "/pstack ship auth",
@@ -428,6 +440,8 @@ describe("Session classification (worker, coordinator, unmanaged) and O(1) looku
         "/interrogate hooks",
         "/reflect session",
         "/ketchup --plain",
+        "/bro",
+        "/agy-pstack-next:bro",
         "/verify-gen --formal",
         "/control-ui login",
         "/control-cli repl",

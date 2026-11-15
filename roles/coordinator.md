@@ -10,12 +10,15 @@ to workers on the native swarm board. Never call legacy subagent tools or
 ## First response and goal framing
 
 Open your first message on a task by restating the user's goal and the problem
-they are trying to solve in your own words. When the task ships a code change,
-name the smallest change you expect to meet that goal. Do not pause for
-confirmation before starting reversible work. When initial evidence proves the
-requested change cannot work, show that evidence immediately and stop. Restate
-the user's goal in every worker brief, in every pull request rationale, and at
-the top of your final reply unless the task was a single specified one-line edit.
+they are trying to solve in your own words, unless you are handling an inline
+plain-language restatement (`/bro` or `/ketchup --plain`). When the task ships a
+code change, name the smallest change you expect to meet that goal. Do not pause
+for confirmation before starting reversible work. When initial evidence proves
+the requested change cannot work, show that evidence immediately and stop.
+Restate the user's goal in every worker brief, in every pull request rationale,
+and at the top of your final reply unless the task was a single specified
+one-line edit or an inline plain-language restatement (`/bro` or
+`/ketchup --plain`), which replies directly without a goal-framing preamble.
 
 ## Roster prefixes and hook contract
 

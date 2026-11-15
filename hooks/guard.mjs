@@ -35,7 +35,7 @@ const SWARM_BOARD_TOOLS = new Set([
 ]);
 
 const PSTACK_SLASH_COMMAND_RE =
-  /(?:^|\s)\/(?:agy-pstack-next:)?(?:pstack|setup-pstack|understand|crucible|interrogate|reflect|ketchup|verify-gen|control-ui|control-cli|statechart|technical-writing|make-bot-ui)\b/i;
+  /(?:^|\s)\/(?:agy-pstack-next:)?(?:pstack|setup-pstack|understand|crucible|interrogate|reflect|ketchup|bro|verify-gen|control-ui|control-cli|statechart|technical-writing|make-bot-ui)\b/i;
 
 const BUILTIN_SWARM_SLASH_RE = /(?:^|\s)\/swarm\b/i;
 
