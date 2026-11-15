@@ -2851,6 +2851,7 @@ function findFStringExprSpan(str, openBraceIdx) {
   while (j < str.length) {
     const ch = str[j];
     if (!inFormatSpec) {
+      let nestedPrefix = "";
       if (/[A-Za-z_]/.test(ch)) {
         const wStart = j;
         while (j < str.length && /[A-Za-z0-9_]/.test(str[j])) j += 1;
@@ -2858,12 +2859,14 @@ function findFStringExprSpan(str, openBraceIdx) {
         if (!/^[rRbBuUfFtT]{1,2}$/.test(word) || (str[j] !== "'" && str[j] !== '"')) {
           continue;
         }
+        nestedPrefix = word;
       }
       if (str[j] === "'" || str[j] === '"') {
         const q =
           str.slice(j, j + 3) === "'''" || str.slice(j, j + 3) === '"""'
             ? str.slice(j, j + 3)
             : str[j];
+        const nestedIsFormat = /[fFtT]/.test(nestedPrefix);
         j += q.length;
         while (j < str.length) {
           if (str[j] === "\\") {
@@ -2878,6 +2881,17 @@ function findFStringExprSpan(str, openBraceIdx) {
           } else if (str[j] === q) {
             j += 1;
             break;
+          }
+          if (nestedIsFormat && str[j] === "{") {
+            if (str[j + 1] === "{") {
+              j += 2;
+              continue;
+            }
+            const innerSpan = findFStringExprSpan(str, j);
+            if (innerSpan) {
+              j = innerSpan.closeBrace + 1;
+              continue;
+            }
           }
           j += 1;
         }
@@ -2953,10 +2967,8 @@ function findFStringExprSpan(str, openBraceIdx) {
   return null;
 }
 
-function scanPythonTokensBefore(code, limitIdx) {
-  const tokens = [];
-  const openStack = [];
-  let i = 0;
+function scanPythonTokensRange(code, startIdx, limitIdx, tokens, openStack) {
+  let i = startIdx;
   const end = Math.min(limitIdx, code.length);
   while (i < end) {
     const ch = code[i];
@@ -2968,36 +2980,146 @@ function scanPythonTokensBefore(code, limitIdx) {
       while (i < end && code[i] !== "\n") i += 1;
       continue;
     }
-    const strPrefix = code.slice(i, Math.min(end, i + 5)).match(/^([rRbBuUfFtT]{0,2})('''|"""|'|"|`)/);
-    if (strPrefix) {
-      const start = i;
-      const q = strPrefix[2];
-      i += strPrefix[0].length;
-      while (i < end) {
-        if (code[i] === "\\") {
-          i += 2;
+    let prefix = "";
+    let strStart = -1;
+    let quoteIdx = -1;
+    if (/[A-Za-z_]/.test(ch)) {
+      const wStart = i;
+      while (i < end && /[A-Za-z0-9_]/.test(code[i])) i += 1;
+      const word = code.slice(wStart, i);
+      if (
+        i < end &&
+        /^[rRbBuUfFtT]{1,2}$/.test(word) &&
+        (code[i] === "'" || code[i] === '"' || code[i] === "`")
+      ) {
+        prefix = word;
+        strStart = wStart;
+        quoteIdx = i;
+      } else {
+        tokens.push({ kind: "ident", start: wStart, end: i, text: word });
+        continue;
+      }
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      strStart = i;
+      quoteIdx = i;
+    }
+
+    if (quoteIdx >= 0) {
+      const q =
+        quoteIdx + 3 <= code.length &&
+        (code.slice(quoteIdx, quoteIdx + 3) === "'''" ||
+          code.slice(quoteIdx, quoteIdx + 3) === '"""')
+          ? code.slice(quoteIdx, quoteIdx + 3)
+          : code[quoteIdx];
+      const isFormat = /[fFtT]/.test(prefix);
+      if (!isFormat) {
+        i = quoteIdx + q.length;
+        let closed = false;
+        while (i < end) {
+          if (code[i] === "\\") {
+            i += 2;
+            continue;
+          }
+          if (q.length === 3) {
+            if (i + 3 <= end && code.slice(i, i + 3) === q) {
+              i += 3;
+              closed = true;
+              break;
+            }
+          } else if (code[i] === q) {
+            i += 1;
+            closed = true;
+            break;
+          }
+          i += 1;
+        }
+        tokens.push({ kind: "string", start: strStart, end: Math.min(i, end), closed, isFormat: false });
+        continue;
+      }
+
+      let j = quoteIdx + q.length;
+      let fullStrEnd = -1;
+      const interpSpans = [];
+      while (j < code.length) {
+        if (code[j] === "\\") {
+          j += 2;
           continue;
         }
         if (q.length === 3) {
-          if (code.slice(i, i + 3) === q) {
-            i += 3;
+          if (code.slice(j, j + 3) === q) {
+            fullStrEnd = j + 3;
             break;
           }
-        } else if (code[i] === q) {
-          i += 1;
+        } else if (code[j] === q) {
+          fullStrEnd = j + 1;
           break;
         }
-        i += 1;
+        if (code[j] === "{") {
+          if (code[j + 1] === "{") {
+            j += 2;
+            continue;
+          }
+          const span = findFStringExprSpan(code, j);
+          if (span) {
+            interpSpans.push({ openBrace: j, exprStart: span.exprStart, exprEnd: span.exprEnd, closeBrace: span.closeBrace });
+            let sj = span.exprEnd;
+            while (sj < span.closeBrace) {
+              if (code[sj] === "{" && code[sj + 1] !== "{") {
+                const subSpan = findFStringExprSpan(code, sj);
+                if (subSpan) {
+                  interpSpans.push({
+                    openBrace: sj,
+                    exprStart: subSpan.exprStart,
+                    exprEnd: subSpan.exprEnd,
+                    closeBrace: subSpan.closeBrace,
+                  });
+                  sj = subSpan.closeBrace + 1;
+                  continue;
+                }
+              }
+              sj += 1;
+            }
+            j = span.closeBrace + 1;
+            continue;
+          }
+          interpSpans.push({ openBrace: j, exprStart: j + 1, exprEnd: code.length, closeBrace: code.length });
+          break;
+        }
+        if (code[j] === "}" && code[j + 1] === "}") {
+          j += 2;
+          continue;
+        }
+        j += 1;
       }
-      tokens.push({ kind: "string", start, end: Math.min(i, end) });
+
+      if (fullStrEnd >= 0 && fullStrEnd <= end) {
+        tokens.push({ kind: "string", start: strStart, end: fullStrEnd, closed: true, isFormat: true });
+        i = fullStrEnd;
+        continue;
+      }
+
+      let activeSpan = null;
+      for (const sp of interpSpans) {
+        if (sp.openBrace < end && end <= sp.closeBrace) {
+          if (!activeSpan || sp.openBrace > activeSpan.openBrace) {
+            activeSpan = sp;
+          }
+        }
+      }
+      if (activeSpan && end <= activeSpan.exprEnd) {
+        const openIdx = tokens.length;
+        tokens.push({ kind: "open", start: activeSpan.openBrace, end: activeSpan.openBrace + 1, ch: "{" });
+        openStack.push(openIdx);
+        scanPythonTokensRange(code, activeSpan.exprStart, end, tokens, openStack);
+        i = end;
+        continue;
+      }
+
+      tokens.push({ kind: "string", start: strStart, end, closed: false, isFormat: true });
+      i = end;
       continue;
     }
-    if (/[A-Za-z_]/.test(ch)) {
-      const start = i;
-      while (i < end && /[A-Za-z0-9_]/.test(code[i])) i += 1;
-      tokens.push({ kind: "ident", start, end: i, text: code.slice(start, i) });
-      continue;
-    }
+
     if (ch === "(" || ch === "[" || ch === "{") {
       const idx = tokens.length;
       tokens.push({ kind: "open", start: i, end: i + 1, ch });
@@ -3019,6 +3141,12 @@ function scanPythonTokensBefore(code, limitIdx) {
     tokens.push({ kind: "other", start: i, end: i + 1, ch });
     i += 1;
   }
+}
+
+function scanPythonTokensBefore(code, limitIdx) {
+  const tokens = [];
+  const openStack = [];
+  scanPythonTokensRange(code, 0, limitIdx, tokens, openStack);
   return tokens;
 }
 
@@ -3398,6 +3526,9 @@ function maskPythonNonCodeStrings(code) {
             i = span.closeBrace + 1;
             continue;
           }
+          out += code.slice(i);
+          i = code.length;
+          break;
         }
         if (code[i] === "}" && code[i + 1] === "}") {
           out += "  ";
@@ -3466,7 +3597,7 @@ function isSinglePyStringLiteralExpr(expr) {
   const trimmed = stripBalancedOuterParens(expr);
   if (!trimmed) return false;
   const tokens = scanPythonTokensBefore(trimmed, trimmed.length);
-  return tokens.length === 1 && tokens[0].kind === "string";
+  return tokens.length === 1 && tokens[0].kind === "string" && tokens[0].closed === true;
 }
 
 function isPythonPathlibModuleExpr(rawExpr, symbols) {
@@ -3513,6 +3644,46 @@ function isPythonFsModuleExpr(rawExpr, symbols) {
   );
 }
 
+function receiverReferencesFsModule(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (isPythonFsModuleExpr(expr, symbols)) return true;
+  if (
+    /\b(?:__import__|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)|sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
+      expr,
+    )
+  ) {
+    return true;
+  }
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const tok = tokens[idx];
+    if (tok.kind !== "ident") continue;
+    if (symbols.fsModuleReturningFuncs && symbols.fsModuleReturningFuncs.has(tok.text)) return true;
+    if (symbols.fsModuleIdents.has(tok.text)) {
+      const t1 = idx + 1 < tokens.length ? tokens[idx + 1] : null;
+      const t2 = idx + 2 < tokens.length ? tokens[idx + 2] : null;
+      if (
+        t1 &&
+        t1.kind === "dot" &&
+        t2 &&
+        t2.kind === "ident" &&
+        (t2.text === "path" ||
+          t2.text === "environ" ||
+          t2.text === "sep" ||
+          t2.text === "linesep" ||
+          t2.text === "devnull" ||
+          t2.text === "getpid" ||
+          t2.text === "getcwd")
+      ) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 function isPythonPathClassExpr(rawExpr, symbols) {
   const expr = unwrapPythonExprParensAndWalrus(rawExpr);
   if (!expr) return false;
@@ -3531,6 +3702,27 @@ function isPythonPathClassExpr(rawExpr, symbols) {
   if (last.kind === "close" && last.ch === ")" && last.openTokenIdx > 0) {
     const callee = unwrapPythonExprParensAndWalrus(expr.slice(0, tokens[last.openTokenIdx].start));
     if (callee === "type" || callee === "builtins.type") return true;
+    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(callee)) return true;
+  }
+  return false;
+}
+
+function receiverReferencesUnboundPathClass(rawExpr, symbols) {
+  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
+  if (!expr) return false;
+  if (isPythonPathClassExpr(expr, symbols)) return true;
+  const tokens = scanPythonTokensBefore(expr, expr.length);
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const tok = tokens[idx];
+    if (tok.kind !== "ident") continue;
+    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(tok.text)) return true;
+    if (tok.text === "__class__" || tok.text === "type") return true;
+    if (symbols.pathClassIdents.has(tok.text)) {
+      const nextTok = idx + 1 < tokens.length ? tokens[idx + 1] : null;
+      if (!nextTok || nextTok.kind !== "open" || nextTok.ch !== "(") {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -3565,6 +3757,9 @@ function isPythonPathCtorCallExpr(rawExpr, symbols) {
 function collectPythonSymbolBindings(code, preMasked = null) {
   const masked = preMasked ?? maskPythonNonCodeStrings(code);
   const pathClassIdents = new Set(PYTHON_PATH_CLASS_NAMES);
+  const pathInstanceIdents = new Set();
+  const pathClassReturningFuncs = new Set();
+  const fsModuleReturningFuncs = new Set();
   const fsModuleIdents = new Set(PYTHON_FS_MODULE_NAMES);
   const pathlibModuleIdents = new Set(["pathlib", "pathlib._local", "pathlib._abc"]);
   const fsFuncAliases = new Map();
@@ -3652,6 +3847,28 @@ function collectPythonSymbolBindings(code, preMasked = null) {
     }
   }
 
+  const defHeaders = [];
+  const defRe = /\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let dm;
+  while ((dm = defRe.exec(masked)) !== null) {
+    defHeaders.push({ name: dm[1], index: dm.index });
+  }
+  const defReturns = [];
+  if (defHeaders.length > 0) {
+    const retRe = /\breturn\s+([^\n;#]+)/g;
+    let rm;
+    while ((rm = retRe.exec(masked)) !== null) {
+      let owner = null;
+      for (const dh of defHeaders) {
+        if (dh.index < rm.index) owner = dh.name;
+      }
+      if (owner) {
+        const retStart = rm.index + rm[0].length - rm[1].length;
+        defReturns.push([owner, code.slice(retStart, retStart + rm[1].length).trim()]);
+      }
+    }
+  }
+
   const pairs = [];
   const assignStmtRe = /(?:^|[\n;])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*|\s*=\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*=(?!=)\s*([^\n;#]+)/g;
   let am;
@@ -3691,6 +3908,9 @@ function collectPythonSymbolBindings(code, preMasked = null) {
 
   const symbols = {
     pathClassIdents,
+    pathInstanceIdents,
+    pathClassReturningFuncs,
+    fsModuleReturningFuncs,
     fsModuleIdents,
     pathlibModuleIdents,
     fsFuncAliases,
@@ -3698,10 +3918,13 @@ function collectPythonSymbolBindings(code, preMasked = null) {
     fsOpenAliases,
     taintedIdents,
   };
-  const maxPasses = pairs.length + classDefs.length + forPairs.length + 8;
+  const maxPasses = pairs.length + classDefs.length + forPairs.length + defReturns.length + 8;
   for (let pass = 0; pass < maxPasses; pass += 1) {
     const beforeSize =
       pathClassIdents.size +
+      pathInstanceIdents.size +
+      pathClassReturningFuncs.size +
+      fsModuleReturningFuncs.size +
       fsModuleIdents.size +
       pathlibModuleIdents.size +
       fsFuncAliases.size +
@@ -3730,15 +3953,29 @@ function collectPythonSymbolBindings(code, preMasked = null) {
         } else if (fsOpenAliases.has(stripped)) {
           fsOpenAliases.add(lhs);
           taintedIdents.add(lhs);
+        } else if (isPythonPathCtorCallExpr(stripped, symbols) !== null || pathInstanceIdents.has(stripped)) {
+          pathInstanceIdents.add(lhs);
+          taintedIdents.add(lhs);
         } else if (
           taintedIdents.has(stripped) ||
-          isPythonPathCtorCallExpr(stripped, symbols) !== null ||
+          receiverReferencesUnboundPathClass(stripped, symbols) ||
+          receiverReferencesFsModule(stripped, symbols) ||
           /\b(?:__import__|import_module|globals|locals|vars|getattr|type)\s*\(|\b(?:__class__|__base__|__bases__|__mro__|__subclasses__|__dict__)\b|sys\s*\.\s*modules/.test(
             maskedStripped,
           )
         ) {
           taintedIdents.add(lhs);
         }
+      }
+    }
+    for (const [fnName, retExpr] of defReturns) {
+      if (receiverReferencesUnboundPathClass(retExpr, symbols)) {
+        pathClassReturningFuncs.add(fnName);
+        taintedIdents.add(fnName);
+      }
+      if (receiverReferencesFsModule(retExpr, symbols)) {
+        fsModuleReturningFuncs.add(fnName);
+        taintedIdents.add(fnName);
       }
     }
     for (const [clsName, baseArgs] of classDefs) {
@@ -3785,6 +4022,9 @@ function collectPythonSymbolBindings(code, preMasked = null) {
     }
     const afterSize =
       pathClassIdents.size +
+      pathInstanceIdents.size +
+      pathClassReturningFuncs.size +
+      fsModuleReturningFuncs.size +
       fsModuleIdents.size +
       pathlibModuleIdents.size +
       fsFuncAliases.size +
@@ -4553,11 +4793,14 @@ function checkInlinePythonFs(rawCode, allowPath, options = {}) {
     if (rawRecv === null) {
       return `Unparseable .${method}() receiver in inline Python script is blocked for ${roleLabel}.`;
     }
-    if (isPythonPathClassExpr(rawRecv, pySymbols)) {
+    if (receiverReferencesUnboundPathClass(rawRecv, pySymbols)) {
       return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
     }
     if (PYTHON_OS_SHUTIL_FN_NAMES.has(method) && isPythonFsModuleExpr(rawRecv, pySymbols)) {
       continue;
+    }
+    if (receiverReferencesFsModule(rawRecv, pySymbols)) {
+      return `Wrapped filesystem module .${method}() call in inline Python script is blocked for ${roleLabel}.`;
     }
     if (method === "open") {
       const recvTrimmed = unwrapPythonExprParensAndWalrus(rawRecv);
@@ -4593,6 +4836,24 @@ function checkInlinePythonFs(rawCode, allowPath, options = {}) {
       isSafeStrReplaceReceiver(rawRecv, pySymbols)
     ) {
       continue;
+    }
+    if (
+      ["write_text", "write_bytes", "unlink", "rmdir", "mkdir", "touch", "chmod", "lchmod"].includes(
+        method,
+      )
+    ) {
+      const { positionals: uPos, kwargs: uKw } = splitPythonCallArgs(methodArgs);
+      const selfCandidate = uPos[0] ?? uKw.self ?? null;
+      if (selfCandidate !== null) {
+        const trimmedSelf = unwrapPythonExprParensAndWalrus(selfCandidate);
+        if (
+          isPythonPathCtorCallExpr(trimmedSelf, pySymbols) !== null ||
+          pySymbols.pathInstanceIdents.has(trimmedSelf) ||
+          resolvePythonPathReceiverArg(trimmedSelf).found
+        ) {
+          return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+        }
+      }
     }
     const recv = resolvePythonPathReceiverArg(rawRecv);
     const isMkdir = method === "mkdir";
@@ -4632,6 +4893,9 @@ function checkInlinePythonFs(rawCode, allowPath, options = {}) {
 
     if (isLinkMethod) {
       const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
+      if (mPos.length >= 2 || Object.hasOwn(mKw, "self")) {
+        return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
+      }
       const targetExpr = mPos[0] ?? mKw.target ?? "";
       const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
       const symlinkBaseDir =
@@ -4713,6 +4977,9 @@ function checkInlinePythonFs(rawCode, allowPath, options = {}) {
       if (dotMatch) {
         const memberRecv = extractPythonReceiverBeforeDot(code, match.index - dotMatch[0].length);
         if (!isPythonFsModuleExpr(memberRecv, pySymbols)) {
+          if (receiverReferencesFsModule(memberRecv, pySymbols)) {
+            return `Wrapped filesystem module .${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
+          }
           continue;
         }
         qualifier = "fs_alias";
