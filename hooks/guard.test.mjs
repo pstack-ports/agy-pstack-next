@@ -2928,4 +2928,97 @@ if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else 
       sb.cleanup();
     }
   });
+
+  test("allows multi-argument Python str.replace in inline scripts while blocking 1-arg Path.replace and escaping rename or replace targets", () => {
+    const sb = makeSandbox();
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-py-replace", {
+        coordinator: { conversation_id: "coord-py-replace", role: "coordinator" },
+        "ro-py": { conversation_id: "ro-py-id", role: "worker" },
+        "impl-py": { conversation_id: "impl-py-id", role: "worker" },
+        "adv-py": { conversation_id: "adv-py-id", role: "worker" },
+        "sicko-py": { conversation_id: "sicko-py-id", role: "worker" },
+      });
+
+      const runPyCmd = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            rootConversationId: "coord-py-replace",
+            cwd: sb.worktree,
+            toolCall: { id: "py-rep", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const roAllowed = [
+        `python3 -c "print('hello'.replace('e', 'a'))"`,
+        `python3 -c "s = 'foobar'; print(s.replace('foo', 'bar'))"`,
+        `python3 -c "s = 'aaa'; print(s.replace('a', 'b', 1))"`,
+        `python3 -c "s = 'aaa'; print(s.replace('a', 'b', count=1))"`,
+        `python3 -c "s = 'aaa'; print(s.replace('a', 'b',))"`,
+        `python3 -c "from pathlib import Path; print(Path('README.md').read_text().replace('foo', 'bar'))"`,
+        `python3 -c "import os; print(os.environ.get('PATH', '').replace('/usr', '/opt'))"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace('/tmp/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename('/tmp/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace(target='/tmp/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename(target='/tmp/dst')"`,
+      ];
+      for (const cmd of roAllowed) {
+        assert.equal(runPyCmd("ro-py-id", cmd).decision, "allow", `expected ro allow for ${cmd}`);
+      }
+
+      const roDenied = [
+        `python3 -c "p.replace('/Users/repo/out')"`,
+        `python3 -c "p.replace('/Users/repo/out',)"`,
+        `python3 -c "p.replace(target='/Users/repo/out')"`,
+        `python3 -c "p.replace(target='/Users/repo/out',)"`,
+        `python3 -c "p.replace(*['/Users/repo/out'])"`,
+        `python3 -c "p.replace('/Users/repo/out', *[])"`,
+        `python3 -c "p.replace(**{'target': '/Users/repo/out'})"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace('/Users/repo/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename('/Users/repo/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace(target='/Users/repo/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename(target='/Users/repo/dst')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace('${join(sb.worktree, "dst")}')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename('${join(sb.worktree, "dst")}')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').replace('/tmp')"`,
+        `python3 -c "from pathlib import Path; Path('/tmp/src').rename('/tmp')"`,
+        `python3 -c "import os; os.replace('/tmp/src', '/Users/repo/dst')"`,
+        `python3 -c "import os; os.rename('/tmp/src', '/Users/repo/dst')"`,
+        `python3 -c "import os; os.replace('/tmp/src', '/tmp')"`,
+        `python3 -c "from pathlib import Path; print('a'.replace('a', str(Path('README.md').write_text('x'))))"`,
+      ];
+      for (const cmd of roDenied) {
+        assert.equal(runPyCmd("ro-py-id", cmd).decision, "deny", `expected ro deny for ${cmd}`);
+      }
+
+      for (const convId of ["impl-py-id", "adv-py-id"]) {
+        assert.equal(
+          runPyCmd(convId, `python3 -c "s = 'cfg'; print(s.replace('/etc/old', '/etc/new'))"`).decision,
+          "allow",
+        );
+        for (const badAuthorCmd of [
+          `python3 -c "from pathlib import Path; Path('/tmp/src').replace('${join(sb.outsideDir, "dst")}')"`,
+          `python3 -c "from pathlib import Path; Path('/tmp/src').rename('${join(sb.outsideDir, "dst")}')"`,
+          `python3 -c "p.replace('${join(sb.outsideDir, "dst")}')"`,
+          `python3 -c "from pathlib import Path; Path('/tmp/src').replace('${sb.worktree}')"`,
+        ]) {
+          assert.equal(runPyCmd(convId, badAuthorCmd).decision, "deny", `expected ${convId} deny for ${badAuthorCmd}`);
+        }
+      }
+
+      assert.equal(
+        runPyCmd("sicko-py-id", `python3 -c "print('hello'.replace('e', 'a'))"`).decision,
+        "allow",
+      );
+      assert.equal(
+        runPyCmd("sicko-py-id", `python3 -c "p.replace('/tmp/out')"`).decision,
+        "deny",
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
 });
