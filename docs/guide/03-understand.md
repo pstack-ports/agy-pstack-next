@@ -6,7 +6,7 @@ Editing unfamiliar code blind is the fastest way to ship subtle regressions. Age
 
 ## One parallel `ro-*` mesh, three modes
 
-[`/understand`](../../skills/understand/SKILL.md) spawns a read-only swarm mesh (`ro-code`, `ro-git`, `ro-tracker`, `ro-docs` in `workspace: "inherit"`). Because `hooks/guard.mjs` enforces read-only safety mechanically across files, shell commands, and MCP tools, every `ro-*` worker can cross-query source files, `git log` and `git blame`, GitHub PRs, issue trackers, and design docs simultaneously. Workers post `#seq` clues on the shared board so peers pivot live when `git blame` uncovers a decisive PR or incident ticket.
+[`/understand`](../../skills/understand/SKILL.md) spawns a read-only swarm mesh (`ro-code`, `ro-git`, `ro-tracker`, `ro-docs` in `workspace: "inherit"`). Because `hooks/guard.mjs` enforces structural zero-regex, zero-sandbox read-only gating across `edit_file`, `write_file`, mutating `git` and `gh` commands, and mutating MCP tools (with per-conversation `capsules/` state and `Stop` `git status` cleanliness checks), every `ro-*` worker can cross-query source files, `git log` and `git blame`, GitHub PRs, issue trackers, and design docs simultaneously. Workers post `#seq` clues on the shared board so peers pivot live when `git blame` uncovers a decisive PR or incident ticket.
 
 Pick any of `/understand`'s three modes through natural phrasing.
 
@@ -54,7 +54,7 @@ When returning to a long-running swarm or resuming work from earlier in the week
 
 Parallel `ro-*` gatherers inspect `board.jsonl` `#seq` deltas, `members.json` roster state (plus `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` is active in Antigravity 2.0), prior `<appDataDir>/brain/*/.system_generated/swarm/` boards, `git log`, and open `gh pr` status without mutating anything. Every item waiting on your decision comes back with options, `#seq` evidence, and risk so you can decide from the briefing alone.
 
-Run [`/bro`](../../skills/bro/SKILL.md) (`/agy-pstack-next:bro`) to restate the previous message in plain everyday words, pass `--plain` to `/ketchup` for a zero-jargon catch-up summary, or pass `--video` for a short subtitled slide walkthrough of what changed:
+Run [`/bro`](../../skills/bro/SKILL.md) (`/agy-pstack-next:bro`) to restate the previous message in plain everyday words, pass `--plain` to `/ketchup` for a zero-jargon catch-up summary, or pass `--video` for a short subtitled slide walkthrough of what changed. Standalone `/bro` and `/ketchup --plain` invocations pass through `hooks/guard.mjs` unmanaged without activating coordinator capsules or blocking subagents:
 
 ```text
 /agy-pstack-next:bro

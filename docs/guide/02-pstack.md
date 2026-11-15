@@ -1,6 +1,6 @@
 # Route work through `/pstack`
 
-[`/pstack`](../../skills/pstack/SKILL.md) is the swarm coordinator kernel. You describe the outcome and how to verify it. The coordinator selects one of six composable topologies, sizes a prefix-typed worker roster on the native swarm board, enforces worktree boundaries through `hooks/guard.mjs`, and lands only verified commits.
+[`/pstack`](../../skills/pstack/SKILL.md) is the swarm coordinator kernel. You describe the outcome and how to verify it. The coordinator selects one of six composable topologies, sizes a prefix-typed worker roster on the native swarm board, enforces structural zero-regex, zero-sandbox worktree boundaries through [`hooks.json`](../../hooks.json) and [`hooks/guard.mjs`](../../hooks/guard.mjs), and lands only verified commits.
 
 ![A dispatcher pulls a switch lever to route robots on rail handcars toward lit gates for bug fixes, features, and investigations.](./images/router.jpg)
 
@@ -63,8 +63,8 @@ If you want help tightening a high-stakes prompt before launching a swarm, ask [
 
 Running parallel authors in one directory corrupts files, git index state, and dev ports. Pstack v2 isolates swarm execution mechanically.
 
-- **`workspace: "share"` per author.** Every `impl-*`, `cand-*`, `lead-*`, `adv-*`, and `sicko-*` worker gets its own git working copy. [`hooks/guard.mjs`](../../hooks/guard.mjs) resolves `realpathSync` on every `edit_file` and `write_file` call so no worker can escape its worktree via `../` or symlinks.
-- **Read-only `ro-*` workers.** Explorers and verifiers run in `workspace: "inherit"` with zero repository write permissions, keeping temporary test artifacts strictly under `/tmp`.
+- **`workspace: "share"` per author.** Every `impl-*`, `cand-*`, `lead-*`, `adv-*`, and `sicko-*` worker gets its own git working copy. [`hooks/guard.mjs`](../../hooks/guard.mjs) stores per-conversation capsule state under `capsules/` and resolves `realpathSync` on every `edit_file` and `write_file` call with zero regexes or OS sandboxing so no worker can escape its worktree via `../` or symlinks.
+- **Read-only `ro-*` workers and `Stop` cleanliness checks.** Explorers and verifiers run in `workspace: "inherit"` with zero repository write permissions (`edit_file` and mutating `git`, `gh`, and MCP calls are blocked, keeping `write_file` probes strictly under canonical temp roots and timeline screenshots). On `Stop`, `hooks/guard.mjs` checks `git status` cleanliness for `ro-*` and rejects untracked or deleted files for `sicko-*`. Inline non-swarm skills (`/bro`, `/technical-writing`, `/setup-pstack`, `/statechart`, `/control-ui`, `/control-cli`, `/make-bot-ui`, and `/ketchup --plain`) pass through unmanaged.
 - **Merge before `kill`.** Calling `swarm{action: "kill"}` permanently deletes a worker's `share` worktree. The coordinator always fetches and merges (or cherry-picks) verified worker SHAs before killing any worker.
 - **`#seq` citations and doorbell `@mentions`.** Workers reference earlier board messages by `#seq` number rather than pasting duplicate logs, and `@mention` only the specific peer who needs to wake next.
 
