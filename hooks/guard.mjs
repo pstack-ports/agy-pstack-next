@@ -17,186 +17,117 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const LEGACY_SUBAGENT_TOOLS = new Set([
-  "invoke_subagent",
-  "define_subagent",
-  "manage_subagents",
-  "send_message",
-  "run_workflow",
-]);
+function wordSet(text) {
+  return new Set(text.split(" ").filter(Boolean));
+}
 
-const SWARM_BOARD_TOOLS = new Set([
-  "post_message",
-  "read_board",
-  "swarm_wait",
-  "swarm",
-]);
-
-const PSTACK_SLASH_COMMAND_RE =
-  /(?:^|\s)\/(?:agy-pstack-next:)?(?:pstack|setup-pstack|understand|crucible|interrogate|reflect|ketchup|bro|verify-gen|control-ui|control-cli|statechart|technical-writing|make-bot-ui)\b/i;
-
-const BUILTIN_SWARM_SLASH_RE = /(?:^|\s)\/swarm\b/i;
-
-const PSTACK_WORKER_PREFIX_RE = /^(?:impl|cand|lead|ro|adv|sicko)-/i;
-
-const BUILTIN_SUPPORT_MEMBER_RE = /^(?:coordinator|monitor(?:-\d+)?|narrator(?:-\d+)?)$/i;
-
-const REMOTE_SWARM_ID_RE = /^[A-Za-z0-9._-]{4,128}$/;
-
-const REMOTE_ROSTER_TTL_MS = 15000;
-
-const REMOTE_MISS_BACKOFF_MS = 5000;
-
-const ROLE_CAPSULE_HEADING_RE = /(?:^|\r?\n|\\n)# [^\r\n\\]+ role capsule(?:\r?\n|\\n|$)/i;
-
-const FORK_MEMORY_MARKER_RE = /Everything before this turn is @[A-Za-z0-9_-]+'s memory/;
-
+const LEGACY_SUBAGENT_TOOLS = wordSet(
+  "invoke_subagent define_subagent manage_subagents send_message run_workflow",
+);
+const SWARM_BOARD_TOOLS = wordSet(
+  "post_message read_board swarm_wait swarm list_resources read_resource",
+);
+const MUTATING_MCP_VERBS = wordSet(
+  "create update delete remove set post reply resolve merge close push write edit append restore upload generate install uninstall send modify patch drop insert",
+);
+const COORDINATOR_SLASH_COMMANDS = wordSet(
+  "pstack understand crucible interrogate reflect verify-gen ketchup",
+);
+const RO_BLOCKED_GIT_SUBCOMMANDS = wordSet(
+  "add stage commit push pull merge rebase cherry-pick reset clean am apply mv rm checkout switch revert restore init clone update-ref",
+);
+const SICKO_BLOCKED_GIT_SUBCOMMANDS = wordSet(
+  "push pull fetch checkout switch restore reset clean rebase merge cherry-pick revert stash worktree init clone am apply rm mv",
+);
+const GH_MUTATING_ACTIONS = {
+  pr: wordSet("create merge close reopen edit ready comment review"),
+  issue: wordSet("create edit close delete reopen comment"),
+  release: wordSet("create delete edit upload"),
+  repo: wordSet("create delete edit fork archive rename"),
+};
+const SCREENSHOT_EXTENSIONS = wordSet(".png .jpg .jpeg .webp");
+const SHELL_KEYWORDS = wordSet("if then else elif fi while until do done { } !");
 const ROLE_OVERRIDE_NOTICE =
   "> **Role override.** Your active swarm role has changed. The role capsule below supersedes every earlier role capsule in this conversation history, including rules inherited through `fork`.\n\n";
 
-const MUTATING_MCP_PATTERN =
-  /(^|_)(create|update|delete|remove|set|post|reply|resolve|merge|close|push|write|edit|append|restore|upload|generate|install|uninstall|send|modify|patch|drop|insert)(_|$)/i;
+function isDigit(code) {
+  return code >= 48 && code <= 57;
+}
 
-const MUTATING_GIT_SUBCOMMANDS = new Set([
-  "add",
-  "stage",
-  "commit",
-  "push",
-  "pull",
-  "merge",
-  "rebase",
-  "cherry-pick",
-  "reset",
-  "clean",
-  "am",
-  "apply",
-  "mv",
-  "rm",
-  "checkout",
-  "switch",
-  "revert",
-  "restore",
-  "init",
-  "clone",
-  "update-ref",
-]);
+function isAlpha(code) {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
 
-const GIT_GLOBAL_VALUE_FLAGS = new Set([
-  "-C",
-  "-c",
-  "--git-dir",
-  "--work-tree",
-  "--namespace",
-  "--super-prefix",
-  "--config-env",
-]);
+function isIdentPart(code) {
+  return isAlpha(code) || code === 95 || isDigit(code);
+}
 
-const HARD_BLOCKED_RO_FS_COMMANDS = new Set([
-  "rmdir",
-  "chown",
-  "chgrp",
-  "patch",
-  "ln",
-]);
+function isWhitespaceChar(ch) {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
 
-const SICKO_BLOCKED_FS_COMMANDS = new Set([
-  "cp",
-  "mv",
-  "rm",
-  "rmdir",
-  "unlink",
-  "ln",
-  "install",
-  "mkdir",
-  "touch",
-  "truncate",
-  "dd",
-  "patch",
-  "chmod",
-  "chown",
-  "chgrp",
-]);
+function isAllDigits(text) {
+  if (text.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < text.length; i += 1) {
+    if (!isDigit(text.charCodeAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
 
-const NPM_INSTALL_SUBCOMMANDS = new Set([
-  "install",
-  "i",
-  "add",
-  "ci",
-  "uninstall",
-  "remove",
-  "rm",
-  "un",
-  "update",
-  "up",
-  "link",
-  "unlink",
-  "dedupe",
-  "prune",
-  "rebuild",
-  "publish",
-  "init",
-  "dlx",
-]);
+function isShellIdent(text) {
+  if (text.length === 0) {
+    return false;
+  }
+  const first = text.charCodeAt(0);
+  if (!isAlpha(first) && first !== 95) {
+    return false;
+  }
+  for (let i = 1; i < text.length; i += 1) {
+    if (!isIdentPart(text.charCodeAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
 
-const PIP_INSTALL_SUBCOMMANDS = new Set([
-  "install",
-  "uninstall",
-  "download",
-  "wheel",
-]);
+function isSafeConvId(conversationId) {
+  return (
+    typeof conversationId === "string" &&
+    conversationId.length > 0 &&
+    !conversationId.includes("/") &&
+    !conversationId.includes("\\") &&
+    conversationId !== "." &&
+    conversationId !== ".."
+  );
+}
 
-const NODE_SINGLE_PATH_FS_APIS = new Set([
-  "writeFileSync",
-  "writeFile",
-  "appendFileSync",
-  "appendFile",
-  "unlinkSync",
-  "unlink",
-  "rmSync",
-  "rm",
-  "rmdirSync",
-  "rmdir",
-  "mkdirSync",
-  "mkdir",
-  "mkdtempSync",
-  "mkdtemp",
-  "chmodSync",
-  "chmod",
-  "chownSync",
-  "chown",
-  "truncateSync",
-  "truncate",
-  "createWriteStream",
-]);
-
-const NODE_TWO_PATH_FS_APIS = new Set([
-  "renameSync",
-  "rename",
-  "symlinkSync",
-  "symlink",
-  "linkSync",
-  "link",
-]);
-
-const NODE_COPY_FS_APIS = new Set([
-  "copyFileSync",
-  "copyFile",
-  "cpSync",
-  "cp",
-]);
-
-function normalizeToolName(rawName) {
-  const name = typeof rawName === "string" ? rawName : String(rawName || "");
-  return name.startsWith("default_api:") ? name.slice("default_api:".length) : name;
+function parseJsonObjectSafe(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function readJsonObject(filePath) {
   try {
-    if (!existsSync(filePath)) return {};
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    if (!existsSync(filePath)) {
+      return {};
+    }
+    return parseJsonObjectSafe(readFileSync(filePath, "utf8")) || {};
   } catch {
     return {};
   }
@@ -205,30 +136,27 @@ function readJsonObject(filePath) {
 function writeJsonAtomically(filePath, obj) {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  const tmpPath = join(dir, `.${basename(filePath)}.${suffix}.tmp`);
-  const serialized = JSON.stringify(obj, null, 2) + "\n";
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  const tmpPath = join(dir, `.${basename(filePath)}.${suffix}`);
+  const serialized = `${JSON.stringify(obj, null, 2)}\n`;
   try {
     writeFileSync(tmpPath, serialized, "utf8");
     renameSync(tmpPath, filePath);
   } catch {
     try {
-      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+      if (existsSync(tmpPath)) {
+        unlinkSync(tmpPath);
+      }
     } catch {}
     writeFileSync(filePath, serialized, "utf8");
   }
 }
 
-function updateJsonKey(filePath, key, value) {
-  const current = readJsonObject(filePath);
-  if (current[key] === value) return;
-  current[key] = value;
-  writeJsonAtomically(filePath, current);
-}
-
 function updateJsonKeys(filePath, entries) {
   const keys = Object.keys(entries);
-  if (keys.length === 0) return;
+  if (keys.length === 0) {
+    return;
+  }
   const current = readJsonObject(filePath);
   let changed = false;
   for (const key of keys) {
@@ -242,897 +170,172 @@ function updateJsonKeys(filePath, entries) {
   }
 }
 
+function safeConvFilename(conversationId) {
+  if (typeof conversationId !== "string" || !conversationId) {
+    return "__unknown__";
+  }
+  if (conversationId === "." || conversationId === "..") {
+    return "__dot__";
+  }
+  let out = "";
+  for (let i = 0; i < conversationId.length; i += 1) {
+    const c = conversationId.charCodeAt(i);
+    if (isAlpha(c) || isDigit(c) || c === 46 || c === 95 || c === 45) {
+      out += conversationId[i];
+    } else {
+      out += "_";
+    }
+  }
+  return out;
+}
+
+function capsuleStatePath(cacheDir, conversationId) {
+  return join(cacheDir, "capsules", `${safeConvFilename(conversationId)}.json`);
+}
+
+function readCapsuleState(cacheDir, conversationId) {
+  if (!conversationId) {
+    return {};
+  }
+  return readJsonObject(capsuleStatePath(cacheDir, conversationId));
+}
+
+function updateCapsuleState(cacheDir, conversationId, patch) {
+  const next = { ...readCapsuleState(cacheDir, conversationId), ...patch };
+  writeJsonAtomically(capsuleStatePath(cacheDir, conversationId), next);
+  return next;
+}
+
 function resolveAppDataDir(payload, env) {
-  if (typeof env.PSTACK_APPDATA_DIR === "string" && env.PSTACK_APPDATA_DIR.length > 0) {
+  if (typeof env.PSTACK_APPDATA_DIR === "string" && env.PSTACK_APPDATA_DIR) {
     return env.PSTACK_APPDATA_DIR;
   }
-  const candidates = [payload.transcriptPath, payload.artifactDirectoryPath];
-  for (const candidate of candidates) {
-    if (typeof candidate !== "string" || candidate.length === 0) continue;
-    const normalized = candidate.replace(/\\/g, "/");
-    const brainIdx = normalized.indexOf("/brain/");
+  for (const candidate of [payload.transcriptPath, payload.artifactDirectoryPath]) {
+    if (typeof candidate !== "string" || !candidate) {
+      continue;
+    }
+    const norm = candidate.replaceAll("\\", "/");
+    const brainIdx = norm.indexOf("/brain/");
     if (brainIdx > 0) {
       return candidate.slice(0, brainIdx);
     }
-    if (normalized.endsWith("/brain") && normalized.length > 6) {
-      return candidate.slice(0, normalized.length - 6);
+    if (norm.endsWith("/brain") && norm.length > 6) {
+      return candidate.slice(0, norm.length - 6);
+    }
+    const marker = "/.gemini/antigravity";
+    const markerIdx = norm.indexOf(marker);
+    if (markerIdx >= 0) {
+      let end = markerIdx + marker.length;
+      if (norm[end] === "-") {
+        const start = end + 1;
+        end = start;
+        while (end < norm.length && (isIdentPart(norm.charCodeAt(end)) || norm[end] === "-")) {
+          end += 1;
+        }
+        if (end === start) {
+          end = -1;
+        }
+      }
+      if (end > 0 && (end === norm.length || norm[end] === "/")) {
+        return candidate.slice(0, end);
+      }
     }
   }
-  for (const candidate of candidates) {
-    if (typeof candidate !== "string" || candidate.length === 0) continue;
-    const match = candidate.match(/^(.*?[/\\]\.gemini[/\\]antigravity(?:-[a-zA-Z0-9_-]+)?)(?:[/\\]|$)/);
-    if (match) return match[1];
-  }
-  if (typeof env.ANTIGRAVITY_APP_DATA_DIR === "string" && env.ANTIGRAVITY_APP_DATA_DIR.length > 0) {
+  if (typeof env.ANTIGRAVITY_APP_DATA_DIR === "string" && env.ANTIGRAVITY_APP_DATA_DIR) {
     return env.ANTIGRAVITY_APP_DATA_DIR;
   }
-  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.length > 0) {
-    const parent = dirname(env.PLUGIN_DATA);
-    if (basename(parent) === "plugin_data") {
-      return dirname(parent);
+  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA) {
+    if (basename(dirname(env.PLUGIN_DATA)) === "plugin_data") {
+      return dirname(dirname(env.PLUGIN_DATA));
     }
   }
   return null;
 }
 
 function resolveCacheDir(appDataDir, env) {
-  if (typeof env.PSTACK_CACHE_DIR === "string" && env.PSTACK_CACHE_DIR.length > 0) {
+  if (typeof env.PSTACK_CACHE_DIR === "string" && env.PSTACK_CACHE_DIR) {
     return env.PSTACK_CACHE_DIR;
   }
-  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA.length > 0) {
+  if (typeof env.PLUGIN_DATA === "string" && env.PLUGIN_DATA) {
     return env.PLUGIN_DATA;
   }
-  return appDataDir
-    ? join(appDataDir, "plugin_data", "agy-pstack-next")
-    : join(tmpdir(), "pstack-swarm-guard");
+  if (appDataDir) {
+    return join(appDataDir, "plugin_data", "agy-pstack-next");
+  }
+  return join(tmpdir(), "pstack-swarm-guard");
 }
 
 function resolvePluginRoot(env) {
-  if (typeof env.PSTACK_PLUGIN_ROOT === "string" && env.PSTACK_PLUGIN_ROOT.length > 0) {
+  if (typeof env.PSTACK_PLUGIN_ROOT === "string" && env.PSTACK_PLUGIN_ROOT) {
     return env.PSTACK_PLUGIN_ROOT;
   }
-  if (typeof env.PLUGIN_ROOT === "string" && env.PLUGIN_ROOT.length > 0) {
+  if (typeof env.PLUGIN_ROOT === "string" && env.PLUGIN_ROOT) {
     return env.PLUGIN_ROOT;
   }
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function resolveConfigJsonPath(env) {
-  if (typeof env.PSTACK_CONFIG_DIR === "string" && env.PSTACK_CONFIG_DIR.length > 0) {
-    return join(env.PSTACK_CONFIG_DIR, "config.json");
-  }
-  const pluginRoot = resolvePluginRoot(env);
-  if (pluginRoot && basename(dirname(pluginRoot)) === "plugins") {
-    return join(dirname(dirname(pluginRoot)), "config.json");
-  }
-  if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT && !env.PLUGIN_ROOT) {
-    const home = typeof env.HOME === "string" && env.HOME.length > 0 ? env.HOME : homedir();
-    return join(home, ".gemini", "config", "config.json");
-  }
-  return null;
-}
-
 function isPluginDisabled(env) {
-  const configPath = resolveConfigJsonPath(env);
-  if (!configPath || !existsSync(configPath)) return false;
-  const parsed = readJsonObject(configPath);
-  return parsed?.plugins?.["agy-pstack-next"]?.enabled === false;
-}
-
-function resolveOwnTranscriptPath(payload, appDataDir) {
-  if (typeof payload.transcriptPath === "string" && payload.transcriptPath.length > 0) {
-    return payload.transcriptPath;
+  let configPath = null;
+  if (typeof env.PSTACK_CONFIG_DIR === "string" && env.PSTACK_CONFIG_DIR) {
+    configPath = join(env.PSTACK_CONFIG_DIR, "config.json");
+  } else {
+    const pluginRoot = resolvePluginRoot(env);
+    if (pluginRoot && basename(dirname(pluginRoot)) === "plugins") {
+      configPath = join(dirname(dirname(pluginRoot)), "config.json");
+    } else if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT && !env.PLUGIN_ROOT) {
+      const home = typeof env.HOME === "string" && env.HOME ? env.HOME : homedir();
+      configPath = join(home, ".gemini", "config", "config.json");
+    }
   }
-  if (appDataDir && typeof payload.conversationId === "string" && payload.conversationId.length > 0) {
-    const stdPath = join(
-      appDataDir,
-      "brain",
-      payload.conversationId,
-      ".system_generated",
-      "logs",
-      "transcript.jsonl",
-    );
-    if (existsSync(stdPath)) return stdPath;
-    const flatPath = join(appDataDir, "brain", payload.conversationId, "transcript.jsonl");
-    if (existsSync(flatPath)) return flatPath;
-  }
-  return null;
-}
-
-function isSystemRoleCapsuleStep(parsed) {
-  if (!parsed || typeof parsed !== "object") return false;
-  if (parsed.type !== "SYSTEM_MESSAGE" && parsed.source !== "SYSTEM_SDK") {
+  if (!configPath || !existsSync(configPath)) {
     return false;
   }
-  return typeof parsed.content === "string" && ROLE_CAPSULE_HEADING_RE.test(parsed.content);
-}
-
-function transcriptIsUnforkedUserRoot(transcriptPath, hasPriorInjectedCapsule) {
-  if (!transcriptPath || !existsSync(transcriptPath)) return false;
-  try {
-    const content = readFileSync(transcriptPath, "utf8");
-    if (
-      /\[swarm\] new board message|Your assignment \(recorded on the board/.test(content) ||
-      FORK_MEMORY_MARKER_RE.test(content)
-    ) {
-      return false;
-    }
-    let sawFirstStep = false;
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const parsed = JSON.parse(trimmed);
-      if (!parsed || typeof parsed !== "object") return false;
-      if (!sawFirstStep) {
-        if (parsed.type !== "USER_INPUT") return false;
-        sawFirstStep = true;
-      }
-      if (typeof parsed.content === "string" && FORK_MEMORY_MARKER_RE.test(parsed.content)) {
-        return false;
-      }
-      if (!hasPriorInjectedCapsule && isSystemRoleCapsuleStep(parsed)) {
-        return false;
-      }
-    }
-    return sawFirstStep;
-  } catch {
-    return false;
-  }
-}
-
-function transcriptContainsRoleCapsule(transcriptPath) {
-  if (!transcriptPath || !existsSync(transcriptPath)) return false;
-  try {
-    const content = readFileSync(transcriptPath, "utf8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (isSystemRoleCapsuleStep(parsed)) {
-          return true;
-        }
-      } catch {}
-    }
-  } catch {
-    return false;
-  }
-  return false;
-}
-
-function extractMembersFromDoc(doc, targetConversationId, fallbackCoordId = null) {
-  const workerEntries = {};
-  let matchedCoordinator = false;
-  let coordId =
-    typeof fallbackCoordId === "string" && fallbackCoordId.length > 0 ? fallbackCoordId : null;
-  let hasPstackPrefixedWorker = false;
-  let hasTaskWorker = false;
-  const members = doc && typeof doc === "object" ? doc.members : null;
-  if (!members || typeof members !== "object") {
-    return {
-      hasMembers: false,
-      workerEntries,
-      matchedCoordinator,
-      coordId,
-      hasPstackPrefixedWorker,
-      hasTaskWorker,
-    };
-  }
-  for (const [memberName, info] of Object.entries(members)) {
-    if (!info || typeof info !== "object") continue;
-    const cid = info.conversation_id || info.conversationId;
-    if (memberName === "coordinator" || info.role === "coordinator") {
-      if (typeof cid === "string" && cid.length > 0) {
-        coordId = cid;
-        if (cid === targetConversationId) matchedCoordinator = true;
-      }
-      continue;
-    }
-    if (PSTACK_WORKER_PREFIX_RE.test(memberName)) {
-      hasPstackPrefixedWorker = true;
-    }
-    if (!BUILTIN_SUPPORT_MEMBER_RE.test(memberName)) {
-      hasTaskWorker = true;
-    }
-    if (typeof cid === "string" && cid.length > 0) {
-      workerEntries[cid] = memberName;
-    }
-  }
-  return {
-    hasMembers: true,
-    workerEntries,
-    matchedCoordinator,
-    coordId,
-    hasPstackPrefixedWorker,
-    hasTaskWorker,
-  };
-}
-
-function isManagedPstackSwarm({
-  swarmDir,
-  coordId,
-  hasPstackPrefixedWorker,
-  hasTaskWorker,
-  injectedMap,
-  plainSwarmRoots,
-}) {
-  const hasPstackMarker = Boolean(swarmDir && existsSync(join(swarmDir, "pstack.json")));
-  const coordAlreadyManaged = Boolean((coordId && injectedMap[coordId]) || hasPstackMarker);
-  if (hasPstackPrefixedWorker || coordAlreadyManaged) {
-    return true;
-  }
-  if (coordId && plainSwarmRoots[coordId]) {
-    return false;
-  }
-  if (hasTaskWorker) {
-    return false;
-  }
-  return true;
-}
-
-function getAnchorCoordinatorId(doc, ownerDirId) {
-  const explicitCoord =
-    doc.coordinator_conversation_id ||
-    doc.coordinatorConversationId ||
-    doc.coordinator_id ||
-    doc.coordinatorId;
-  if (typeof explicitCoord === "string" && explicitCoord.length > 0) {
-    return explicitCoord;
-  }
-  if (
-    doc.backend === "local" &&
-    typeof doc.swarm_id === "string" &&
-    doc.swarm_id.length > 0 &&
-    !doc.swarm_id.startsWith("-") &&
-    REMOTE_SWARM_ID_RE.test(doc.swarm_id)
-  ) {
-    return doc.swarm_id;
-  }
-  return ownerDirId;
-}
-
-function parseRemoteSwarmAnchor(doc) {
-  if (!doc || typeof doc !== "object") return null;
-  if (typeof doc.backend !== "string" || doc.backend.length === 0 || doc.backend === "local") {
-    return null;
-  }
-  if (
-    typeof doc.swarm_id !== "string" ||
-    doc.swarm_id.startsWith("-") ||
-    !REMOTE_SWARM_ID_RE.test(doc.swarm_id)
-  ) {
-    return null;
-  }
-  let db = "";
-  if (doc.db !== undefined && doc.db !== null && doc.db !== "") {
-    if (typeof doc.db !== "string" || doc.db.startsWith("-")) {
-      return null;
-    }
-    db = doc.db;
-  }
-  return { backend: doc.backend, swarmId: doc.swarm_id, db };
-}
-
-function isExecutableFile(filePath) {
-  try {
-    accessSync(filePath, fsConstants.X_OK);
-    return statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function resolveRemoteBoardCli(anchor, appDataDir, env) {
-  if (typeof env.PSTACK_REMOTE_SWARM_CLI === "string" && env.PSTACK_REMOTE_SWARM_CLI.length > 0) {
-    return env.PSTACK_REMOTE_SWARM_CLI;
-  }
-  const cfgPath =
-    typeof env.PSTACK_REMOTE_BOARD_CONFIG === "string" && env.PSTACK_REMOTE_BOARD_CONFIG.length > 0
-      ? env.PSTACK_REMOTE_BOARD_CONFIG
-      : appDataDir
-        ? join(
-            appDataDir,
-            "builtin",
-            "plugins",
-            "swarm",
-            "sidecars",
-            "swarm_board",
-            "remote_board.json",
-          )
-        : null;
-  if (!cfgPath || !existsSync(cfgPath)) return null;
-  const cfg = readJsonObject(cfgPath);
-  if (typeof cfg.backend !== "string" || cfg.backend.length === 0 || cfg.backend !== anchor.backend) {
-    return null;
-  }
-  const cliEnvName = typeof cfg.cli_env === "string" ? cfg.cli_env : "";
-  const envOverride = cliEnvName ? env[cliEnvName] : "";
-  if (
-    typeof envOverride === "string" &&
-    envOverride.length > 0 &&
-    (!envOverride.includes("/") || isExecutableFile(envOverride))
-  ) {
-    return envOverride;
-  }
-  const cliList = Array.isArray(cfg.cli)
-    ? cfg.cli.filter((c) => typeof c === "string" && c.length > 0)
-    : [];
-  if (cliList.length === 0) return null;
-  const pathDirs = String(env.PATH || process.env.PATH || "")
-    .split(":")
-    .filter(Boolean);
-  for (const candidate of cliList) {
-    const hits = candidate.includes("/")
-      ? [candidate]
-      : pathDirs.map((dir) => join(dir, candidate));
-    const found = hits.find(isExecutableFile);
-    if (found) return found;
-  }
-  return cliList[cliList.length - 1];
-}
-
-function rosterContainsConversation(members, targetConversationId) {
-  if (!members || typeof members !== "object" || !targetConversationId) return false;
-  for (const info of Object.values(members)) {
-    if (!info || typeof info !== "object") continue;
-    const cid = info.conversation_id || info.conversationId;
-    if (cid === targetConversationId) return true;
-  }
-  return false;
-}
-
-function resolveRemoteSwarmRoster(anchorDoc, appDataDir, cacheDir, env, targetConversationId) {
-  const anchor = parseRemoteSwarmAnchor(anchorDoc);
-  if (!anchor) return null;
-  const cliBin = resolveRemoteBoardCli(anchor, appDataDir, env);
-  if (!cliBin) return null;
-
-  const rostersPath = join(cacheDir, "remote-rosters.json");
-  const rostersCache = readJsonObject(rostersPath);
-  const cachedEntry = rostersCache[anchor.swarmId];
-  const now = Date.now();
-  const hasValidCache =
-    Boolean(cachedEntry) &&
-    typeof cachedEntry === "object" &&
-    typeof cachedEntry.fetchedAt === "number" &&
-    Boolean(cachedEntry.members) &&
-    typeof cachedEntry.members === "object" &&
-    !Array.isArray(cachedEntry.members);
-
-  if (hasValidCache) {
-    const age = now - cachedEntry.fetchedAt;
-    const inRoster = rosterContainsConversation(cachedEntry.members, targetConversationId);
-    if (
-      (inRoster && age >= 0 && age < REMOTE_ROSTER_TTL_MS) ||
-      (!inRoster && age >= 0 && age < REMOTE_MISS_BACKOFF_MS)
-    ) {
-      return { members: cachedEntry.members };
-    }
-  }
-
-  try {
-    const cliArgs = [
-      "swarm",
-      "--json",
-      "--roster-only",
-      ...(anchor.db ? ["--db", anchor.db] : []),
-      anchor.swarmId,
-    ];
-    const stdout = execFileSync(cliBin, cliArgs, {
-      encoding: "utf8",
-      timeout: 2500,
-      env: { ...env, TERM: "dumb" },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    let matchedMembers = null;
-    for (const line of String(stdout || "").split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const doc = JSON.parse(trimmed);
-        if (
-          doc &&
-          typeof doc === "object" &&
-          doc.swarm_id === anchor.swarmId &&
-          doc.members &&
-          typeof doc.members === "object" &&
-          !Array.isArray(doc.members)
-        ) {
-          matchedMembers = doc.members;
-        }
-      } catch {}
-    }
-    if (!matchedMembers) return null;
-    updateJsonKey(rostersPath, anchor.swarmId, {
-      fetchedAt: Date.now(),
-      members: matchedMembers,
-    });
-    return { members: matchedMembers };
-  } catch {
-    return null;
-  }
-}
-
-function inspectSwarmDirectory(swarmDir, ownerDirId, targetConversationId, context) {
-  const { appDataDir, cacheDir, env, injectedMap, plainSwarmRoots, isOwnSwarmDir } = context;
-  const membersPath = join(swarmDir, "members.json");
-  if (existsSync(membersPath)) {
-    const extracted = extractMembersFromDoc(
-      readJsonObject(membersPath),
-      targetConversationId,
-      ownerDirId,
-    );
-    const managed = isManagedPstackSwarm({
-      swarmDir,
-      coordId: extracted.coordId,
-      hasPstackPrefixedWorker: extracted.hasPstackPrefixedWorker,
-      hasTaskWorker: extracted.hasTaskWorker,
-      injectedMap,
-      plainSwarmRoots,
-    });
-    if (!managed) {
-      const targetIsWorker = Boolean(extracted.workerEntries[targetConversationId]);
-      const targetInSwarm = Boolean(
-        targetIsWorker ||
-          extracted.matchedCoordinator ||
-          extracted.coordId === targetConversationId ||
-          isOwnSwarmDir,
-      );
-      return {
-        kind: "unmanaged_swarm",
-        targetInSwarm,
-        targetIsWorker,
-        hasUnmatchedAnchor: false,
-      };
-    }
-    return {
-      kind: "managed_roster",
-      workerEntries: extracted.workerEntries,
-      matchedCoordinator: extracted.matchedCoordinator || isOwnSwarmDir,
-      hasUnmatchedAnchor: false,
-    };
-  }
-
-  const anchorPath = join(swarmDir, "swarm.json");
-  if (!existsSync(anchorPath)) {
-    return { kind: "none" };
-  }
-
-  const anchorDoc = readJsonObject(anchorPath);
-  const anchorCoordId = getAnchorCoordinatorId(anchorDoc, ownerDirId);
-  const remoteRoster = resolveRemoteSwarmRoster(
-    anchorDoc,
-    appDataDir,
-    cacheDir,
-    env,
-    targetConversationId,
-  );
-  if (remoteRoster) {
-    const extracted = extractMembersFromDoc(remoteRoster, targetConversationId, anchorCoordId);
-    const managed = isManagedPstackSwarm({
-      swarmDir,
-      coordId: extracted.coordId,
-      hasPstackPrefixedWorker: extracted.hasPstackPrefixedWorker,
-      hasTaskWorker: extracted.hasTaskWorker,
-      injectedMap,
-      plainSwarmRoots,
-    });
-    const matchesCoord = extracted.matchedCoordinator || anchorCoordId === targetConversationId;
-    const targetIsWorker = Boolean(extracted.workerEntries[targetConversationId]);
-    const targetInSwarm = Boolean(
-      targetIsWorker ||
-        matchesCoord ||
-        extracted.coordId === targetConversationId,
-    );
-    if (!managed) {
-      return {
-        kind: "unmanaged_swarm",
-        targetInSwarm,
-        targetIsWorker,
-        hasUnmatchedAnchor: !targetInSwarm,
-      };
-    }
-    return {
-      kind: "managed_roster",
-      workerEntries: extracted.workerEntries,
-      matchedCoordinator: matchesCoord,
-      hasUnmatchedAnchor: !targetInSwarm,
-    };
-  }
-
-  if (anchorCoordId === targetConversationId) {
-    const suppressedByPlainSwarm = Boolean(
-      plainSwarmRoots[anchorCoordId] &&
-        !injectedMap[anchorCoordId] &&
-        !existsSync(join(swarmDir, "pstack.json")),
-    );
-    if (suppressedByPlainSwarm) {
-      return {
-        kind: "unmanaged_swarm",
-        targetInSwarm: true,
-        targetIsWorker: false,
-        hasUnmatchedAnchor: false,
-      };
-    }
-    return { kind: "anchor_coordinator" };
-  }
-
-  if (anchorDoc?.backend === "local") {
-    return { kind: "none" };
-  }
-
-  return { kind: "anchor_unresolved" };
-}
-
-function resolveWorkerOrCoordinatorFromSwarm(
-  conversationId,
-  payload,
-  appDataDir,
-  cacheDir,
-  hasPriorInjectedCapsule,
-  env,
-  injectedMap,
-  plainSwarmRoots,
-) {
-  if (typeof conversationId !== "string" || conversationId.length === 0) {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  const mapPath = join(cacheDir, "member-map.json");
-  const cachedMap = readJsonObject(mapPath);
-  const cachedName = cachedMap[conversationId];
-  if (typeof cachedName === "string" && cachedName.length > 0 && cachedName !== "coordinator") {
-    return { workerName: cachedName, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  if (!appDataDir) {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  const candidateRoots = [payload.rootConversationId, payload.parentConversationId];
-  const checkedRoots = new Set();
-  let hasAnchorWithoutMembers = false;
-  let skipNonWorkerCache = false;
-  for (const rootId of candidateRoots) {
-    if (
-      typeof rootId !== "string" ||
-      rootId.length === 0 ||
-      rootId === conversationId ||
-      checkedRoots.has(rootId)
-    ) {
-      continue;
-    }
-    checkedRoots.add(rootId);
-    const swarmDir = join(appDataDir, "brain", rootId, ".system_generated", "swarm");
-    const res = inspectSwarmDirectory(swarmDir, rootId, conversationId, {
-      appDataDir,
-      cacheDir,
-      env,
-      injectedMap,
-      plainSwarmRoots,
-      isOwnSwarmDir: false,
-    });
-    if (res.kind === "managed_roster") {
-      updateJsonKeys(mapPath, res.workerEntries);
-      if (res.workerEntries[conversationId]) {
-        return {
-          workerName: res.workerEntries[conversationId],
-          isKnownCoordinator: false,
-          isUnmanagedSwarmWorker: false,
-        };
-      }
-      if (res.matchedCoordinator) {
-        return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
-      }
-      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
-    } else if (res.kind === "anchor_coordinator") {
-      return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
-    } else if (res.kind === "anchor_unresolved") {
-      hasAnchorWithoutMembers = true;
-    } else if (res.kind === "unmanaged_swarm") {
-      if (res.targetInSwarm) {
-        return {
-          workerName: null,
-          isKnownCoordinator: false,
-          isUnmanagedSwarmWorker: Boolean(res.targetIsWorker),
-        };
-      }
-      skipNonWorkerCache = true;
-      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
-    }
-  }
-
-  const ownSwarmDir = join(appDataDir, "brain", conversationId, ".system_generated", "swarm");
-  const ownRes = inspectSwarmDirectory(ownSwarmDir, conversationId, conversationId, {
-    appDataDir,
-    cacheDir,
-    env,
-    injectedMap,
-    plainSwarmRoots,
-    isOwnSwarmDir: true,
-  });
-  if (ownRes.kind === "managed_roster") {
-    updateJsonKeys(mapPath, ownRes.workerEntries);
-    if (ownRes.workerEntries[conversationId]) {
-      return {
-        workerName: ownRes.workerEntries[conversationId],
-        isKnownCoordinator: false,
-        isUnmanagedSwarmWorker: false,
-      };
-    }
-    if (ownRes.matchedCoordinator) {
-      return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
-    }
-    if (ownRes.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
-  } else if (ownRes.kind === "anchor_coordinator") {
-    return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
-  } else if (ownRes.kind === "unmanaged_swarm") {
-    return {
-      workerName: null,
-      isKnownCoordinator: false,
-      isUnmanagedSwarmWorker: Boolean(ownRes.targetIsWorker),
-    };
-  } else if (ownRes.kind === "anchor_unresolved") {
-    hasAnchorWithoutMembers = true;
-  }
-
-  const nonWorkerRootsPath = join(cacheDir, "non-worker-roots.json");
-  const nonWorkerRoots = readJsonObject(nonWorkerRootsPath);
-  if (nonWorkerRoots[conversationId]) {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  const ownTranscriptPath = resolveOwnTranscriptPath(payload, appDataDir);
-  if (transcriptIsUnforkedUserRoot(ownTranscriptPath, hasPriorInjectedCapsule)) {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  const brainDir = join(appDataDir, "brain");
-  if (!existsSync(brainDir)) {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  let entries = [];
-  try {
-    entries = readdirSync(brainDir, { withFileTypes: true });
-  } catch {
-    return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-  }
-
-  const discoveredWorkers = {};
-  let matchedCoordinator = false;
-  let matchedUnmanagedSwarm = false;
-  let matchedUnmanagedWorker = false;
-  for (const entry of entries) {
-    if (
-      (!entry.isDirectory() && !entry.isSymbolicLink()) ||
-      entry.name === conversationId ||
-      checkedRoots.has(entry.name)
-    ) {
-      continue;
-    }
-    const swarmDir = join(brainDir, entry.name, ".system_generated", "swarm");
-    const res = inspectSwarmDirectory(swarmDir, entry.name, conversationId, {
-      appDataDir,
-      cacheDir,
-      env,
-      injectedMap,
-      plainSwarmRoots,
-      isOwnSwarmDir: false,
-    });
-    if (res.kind === "managed_roster") {
-      Object.assign(discoveredWorkers, res.workerEntries);
-      if (res.matchedCoordinator) matchedCoordinator = true;
-      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
-    } else if (res.kind === "anchor_coordinator") {
-      matchedCoordinator = true;
-    } else if (res.kind === "anchor_unresolved") {
-      hasAnchorWithoutMembers = true;
-    } else if (res.kind === "unmanaged_swarm") {
-      if (res.targetInSwarm) {
-        matchedUnmanagedSwarm = true;
-        if (res.targetIsWorker) matchedUnmanagedWorker = true;
-      }
-      if (res.hasUnmatchedAnchor) hasAnchorWithoutMembers = true;
-    }
-  }
-
-  updateJsonKeys(mapPath, discoveredWorkers);
-  if (discoveredWorkers[conversationId]) {
-    return {
-      workerName: discoveredWorkers[conversationId],
-      isKnownCoordinator: false,
-      isUnmanagedSwarmWorker: false,
-    };
-  }
-  if (matchedCoordinator) {
-    return { workerName: null, isKnownCoordinator: true, isUnmanagedSwarmWorker: false };
-  }
-  if (matchedUnmanagedSwarm) {
-    return {
-      workerName: null,
-      isKnownCoordinator: false,
-      isUnmanagedSwarmWorker: matchedUnmanagedWorker,
-    };
-  }
-
-  if (!hasAnchorWithoutMembers && !skipNonWorkerCache) {
-    updateJsonKey(nonWorkerRootsPath, conversationId, true);
-  }
-  return { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
-}
-
-function classifyWorkerMember(memberName) {
-  if (
-    memberName === "narrator" ||
-    memberName.startsWith("narrator-") ||
-    memberName === "monitor" ||
-    memberName.startsWith("monitor-")
-  ) {
-    return { kind: "builtin", capsule: null };
-  }
-  if (
-    memberName.startsWith("impl-") ||
-    memberName.startsWith("cand-") ||
-    memberName.startsWith("lead-")
-  ) {
-    return { kind: "author", capsule: "roles/poteto-agent.md" };
-  }
-  if (memberName.startsWith("adv-")) {
-    return { kind: "adversary", capsule: "roles/poteto-agent.md" };
-  }
-  if (memberName.startsWith("ro-")) {
-    return { kind: "readonly", capsule: "roles/research.md" };
-  }
-  if (memberName.startsWith("sicko-")) {
-    return { kind: "sicko", capsule: "roles/comment-sicko.md" };
-  }
-  const baseMemberName = memberName.replace(/-\d+$/, "");
-  if (
-    baseMemberName === "verifier" ||
-    memberName.startsWith("verifier-") ||
-    baseMemberName.endsWith("-verifier") ||
-    memberName.startsWith("verify-")
-  ) {
-    return { kind: "readonly", capsule: "roles/research.md" };
-  }
-  return { kind: "author", capsule: "roles/poteto-agent.md" };
-}
-
-function classifySession(payload, env) {
-  const appDataDir = resolveAppDataDir(payload, env);
-  const cacheDir = resolveCacheDir(appDataDir, env);
-  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
-  const injectedPath = join(cacheDir, "injected-capsules.json");
-  const injectedMap = readJsonObject(injectedPath);
-  const alreadyInjected =
-    conversationId.length > 0 &&
-    typeof injectedMap[conversationId] === "string" &&
-    injectedMap[conversationId].length > 0;
-
-  const matchesSlashCommand =
-    typeof payload.lastUserInput === "string" && PSTACK_SLASH_COMMAND_RE.test(payload.lastUserInput);
-  const forcedCoordinator = env.PSTACK_FORCE_COORDINATOR === "1";
-  const matchesBuiltinSwarmSlash =
-    typeof payload.lastUserInput === "string" && BUILTIN_SWARM_SLASH_RE.test(payload.lastUserInput);
-
-  const plainSwarmRootsPath = join(cacheDir, "plain-swarm-roots.json");
-  const plainSwarmRoots = readJsonObject(plainSwarmRootsPath);
-  if (conversationId.length > 0) {
-    if (matchesSlashCommand || forcedCoordinator) {
-      if (plainSwarmRoots[conversationId]) {
-        plainSwarmRoots[conversationId] = false;
-        updateJsonKey(plainSwarmRootsPath, conversationId, false);
-      }
-    } else if (matchesBuiltinSwarmSlash && !alreadyInjected) {
-      if (!plainSwarmRoots[conversationId]) {
-        plainSwarmRoots[conversationId] = true;
-        updateJsonKey(plainSwarmRootsPath, conversationId, true);
-      }
-    }
-  }
-
-  const { workerName, isKnownCoordinator, isUnmanagedSwarmWorker } =
-    resolveWorkerOrCoordinatorFromSwarm(
-      conversationId,
-      payload,
-      appDataDir,
-      cacheDir,
-      alreadyInjected,
-      env,
-      injectedMap,
-      plainSwarmRoots,
-    );
-
-  if (workerName) {
-    const { kind, capsule } = classifyWorkerMember(workerName);
-    return {
-      sessionKind: "worker",
-      kind,
-      memberName: workerName,
-      capsule,
-      appDataDir,
-      cacheDir,
-      injectedMap,
-    };
-  }
-
-  if (isUnmanagedSwarmWorker && !alreadyInjected && !forcedCoordinator) {
-    return {
-      sessionKind: "unmanaged",
-      kind: "unmanaged",
-      memberName: null,
-      capsule: null,
-      appDataDir,
-      cacheDir,
-      injectedMap,
-    };
-  }
-
-  if (
-    isKnownCoordinator ||
-    alreadyInjected ||
-    matchesSlashCommand ||
-    forcedCoordinator
-  ) {
-    return {
-      sessionKind: "coordinator",
-      kind: "coordinator",
-      memberName: "coordinator",
-      capsule: "roles/coordinator.md",
-      appDataDir,
-      cacheDir,
-      injectedMap,
-    };
-  }
-
-  return {
-    sessionKind: "unmanaged",
-    kind: "unmanaged",
-    memberName: null,
-    capsule: null,
-    appDataDir,
-    cacheDir,
-    injectedMap,
-  };
+  return readJsonObject(configPath)?.plugins?.["agy-pstack-next"]?.enabled === false;
 }
 
 function resolveRealTargetPath(targetPath, baseDir, depth = 0) {
-  if (depth > 16) return null;
+  if (depth > 16) {
+    return null;
+  }
   const absTarget = resolve(baseDir, targetPath);
-  const tailParts = [];
-  let current = absTarget;
-
+  const tail = [];
+  let cur = absTarget;
   while (true) {
     try {
-      const stat = lstatSync(current);
-      if (stat.isSymbolicLink()) {
+      const st = lstatSync(cur);
+      if (st.isSymbolicLink()) {
         try {
-          const resolvedReal = realpathSync(current);
-          return tailParts.length > 0 ? join(resolvedReal, ...tailParts) : resolvedReal;
+          const real = realpathSync(cur);
+          return tail.length > 0 ? join(real, ...tail) : real;
         } catch {
-          const linkTarget = readlinkSync(current);
-          const nextTarget = resolve(dirname(current), linkTarget);
-          const combined = tailParts.length > 0 ? join(nextTarget, ...tailParts) : nextTarget;
-          return resolveRealTargetPath(combined, dirname(current), depth + 1);
+          const nextTarget = resolve(dirname(cur), readlinkSync(cur));
+          const combined = tail.length > 0 ? join(nextTarget, ...tail) : nextTarget;
+          return resolveRealTargetPath(combined, dirname(cur), depth + 1);
         }
       }
-      const resolvedReal = realpathSync(current);
-      return tailParts.length > 0 ? join(resolvedReal, ...tailParts) : resolvedReal;
+      const real = realpathSync(cur);
+      return tail.length > 0 ? join(real, ...tail) : real;
     } catch {
-      const parent = dirname(current);
-      if (parent === current) {
+      const parent = dirname(cur);
+      if (parent === cur) {
         return absTarget;
       }
-      tailParts.unshift(basename(current));
-      current = parent;
+      tail.unshift(basename(cur));
+      cur = parent;
     }
   }
 }
 
 function isStrictlyInside(targetPath, rootDir) {
   const rel = relative(rootDir, targetPath);
-  return rel.length > 0 && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel);
+  return (
+    rel.length > 0 &&
+    rel !== ".." &&
+    !rel.startsWith("../") &&
+    !rel.startsWith("..\\") &&
+    !isAbsolute(rel)
+  );
 }
 
 function isInsideOrEqual(targetPath, rootDir) {
@@ -1142,7 +345,9 @@ function isInsideOrEqual(targetPath, rootDir) {
 function getCanonicalTempRoots(env) {
   const roots = new Set(["/tmp", "/private/tmp"]);
   for (const candidate of ["/tmp", "/private/tmp", env.TMPDIR, tmpdir()]) {
-    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    if (typeof candidate !== "string" || !candidate) {
+      continue;
+    }
     try {
       roots.add(realpathSync(candidate));
     } catch {
@@ -1152,939 +357,850 @@ function getCanonicalTempRoots(env) {
   return [...roots];
 }
 
-function getSandboxContainerInTemp(realCwd, canonicalTempRoots) {
-  if (!realCwd) return null;
-  for (const tempRoot of canonicalTempRoots) {
-    if (!isStrictlyInside(realCwd, tempRoot)) continue;
-    const rel = relative(tempRoot, realCwd);
-    const parts = rel.split(/[\\/]/).filter(Boolean);
-    if (parts.length >= 2) {
-      return join(tempRoot, parts[0]);
+function isInsideCanonicalTempRoots(
+  realTarget,
+  canonicalTempRoots,
+  realCwd,
+  { allowRootEqual = false, excludeRealCwd = false } = {},
+) {
+  if (!realTarget || (excludeRealCwd && realCwd && isInsideOrEqual(realTarget, realCwd))) {
+    return false;
+  }
+  if (realCwd) {
+    for (const tempRoot of canonicalTempRoots) {
+      if (!isStrictlyInside(realCwd, tempRoot)) {
+        continue;
+      }
+      const parts = relative(tempRoot, realCwd).replaceAll("\\", "/").split("/").filter(Boolean);
+      if (parts.length >= 2) {
+        const container = join(tempRoot, parts[0]);
+        if (isInsideOrEqual(realTarget, container) && !isInsideOrEqual(realTarget, join(container, "tmp"))) {
+          return false;
+        }
+      }
+    }
+  }
+  return canonicalTempRoots.some((root) => {
+    return allowRootEqual ? isInsideOrEqual(realTarget, root) : isStrictlyInside(realTarget, root);
+  });
+}
+
+function isSystemGeneratedArtifactPath(resolvedPath, realArtifact) {
+  if (!resolvedPath || !realArtifact) {
+    return false;
+  }
+  if (isInsideOrEqual(resolvedPath, join(realArtifact, ".system_generated"))) {
+    return true;
+  }
+  if (!isStrictlyInside(resolvedPath, realArtifact)) {
+    return false;
+  }
+  const relParts = relative(realArtifact, resolvedPath).replaceAll("\\", "/").split("/");
+  return relParts.includes(".system_generated");
+}
+
+function isAllowedReadOnlyArtifactImage(resolvedPath, realArtifact, realCwd) {
+  if (!resolvedPath || !realArtifact || !isStrictlyInside(resolvedPath, realArtifact)) {
+    return false;
+  }
+  if (isSystemGeneratedArtifactPath(resolvedPath, realArtifact)) {
+    return false;
+  }
+  if (realCwd && isInsideOrEqual(resolvedPath, realCwd)) {
+    return false;
+  }
+  const segments = relative(realArtifact, resolvedPath).replaceAll("\\", "/").split("/").filter(Boolean);
+  if (segments.length === 0) {
+    return false;
+  }
+  let cur = realArtifact;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (!segments[i] || segments[i].startsWith(".")) {
+      return false;
+    }
+    cur = join(cur, segments[i]);
+    try {
+      if (!lstatSync(cur).isDirectory()) {
+        return false;
+      }
+    } catch {}
+  }
+  const leaf = segments[segments.length - 1];
+  if (!leaf || leaf.startsWith(".") || !SCREENSHOT_EXTENSIONS.has(extname(leaf).toLowerCase())) {
+    return false;
+  }
+  try {
+    const st = lstatSync(resolvedPath);
+    if (st.isSymbolicLink() || st.isDirectory()) {
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
+function isValidRemoteSwarmId(id) {
+  if (typeof id !== "string" || id.length < 4 || id.length > 128 || id.startsWith("-")) {
+    return false;
+  }
+  for (let i = 0; i < id.length; i += 1) {
+    const c = id.charCodeAt(i);
+    if (!isAlpha(c) && !isDigit(c) && c !== 46 && c !== 95 && c !== 45) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stripTrailingNumericSuffix(name) {
+  const dash = name.lastIndexOf("-");
+  if (dash > 0 && dash < name.length - 1 && isAllDigits(name.slice(dash + 1))) {
+    return name.slice(0, dash);
+  }
+  return name;
+}
+
+function classifyLeadingSlash(lastUserInput) {
+  if (typeof lastUserInput !== "string" || !lastUserInput) {
+    return { isPstackSlash: false, isBuiltinSwarmSlash: false };
+  }
+  let body = lastUserInput.trimStart();
+  while (body.startsWith("<")) {
+    const closeIdx = body.indexOf(">");
+    if (closeIdx <= 1) {
+      break;
+    }
+    const tagBody = body.slice(1, closeIdx);
+    const firstCode = tagBody.startsWith("/") ? tagBody.charCodeAt(1) : tagBody.charCodeAt(0);
+    if (tagBody.includes("\n") || (!isAlpha(firstCode) && firstCode !== 95)) {
+      break;
+    }
+    body = body.slice(closeIdx + 1).trimStart();
+  }
+  if (!body.startsWith("/")) {
+    return { isPstackSlash: false, isBuiltinSwarmSlash: false };
+  }
+  let end = 1;
+  while (end < body.length && !isWhitespaceChar(body[end]) && body[end] !== "<") {
+    end += 1;
+  }
+  let cmd = body.slice(1, end).toLowerCase();
+  if (cmd.startsWith("agy-pstack-next:") || cmd.startsWith("agy-pstack-next/")) {
+    cmd = cmd.slice(16);
+  }
+  if (cmd === "swarm") {
+    return { isPstackSlash: false, isBuiltinSwarmSlash: true };
+  }
+  if (!COORDINATOR_SLASH_COMMANDS.has(cmd)) {
+    return { isPstackSlash: false, isBuiltinSwarmSlash: false };
+  }
+  if (cmd === "ketchup") {
+    let i = end;
+    while (i < body.length) {
+      while (i < body.length && isWhitespaceChar(body[i])) {
+        i += 1;
+      }
+      if (i >= body.length) {
+        break;
+      }
+      if (body[i] === "<") {
+        const close = body.indexOf(">", i + 1);
+        if (close > i) {
+          i = close + 1;
+          continue;
+        }
+      }
+      let tEnd = i;
+      while (tEnd < body.length && !isWhitespaceChar(body[tEnd]) && body[tEnd] !== "<") {
+        tEnd += 1;
+      }
+      if (body.slice(i, tEnd) === "--plain") {
+        return { isPstackSlash: false, isBuiltinSwarmSlash: false };
+      }
+      i = tEnd;
+    }
+  }
+  return { isPstackSlash: true, isBuiltinSwarmSlash: false };
+}
+
+function resolveOwnTranscriptPath(payload, appDataDir) {
+  if (typeof payload.transcriptPath === "string" && payload.transcriptPath) {
+    return payload.transcriptPath;
+  }
+  if (!appDataDir || !isSafeConvId(payload.conversationId)) {
+    return null;
+  }
+  const candidates = [
+    join(appDataDir, "brain", payload.conversationId, ".system_generated", "logs", "transcript.jsonl"),
+    join(appDataDir, "brain", payload.conversationId, "transcript.jsonl"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
     }
   }
   return null;
 }
 
-function isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, options = {}) {
-  const { allowRootEqual = false, excludeRealCwd = false } = options;
-  if (!realTarget) return false;
-  if (excludeRealCwd && realCwd && isInsideOrEqual(realTarget, realCwd)) {
+function hasForkMemoryMarker(text) {
+  if (typeof text !== "string") {
     return false;
   }
-  const sandboxContainer = getSandboxContainerInTemp(realCwd, canonicalTempRoots);
-  if (sandboxContainer && isInsideOrEqual(realTarget, sandboxContainer)) {
-    const sandboxTmp = join(sandboxContainer, "tmp");
-    if (!isInsideOrEqual(realTarget, sandboxTmp)) {
+  const prefix = "Everything before this turn is @";
+  const suffix = "'s memory";
+  let idx = text.indexOf(prefix);
+  while (idx !== -1) {
+    let pos = idx + prefix.length;
+    while (pos < text.length && (isIdentPart(text.charCodeAt(pos)) || text[pos] === "-")) {
+      pos += 1;
+    }
+    if (pos > idx + prefix.length && text.startsWith(suffix, pos)) {
+      return true;
+    }
+    idx = text.indexOf(prefix, idx + 1);
+  }
+  return false;
+}
+
+function isSystemRoleCapsuleStep(parsed) {
+  if (!parsed || typeof parsed !== "object") {
+    return false;
+  }
+  if (parsed.type !== "SYSTEM_MESSAGE" && parsed.source !== "SYSTEM_SDK") {
+    return false;
+  }
+  if (typeof parsed.content !== "string") {
+    return false;
+  }
+  const suffix = " role capsule";
+  return parsed.content.split("\n").some((raw) => {
+    const line = (raw.endsWith("\r") ? raw.slice(0, -1) : raw).toLowerCase();
+    return line.startsWith("# ") && line.endsWith(suffix) && line.length > 2 + suffix.length;
+  });
+}
+
+function transcriptIsUnforkedUserRoot(transcriptPath, hasPriorCapsule) {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return false;
+  }
+  try {
+    const content = readFileSync(transcriptPath, "utf8");
+    if (
+      content.includes("[swarm] new board message") ||
+      content.includes("Your assignment (recorded on the board") ||
+      hasForkMemoryMarker(content)
+    ) {
       return false;
     }
-  }
-  return canonicalTempRoots.some((root) =>
-    allowRootEqual ? isInsideOrEqual(realTarget, root) : isStrictlyInside(realTarget, root),
-  );
-}
-
-function replaceSafeRuntimeTokens(input) {
-  return input
-    .replace(/\$\{\$\}|\$\$/g, "0")
-    .replace(/\$\{(?:PPID|RANDOM|BASHPID)\}|\$(?:PPID|RANDOM|BASHPID)(?![A-Za-z0-9_])/g, "0")
-    .replace(
-      /\$\(\s*date\s+(?:-u\s+)?(?:\+[A-Za-z0-9_%:.-]+|"\+[A-Za-z0-9_%:.-]+"|'\+[A-Za-z0-9_%:.-]+')\s*\)/g,
-      "0",
-    )
-    .replace(/\$\(\s*uuidgen\s*\)/g, "0");
-}
-
-function findMatchingBrace(str, openBraceIdx) {
-  let depth = 1;
-  let i = openBraceIdx + 1;
-  let inSingle = false;
-  let inDouble = false;
-  while (i < str.length && depth > 0) {
-    const ch = str[i];
-    if (ch === "\\" && !inSingle) {
-      i += 2;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      i += 1;
-      continue;
-    }
-    if (!inSingle && !inDouble) {
-      if (ch === "{") depth += 1;
-      else if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) return i;
+    let sawFirst = false;
+    for (const rawLine of content.split("\n")) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) {
+        continue;
       }
-    }
-    i += 1;
-  }
-  return -1;
-}
-
-function expandShellVarsOnce(input, envState) {
-  let out = "";
-  let changed = false;
-  let i = 0;
-
-  while (i < input.length) {
-    const ch = input[i];
-    if (ch === "\\" && i + 1 < input.length && (input[i + 1] === "$" || input[i + 1] === "`" || input[i + 1] === "~")) {
-      out += input.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch !== "$") {
-      out += ch;
-      i += 1;
-      continue;
-    }
-
-    if (input[i + 1] === "{") {
-      const closeIdx = findMatchingBrace(input, i + 1);
-      if (closeIdx < 0) return { ok: false, value: "", changed: false };
-      const body = input.slice(i + 2, closeIdx);
-      const paramMatch = body.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([\s\S]*))?$/);
-      if (!paramMatch) return { ok: false, value: "", changed: false };
-      const [, varName, op, fallbackVal = ""] = paramMatch;
-      const rawVal = typeof envState[varName] === "string" ? envState[varName] : undefined;
-
-      if (!op) {
-        if (rawVal === undefined) return { ok: false, value: "", changed: false };
-        out += rawVal;
-      } else if (op === ":-" || op === ":=") {
-        const chosen = rawVal !== undefined && rawVal.length > 0 ? rawVal : fallbackVal;
-        if (op === ":=" && (rawVal === undefined || rawVal.length === 0)) {
-          envState[varName] = chosen;
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== "object") {
+        return false;
+      }
+      if (!sawFirst) {
+        if (parsed.type !== "USER_INPUT") {
+          return false;
         }
-        out += chosen;
-      } else {
-        const chosen = rawVal !== undefined ? rawVal : fallbackVal;
-        if (op === "=" && rawVal === undefined) {
-          envState[varName] = chosen;
+        sawFirst = true;
+      }
+      if (hasForkMemoryMarker(parsed.content)) {
+        return false;
+      }
+      if (!hasPriorCapsule && isSystemRoleCapsuleStep(parsed)) {
+        return false;
+      }
+    }
+    return sawFirst;
+  } catch {
+    return false;
+  }
+}
+
+function transcriptContainsRoleCapsule(transcriptPath) {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return false;
+  }
+  try {
+    for (const rawLine of readFileSync(transcriptPath, "utf8").split("\n")) {
+      const parsed = parseJsonObjectSafe(rawLine);
+      if (parsed && (isSystemRoleCapsuleStep(parsed) || hasForkMemoryMarker(parsed.content))) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+function extractMembersFromDoc(doc, targetConvId, fallbackCoordId = null) {
+  const workerEntries = {};
+  let matchedCoordinator = false;
+  let coordId = typeof fallbackCoordId === "string" && fallbackCoordId ? fallbackCoordId : null;
+  let hasPstackPrefixedWorker = false;
+  let hasTaskWorker = false;
+  const members = doc && typeof doc === "object" && doc.members && typeof doc.members === "object" ? doc.members : {};
+  for (const [name, info] of Object.entries(members)) {
+    if (!info || typeof info !== "object") {
+      continue;
+    }
+    const cid = info.conversation_id || info.conversationId;
+    if (name === "coordinator" || info.role === "coordinator") {
+      if (typeof cid === "string" && cid) {
+        coordId = cid;
+        if (cid === targetConvId) {
+          matchedCoordinator = true;
         }
-        out += chosen;
       }
-      changed = true;
-      i = closeIdx + 1;
       continue;
     }
-
-    const bareMatch = input.slice(i + 1).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-    if (bareMatch) {
-      const varName = bareMatch[1];
-      const rawVal = typeof envState[varName] === "string" ? envState[varName] : undefined;
-      if (rawVal === undefined) return { ok: false, value: "", changed: false };
-      out += rawVal;
-      changed = true;
-      i += 1 + varName.length;
-      continue;
+    const lower = name.toLowerCase();
+    if (["impl-", "cand-", "lead-", "ro-", "adv-", "sicko-"].some((prefix) => lower.startsWith(prefix))) {
+      hasPstackPrefixedWorker = true;
     }
-
-    out += ch;
-    i += 1;
+    const base = stripTrailingNumericSuffix(lower);
+    if (base !== "coordinator" && base !== "monitor" && base !== "narrator") {
+      hasTaskWorker = true;
+    }
+    if (typeof cid === "string" && cid) {
+      workerEntries[cid] = name;
+    }
   }
-
-  return { ok: true, value: out, changed };
+  return { workerEntries, matchedCoordinator, coordId, hasPstackPrefixedWorker, hasTaskWorker };
 }
 
-function resolveShellTargetPath(rawToken, baseDir, mergedEnv = {}, options = {}) {
-  const { requireAbsoluteAfterExpand = false } = options;
-  if (typeof rawToken !== "string" || rawToken.length === 0) return null;
-  if (rawToken === "/dev/null") return "/dev/null";
-
-  const envState = mergedEnv && typeof mergedEnv === "object" ? { ...mergedEnv } : {};
-  let expanded = rawToken;
-  if (expanded.startsWith("\\~")) {
-    expanded = expanded.slice(1);
-  } else if (expanded === "~" || expanded.startsWith("~/")) {
-    const home = envState.HOME || homedir();
-    expanded = expanded === "~" ? home : join(home, expanded.slice(2));
-  } else if (expanded.startsWith("~")) {
+function resolveRemoteBoardCli(anchor, appDataDir, env) {
+  if (typeof env.PSTACK_REMOTE_SWARM_CLI === "string" && env.PSTACK_REMOTE_SWARM_CLI) {
+    return env.PSTACK_REMOTE_SWARM_CLI;
+  }
+  let cfgPath = null;
+  if (typeof env.PSTACK_REMOTE_BOARD_CONFIG === "string" && env.PSTACK_REMOTE_BOARD_CONFIG) {
+    cfgPath = env.PSTACK_REMOTE_BOARD_CONFIG;
+  } else if (appDataDir) {
+    cfgPath = join(appDataDir, "builtin", "plugins", "swarm", "sidecars", "swarm_board", "remote_board.json");
+  }
+  if (!cfgPath || !existsSync(cfgPath)) {
     return null;
   }
-
-  for (let pass = 0; pass < 4; pass += 1) {
-    expanded = replaceSafeRuntimeTokens(expanded);
-    if (!expanded.includes("$")) break;
-    const step = expandShellVarsOnce(expanded, envState);
-    if (!step.ok) return null;
-    expanded = step.value;
-    if (!step.changed) break;
-  }
-  expanded = replaceSafeRuntimeTokens(expanded);
-
-  if (!expanded || /[$`]/.test(expanded)) {
+  const cfg = readJsonObject(cfgPath);
+  if (typeof cfg.backend !== "string" || cfg.backend !== anchor.backend) {
     return null;
   }
-  if (requireAbsoluteAfterExpand && !isAbsolute(expanded)) {
-    return null;
+  const isExecutable = (filePath) => {
+    try {
+      accessSync(filePath, fsConstants.X_OK);
+      return statSync(filePath).isFile();
+    } catch {
+      return false;
+    }
+  };
+  const envOverride = typeof cfg.cli_env === "string" && cfg.cli_env ? env[cfg.cli_env] : "";
+  if (typeof envOverride === "string" && envOverride) {
+    if (!envOverride.includes("/") || isExecutable(envOverride)) {
+      return envOverride;
+    }
   }
-
-  return resolveRealTargetPath(expanded, baseDir);
+  const cliList = Array.isArray(cfg.cli) ? cfg.cli.filter((c) => typeof c === "string" && c) : [];
+  const pathDirs = String(env.PATH || process.env.PATH || "").split(":").filter(Boolean);
+  for (const candidate of cliList) {
+    const locations = candidate.includes("/") ? [candidate] : pathDirs.map((dir) => join(dir, candidate));
+    const found = locations.find(isExecutable);
+    if (found) {
+      return found;
+    }
+  }
+  return cliList[cliList.length - 1] || null;
 }
 
-function preprocessHeredocs(command) {
-  const lines = command.split("\n");
-  const keptLines = [];
-  const unquotedBodies = [];
-  let lineIdx = 0;
+function resolveRemoteSwarmRoster(anchorDoc, appDataDir, cacheDir, env, targetConvId) {
+  if (!anchorDoc || typeof anchorDoc !== "object") {
+    return null;
+  }
+  if (typeof anchorDoc.backend !== "string" || !anchorDoc.backend || anchorDoc.backend === "local") {
+    return null;
+  }
+  if (!isValidRemoteSwarmId(anchorDoc.swarm_id)) {
+    return null;
+  }
+  if (anchorDoc.db !== undefined && anchorDoc.db !== null && anchorDoc.db !== "") {
+    if (typeof anchorDoc.db !== "string" || anchorDoc.db.startsWith("-")) {
+      return null;
+    }
+  }
+  const anchor = { backend: anchorDoc.backend, swarmId: anchorDoc.swarm_id, db: anchorDoc.db || "" };
+  const cliBin = resolveRemoteBoardCli(anchor, appDataDir, env);
+  if (!cliBin) {
+    return null;
+  }
+  const rostersPath = join(cacheDir, "remote-rosters.json");
+  const cached = readJsonObject(rostersPath)[anchor.swarmId];
+  if (
+    cached &&
+    typeof cached === "object" &&
+    typeof cached.fetchedAt === "number" &&
+    cached.members &&
+    typeof cached.members === "object" &&
+    !Array.isArray(cached.members)
+  ) {
+    const age = Date.now() - cached.fetchedAt;
+    const inRoster = Boolean(
+      targetConvId &&
+        Object.values(cached.members).some((info) => {
+          return info && typeof info === "object" && (info.conversation_id || info.conversationId) === targetConvId;
+        }),
+    );
+    const ttlMs = inRoster ? 15000 : 5000;
+    if (age >= 0 && age < ttlMs) {
+      return { members: cached.members };
+    }
+  }
+  try {
+    const cliArgs = ["swarm", "--json", "--roster-only"];
+    if (anchor.db) {
+      cliArgs.push("--db", anchor.db);
+    }
+    cliArgs.push(anchor.swarmId);
+    const stdout = execFileSync(cliBin, cliArgs, {
+      encoding: "utf8",
+      timeout: 2500,
+      env: { ...env, TERM: "dumb" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let matchedMembers = null;
+    for (const rawLine of String(stdout || "").split("\n")) {
+      const doc = parseJsonObjectSafe(rawLine);
+      if (doc && doc.swarm_id === anchor.swarmId && doc.members && typeof doc.members === "object" && !Array.isArray(doc.members)) {
+        matchedMembers = doc.members;
+      }
+    }
+    if (!matchedMembers) {
+      return null;
+    }
+    updateJsonKeys(rostersPath, { [anchor.swarmId]: { fetchedAt: Date.now(), members: matchedMembers } });
+    return { members: matchedMembers };
+  } catch {
+    return null;
+  }
+}
 
-  while (lineIdx < lines.length) {
-    const line = lines[lineIdx];
-    keptLines.push(line);
-    const pendingHeredocs = [];
-    let inSingle = false;
-    let inDouble = false;
+function inspectSwarmDirectory(swarmDir, ownerDirId, targetConvId, opts) {
+  function classifyRoster(doc, fallbackCoordId, ownMatch) {
+    const ext = extractMembersFromDoc(doc, targetConvId, fallbackCoordId);
+    const coordState = ext.coordId ? readCapsuleState(opts.cacheDir, ext.coordId) : {};
+    const hasCoordCapsule = typeof coordState.capsule === "string" && coordState.capsule.length > 0;
+    const hasMarkerFile = existsSync(join(swarmDir, "pstack.json"));
+    const managed = ext.hasPstackPrefixedWorker || hasCoordCapsule || hasMarkerFile || (!coordState.plainSwarm && !ext.hasTaskWorker);
+    const matchedCoordinator = ext.matchedCoordinator || ownMatch;
+    if (!managed) {
+      const targetIsWorker = Boolean(ext.workerEntries[targetConvId]);
+      const targetInSwarm = Boolean(targetIsWorker || matchedCoordinator || ext.coordId === targetConvId);
+      return { kind: "unmanaged_swarm", targetInSwarm, targetIsWorker };
+    }
+    return { kind: "managed_roster", workerEntries: ext.workerEntries, matchedCoordinator };
+  }
 
-    for (let i = 0; i < line.length; i += 1) {
-      const ch = line[i];
-      if (ch === "\\" && !inSingle) {
-        i += 1;
-        continue;
+  const membersPath = join(swarmDir, "members.json");
+  if (existsSync(membersPath)) {
+    return classifyRoster(readJsonObject(membersPath), ownerDirId, opts.isOwnSwarmDir);
+  }
+  const anchorPath = join(swarmDir, "swarm.json");
+  if (!existsSync(anchorPath)) {
+    return { kind: "none" };
+  }
+  const anchorDoc = readJsonObject(anchorPath);
+  const explicit =
+    anchorDoc.coordinator_conversation_id ||
+    anchorDoc.coordinatorConversationId ||
+    anchorDoc.coordinator_id ||
+    anchorDoc.coordinatorId;
+  let anchorCoordId = ownerDirId;
+  if (typeof explicit === "string" && explicit) {
+    anchorCoordId = explicit;
+  } else if (anchorDoc.backend === "local" && isValidRemoteSwarmId(anchorDoc.swarm_id)) {
+    anchorCoordId = anchorDoc.swarm_id;
+  }
+  const remoteRoster = resolveRemoteSwarmRoster(anchorDoc, opts.appDataDir, opts.cacheDir, opts.env, targetConvId);
+  if (remoteRoster) {
+    return classifyRoster(remoteRoster, anchorCoordId, anchorCoordId === targetConvId);
+  }
+  if (anchorCoordId !== targetConvId) {
+    return { kind: "none" };
+  }
+  const coordState = readCapsuleState(opts.cacheDir, anchorCoordId);
+  if (coordState.plainSwarm && !coordState.capsule && !existsSync(join(swarmDir, "pstack.json"))) {
+    return { kind: "unmanaged_swarm", targetInSwarm: true, targetIsWorker: false };
+  }
+  return { kind: "anchor_coordinator" };
+}
+
+function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheDir, hasPriorCapsule, env) {
+  const empty = { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
+  if (typeof convId !== "string" || !convId) {
+    return empty;
+  }
+  const mapPath = join(cacheDir, "member-map.json");
+  const cachedName = readJsonObject(mapPath)[convId];
+  if (typeof cachedName === "string" && cachedName && cachedName !== "coordinator") {
+    return { ...empty, workerName: cachedName };
+  }
+  if (!appDataDir) {
+    return empty;
+  }
+
+  const checkedRoots = new Set();
+  function checkDirs(dirs) {
+    const discovered = {};
+    let matchedCoord = false;
+    let matchedUnmanaged = false;
+    let matchedUnmanagedWorker = false;
+    for (const { dirId, isOwnSwarmDir } of dirs) {
+      const swarmDir = join(appDataDir, "brain", dirId, ".system_generated", "swarm");
+      const res = inspectSwarmDirectory(swarmDir, dirId, convId, { appDataDir, cacheDir, env, isOwnSwarmDir });
+      if (res.kind === "managed_roster") {
+        Object.assign(discovered, res.workerEntries);
+        if (res.matchedCoordinator) {
+          matchedCoord = true;
+        }
+      } else if (res.kind === "anchor_coordinator") {
+        matchedCoord = true;
+      } else if (res.kind === "unmanaged_swarm" && res.targetInSwarm) {
+        matchedUnmanaged = true;
+        if (res.targetIsWorker) {
+          matchedUnmanagedWorker = true;
+        }
       }
-      if (ch === "'" && !inDouble) {
-        inSingle = !inSingle;
-        continue;
-      }
-      if (ch === '"' && !inSingle) {
-        inDouble = !inDouble;
-        continue;
-      }
-      if (!inSingle && !inDouble && ch === "#" && (i === 0 || " \t;|(&".includes(line[i - 1]))) {
+      if (discovered[convId] || matchedCoord || matchedUnmanaged) {
         break;
       }
-      if (!inSingle && !inDouble && ch === "<" && line[i + 1] === "<" && line[i + 2] !== "<") {
-        let j = i + 2;
-        const stripTabs = line[j] === "-";
-        if (stripTabs) j += 1;
-        while (j < line.length && (line[j] === " " || line[j] === "\t")) j += 1;
-        let delim = "";
-        let quotedDelim = false;
-        let delimSingle = false;
-        let delimDouble = false;
-        while (j < line.length) {
-          const c = line[j];
-          if (!delimSingle && !delimDouble && " \t;|()&<>".includes(c)) break;
-          if (c === "\\" && !delimSingle) {
-            quotedDelim = true;
-            if (j + 1 < line.length) delim += line[j + 1];
-            j += 2;
-            continue;
-          }
-          if (c === "'" && !delimDouble) {
-            quotedDelim = true;
-            delimSingle = !delimSingle;
-            j += 1;
-            continue;
-          }
-          if (c === '"' && !delimSingle) {
-            quotedDelim = true;
-            delimDouble = !delimDouble;
-            j += 1;
-            continue;
-          }
-          delim += c;
-          j += 1;
-        }
-        if (delim.length > 0) {
-          pendingHeredocs.push({ delim, stripTabs, quotedDelim });
-        }
-        i = j - 1;
-      }
     }
-
-    lineIdx += 1;
-    for (const h of pendingHeredocs) {
-      const bodyLines = [];
-      while (lineIdx < lines.length) {
-        const rawBodyLine = lines[lineIdx];
-        const cmpLine = h.stripTabs ? rawBodyLine.replace(/^\t+/, "") : rawBodyLine;
-        lineIdx += 1;
-        if (cmpLine === h.delim) break;
-        bodyLines.push(rawBodyLine);
-      }
-      if (!h.quotedDelim && bodyLines.length > 0) {
-        unquotedBodies.push(bodyLines.join("\n"));
-      }
+    updateJsonKeys(mapPath, discovered);
+    if (discovered[convId]) {
+      return { ...empty, workerName: discovered[convId] };
     }
+    if (matchedCoord) {
+      return { ...empty, isKnownCoordinator: true };
+    }
+    if (matchedUnmanaged) {
+      return { ...empty, isUnmanagedSwarmWorker: matchedUnmanagedWorker };
+    }
+    return null;
   }
 
+  const priorityDirs = [];
+  for (const rootId of [payload.rootConversationId, payload.parentConversationId]) {
+    if (typeof rootId === "string" && rootId && rootId !== convId && !checkedRoots.has(rootId)) {
+      checkedRoots.add(rootId);
+      priorityDirs.push({ dirId: rootId, isOwnSwarmDir: false });
+    }
+  }
+  priorityDirs.push({ dirId: convId, isOwnSwarmDir: true });
+  const directHit = checkDirs(priorityDirs);
+  if (directHit) {
+    return directHit;
+  }
+  if (transcriptIsUnforkedUserRoot(resolveOwnTranscriptPath(payload, appDataDir), hasPriorCapsule)) {
+    return empty;
+  }
+  try {
+    const brainDir = join(appDataDir, "brain");
+    if (!existsSync(brainDir)) {
+      return empty;
+    }
+    const otherDirs = readdirSync(brainDir, { withFileTypes: true })
+      .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && entry.name !== convId && !checkedRoots.has(entry.name))
+      .map((entry) => ({ dirId: entry.name, isOwnSwarmDir: false }));
+    return checkDirs(otherDirs) || empty;
+  } catch {
+    return empty;
+  }
+}
+
+function classifyWorkerMember(memberName) {
+  const lower = memberName.toLowerCase();
+  const base = stripTrailingNumericSuffix(lower);
+  if (base === "monitor" || base === "narrator" || lower.startsWith("monitor-") || lower.startsWith("narrator-")) {
+    return { kind: "support", capsule: null };
+  }
+  if (lower.startsWith("adv-")) {
+    return { kind: "adversary", capsule: "roles/poteto-agent.md" };
+  }
+  if (lower.startsWith("sicko-")) {
+    return { kind: "sicko", capsule: "roles/comment-sicko.md" };
+  }
+  if (
+    lower.startsWith("ro-") ||
+    base === "verifier" ||
+    lower.startsWith("verifier-") ||
+    base.endsWith("-verifier") ||
+    lower.startsWith("verify-")
+  ) {
+    return { kind: "readonly", capsule: "roles/research.md" };
+  }
+  return { kind: "author", capsule: "roles/poteto-agent.md" };
+}
+
+function classifySession(payload, env) {
+  const appDataDir = resolveAppDataDir(payload, env);
+  const cacheDir = resolveCacheDir(appDataDir, env);
+  const convId = typeof payload.conversationId === "string" ? payload.conversationId : "";
+  let capsuleState = readCapsuleState(cacheDir, convId);
+  const alreadyInjected = typeof capsuleState.capsule === "string" && capsuleState.capsule.length > 0;
+  const { isPstackSlash, isBuiltinSwarmSlash } = classifyLeadingSlash(payload.lastUserInput);
+  const forcedCoord = env.PSTACK_FORCE_COORDINATOR === "1";
+  if (convId) {
+    if ((isPstackSlash || forcedCoord) && capsuleState.plainSwarm) {
+      capsuleState = updateCapsuleState(cacheDir, convId, { plainSwarm: false });
+    } else if (isBuiltinSwarmSlash && !alreadyInjected && !capsuleState.plainSwarm) {
+      capsuleState = updateCapsuleState(cacheDir, convId, { plainSwarm: true });
+    }
+  }
+  const { workerName, isKnownCoordinator, isUnmanagedSwarmWorker } = resolveWorkerOrCoordinatorFromSwarm(
+    convId,
+    payload,
+    appDataDir,
+    cacheDir,
+    alreadyInjected,
+    env,
+  );
+  if (workerName) {
+    return {
+      sessionKind: "worker",
+      ...classifyWorkerMember(workerName),
+      memberName: workerName,
+      appDataDir,
+      cacheDir,
+      capsuleState,
+    };
+  }
+  if (isUnmanagedSwarmWorker && !alreadyInjected && !forcedCoord) {
+    return {
+      sessionKind: "unmanaged",
+      kind: "unmanaged",
+      memberName: null,
+      capsule: null,
+      appDataDir,
+      cacheDir,
+      capsuleState,
+    };
+  }
+  if (isKnownCoordinator || capsuleState.capsule === "roles/coordinator.md" || isPstackSlash || forcedCoord) {
+    return {
+      sessionKind: "coordinator",
+      kind: "coordinator",
+      memberName: "coordinator",
+      capsule: "roles/coordinator.md",
+      appDataDir,
+      cacheDir,
+      capsuleState,
+    };
+  }
   return {
-    strippedCommand: keptLines.join("\n"),
-    unquotedBodies,
+    sessionKind: "unmanaged",
+    kind: "unmanaged",
+    memberName: null,
+    capsule: null,
+    appDataDir,
+    cacheDir,
+    capsuleState,
   };
 }
 
-function scanBalancedDollarSub(str, dollarIdx) {
-  let depth = 1;
-  let j = dollarIdx + 2;
-  let subSingle = false;
-  let subDouble = false;
-  while (j < str.length && depth > 0) {
-    const c = str[j];
-    if (c === "\\" && !subSingle) {
-      j += 2;
-      continue;
-    }
-    if (c === "'" && !subDouble) subSingle = !subSingle;
-    else if (c === '"' && !subSingle) subDouble = !subDouble;
-    else if (!subSingle && !subDouble) {
-      if (c === "(") depth += 1;
-      else if (c === ")") depth -= 1;
-    }
-    j += 1;
-  }
-  return depth === 0 ? j : -1;
-}
-
-function extractCommandSubstitutions(command) {
-  const subs = [];
-  let i = 0;
-  let inSingle = false;
-  let inDouble = false;
-
-  while (i < command.length) {
-    const ch = command[i];
-    if (ch === "\\" && !inSingle) {
-      i += 2;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      i += 1;
-      continue;
-    }
-    if (!inSingle && ch === "$" && command[i + 1] === "(") {
-      const endIdx = scanBalancedDollarSub(command, i);
-      if (endIdx > 0) {
-        subs.push(command.slice(i + 2, endIdx - 1));
-        i = endIdx;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "`") {
-      let j = i + 1;
-      while (j < command.length) {
-        if (command[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (command[j] === "`") break;
-        j += 1;
-      }
-      if (j < command.length) {
-        subs.push(command.slice(i + 1, j));
-        i = j + 1;
-        continue;
-      }
-    }
-    i += 1;
-  }
-  return subs;
-}
-
-function readNextShellToken(str, startIdx, options = {}) {
-  const { preserveLiteralEscapes = false } = options;
-  let i = startIdx;
-  while (i < str.length && (str[i] === " " || str[i] === "\t")) {
-    i += 1;
-  }
-  if (i >= str.length) return { token: "", nextIdx: i };
+function parseCommandSegments(commandLine) {
+  const segments = [];
+  let tokens = [];
   let token = "";
+  let hasToken = false;
   let inSingle = false;
   let inDouble = false;
-  let sawAnyChar = false;
+  let parenDepth = 0;
+  let skipNext = false;
 
-  while (i < str.length) {
-    const ch = str[i];
-    if (!inSingle && !inDouble && " \t\r\n|&;()<>".includes(ch)) {
-      break;
+  function flushToken() {
+    if (!hasToken) {
+      return;
     }
-    if (!inSingle && ch === "$" && str[i + 1] === "(") {
-      const endIdx = scanBalancedDollarSub(str, i);
-      if (endIdx > 0) {
-        token += str.slice(i, endIdx);
-        sawAnyChar = true;
-        i = endIdx;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "$" && str[i + 1] === "{") {
-      const closeIdx = findMatchingBrace(str, i + 1);
-      if (closeIdx > 0) {
-        token += str.slice(i, closeIdx + 1);
-        sawAnyChar = true;
-        i = closeIdx + 1;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "`") {
-      let j = i + 1;
-      while (j < str.length) {
-        if (str[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (str[j] === "`") break;
-        j += 1;
-      }
-      if (j < str.length) {
-        token += str.slice(i, j + 1);
-        sawAnyChar = true;
-        i = j + 1;
-        continue;
-      }
-    }
-    if (ch === "\\" && !inSingle) {
-      if (i + 1 < str.length) {
-        const next = str[i + 1];
-        if (preserveLiteralEscapes && (next === "$" || next === "`" || (!sawAnyChar && next === "~"))) {
-          token += "\\" + next;
-        } else {
-          token += next;
-        }
-      }
-      sawAnyChar = true;
-      i += 2;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      if (preserveLiteralEscapes && !sawAnyChar && str[i + 1] === "~") {
-        token += "\\~";
-        sawAnyChar = true;
-        i += 2;
-        continue;
-      }
-      sawAnyChar = true;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      if (preserveLiteralEscapes && !sawAnyChar && str[i + 1] === "~") {
-        token += "\\~";
-        sawAnyChar = true;
-        i += 2;
-        continue;
-      }
-      sawAnyChar = true;
-      i += 1;
-      continue;
-    }
-    if (preserveLiteralEscapes && inSingle && (ch === "$" || ch === "`")) {
-      token += "\\" + ch;
-      sawAnyChar = true;
-      i += 1;
-      continue;
-    }
-    token += ch;
-    sawAnyChar = true;
-    i += 1;
-  }
-  return { token, nextIdx: i };
-}
-
-function splitRawShellSegments(command) {
-  const items = [];
-  let start = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let atTokenBoundary = true;
-  let connectorBefore = "";
-  let i = 0;
-
-  const pushSlice = (endIdx, connectorAfter = "") => {
-    const sub = command.slice(start, endIdx);
-    if (sub.trim().length > 0) {
-      items.push({ type: "segment", text: sub, connectorBefore, connectorAfter });
-    }
-  };
-
-  while (i < command.length) {
-    const ch = command[i];
-    if (ch === "\\" && !inSingle) {
-      if (command[i + 1] !== "\n") atTokenBoundary = false;
-      i += 2;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      atTokenBoundary = false;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      atTokenBoundary = false;
-      i += 1;
-      continue;
-    }
-    if (!inSingle && ch === "$" && command[i + 1] === "(") {
-      const endIdx = scanBalancedDollarSub(command, i);
-      if (endIdx > 0) {
-        atTokenBoundary = false;
-        i = endIdx;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "$" && command[i + 1] === "{") {
-      const closeIdx = findMatchingBrace(command, i + 1);
-      if (closeIdx > 0) {
-        atTokenBoundary = false;
-        i = closeIdx + 1;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "`") {
-      let j = i + 1;
-      while (j < command.length) {
-        if (command[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (command[j] === "`") break;
-        j += 1;
-      }
-      if (j < command.length) {
-        atTokenBoundary = false;
-        i = j + 1;
-        continue;
-      }
-    }
-    if (!inSingle && !inDouble) {
-      if (ch === " " || ch === "\t" || ch === "\r") {
-        atTokenBoundary = true;
-        i += 1;
-        continue;
-      }
-      if (ch === "#" && atTokenBoundary) {
-        while (i < command.length && command[i] !== "\n") i += 1;
-        continue;
-      }
-      if (ch === "(" || ch === ")") {
-        pushSlice(i, ch);
-        items.push({ type: "paren", dir: ch });
-        i += 1;
-        start = i;
-        connectorBefore = ch;
-        atTokenBoundary = true;
-        continue;
-      }
-      if (ch === "\n" || ch === ";") {
-        pushSlice(i, ch);
-        i += 1;
-        start = i;
-        connectorBefore = ch;
-        atTokenBoundary = true;
-        continue;
-      }
-      if (ch === "&" && command[i + 1] === ">") {
-        const opLen = command[i + 2] === ">" ? 3 : 2;
-        const { nextIdx } = readNextShellToken(command, i + opLen);
-        i = nextIdx;
-        atTokenBoundary = true;
-        continue;
-      }
-      if (ch === ">" && command[i + 1] === "&") {
-        const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
-        if (fdMatch) {
-          i += 2 + fdMatch[0].length;
-          atTokenBoundary = true;
-          continue;
-        }
-        const { nextIdx } = readNextShellToken(command, i + 2);
-        i = nextIdx;
-        atTokenBoundary = true;
-        continue;
-      }
-      if (ch === "<" && command[i + 1] === "&") {
-        const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
-        if (fdMatch) {
-          i += 2 + fdMatch[0].length;
-          atTokenBoundary = true;
-          continue;
-        }
-        const { nextIdx } = readNextShellToken(command, i + 2);
-        i = nextIdx;
-        atTokenBoundary = true;
-        continue;
-      }
-      if (ch === "|" || ch === "&") {
-        const op = command[i + 1] === ch ? ch + ch : ch;
-        pushSlice(i, op);
-        i += op.length;
-        start = i;
-        connectorBefore = op;
-        atTokenBoundary = true;
-        continue;
-      }
-    }
-    atTokenBoundary = false;
-    i += 1;
-  }
-  pushSlice(command.length, "");
-  return items;
-}
-
-function extractOutputRedirectTargets(command, activeEnv = {}) {
-  const targets = [];
-  const envSnapshot = { ...activeEnv };
-  let i = 0;
-  let inSingle = false;
-  let inDouble = false;
-
-  while (i < command.length) {
-    const ch = command[i];
-    if (ch === "\\" && !inSingle) {
-      i += 2;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      i += 1;
-      continue;
-    }
-    if (!inSingle && ch === "$" && command[i + 1] === "(") {
-      const endIdx = scanBalancedDollarSub(command, i);
-      if (endIdx > 0) {
-        i = endIdx;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "$" && command[i + 1] === "{") {
-      const closeIdx = findMatchingBrace(command, i + 1);
-      if (closeIdx > 0) {
-        i = closeIdx + 1;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "`") {
-      let j = i + 1;
-      while (j < command.length) {
-        if (command[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (command[j] === "`") break;
-        j += 1;
-      }
-      if (j < command.length) {
-        i = j + 1;
-        continue;
-      }
-    }
-    if (!inSingle && !inDouble && ch === "#" && (i === 0 || " \t\r\n;|(&".includes(command[i - 1]))) {
-      while (i < command.length && command[i] !== "\n") i += 1;
-      continue;
-    }
-    if (!inSingle && !inDouble && ch === "&" && command[i + 1] === ">") {
-      const opLen = command[i + 2] === ">" ? 3 : 2;
-      const { token, nextIdx } = readNextShellToken(command, i + opLen, { preserveLiteralEscapes: true });
-      targets.push({ target: token, env: envSnapshot });
-      i = nextIdx;
-      continue;
-    }
-    if (!inSingle && !inDouble && ch === "<" && command[i + 1] === ">") {
-      const { token, nextIdx } = readNextShellToken(command, i + 2, { preserveLiteralEscapes: true });
-      targets.push({ target: token, env: envSnapshot });
-      i = nextIdx;
-      continue;
-    }
-    if (!inSingle && !inDouble && ch === ">") {
-      if (command[i + 1] === "&") {
-        const fdMatch = command.slice(i + 2).match(/^(?:\d+|-)(?=$|[\s|&;()<>])/);
-        if (fdMatch) {
-          i += 2 + fdMatch[0].length;
-          continue;
-        }
-        const { token, nextIdx } = readNextShellToken(command, i + 2, { preserveLiteralEscapes: true });
-        targets.push({ target: token, env: envSnapshot });
-        i = nextIdx;
-        continue;
-      }
-      const opLen = command[i + 1] === ">" || command[i + 1] === "|" ? 2 : 1;
-      const { token, nextIdx } = readNextShellToken(command, i + opLen, { preserveLiteralEscapes: true });
-      targets.push({ target: token, env: envSnapshot });
-      i = nextIdx;
-      continue;
-    }
-    i += 1;
-  }
-  return targets;
-}
-
-function tokenizeSingleSegment(segment) {
-  const tokens = [];
-  let token = "";
-  let hasTokenChars = false;
-  let inSingle = false;
-  let inDouble = false;
-  let i = 0;
-
-  const flushToken = () => {
-    if (hasTokenChars) {
+    if (skipNext) {
+      skipNext = false;
+    } else {
       tokens.push(token);
-      token = "";
-      hasTokenChars = false;
     }
-  };
+    token = "";
+    hasToken = false;
+    parenDepth = 0;
+  }
 
-  while (i < segment.length) {
-    const ch = segment[i];
-    if (ch === "\\" && !inSingle) {
-      if (i + 1 < segment.length && segment[i + 1] === "\n") {
-        i += 2;
-        continue;
+  function flushSegment() {
+    flushToken();
+    if (tokens.length > 0) {
+      segments.push(tokens);
+      tokens = [];
+    }
+    skipNext = false;
+  }
+
+  for (let i = 0; i < commandLine.length; i += 1) {
+    const ch = commandLine[i];
+    const next = commandLine[i + 1];
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      } else {
+        token += ch;
       }
-      hasTokenChars = true;
-      if (i + 1 < segment.length) token += segment[i + 1];
-      i += 2;
+      hasToken = true;
       continue;
     }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      hasTokenChars = true;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      hasTokenChars = true;
-      i += 1;
-      continue;
-    }
-    if (!inSingle && ch === "$" && segment[i + 1] === "(") {
-      const endIdx = scanBalancedDollarSub(segment, i);
-      if (endIdx > 0) {
-        hasTokenChars = true;
-        token += segment.slice(i, endIdx);
-        i = endIdx;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "$" && segment[i + 1] === "{") {
-      const closeIdx = findMatchingBrace(segment, i + 1);
-      if (closeIdx > 0) {
-        hasTokenChars = true;
-        token += segment.slice(i, closeIdx + 1);
-        i = closeIdx + 1;
-        continue;
-      }
-    }
-    if (!inSingle && ch === "`") {
-      let j = i + 1;
-      while (j < segment.length) {
-        if (segment[j] === "\\") {
-          j += 2;
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < commandLine.length) {
+        if (next === "\n") {
+          i += 1;
           continue;
         }
-        if (segment[j] === "`") break;
-        j += 1;
+        if (next === '"' || next === "\\" || next === "$" || next === "`") {
+          token += next;
+          i += 1;
+          hasToken = true;
+          continue;
+        }
       }
-      if (j < segment.length) {
-        hasTokenChars = true;
-        token += segment.slice(i, j + 1);
-        i = j + 1;
-        continue;
+      if (ch === '"') {
+        inDouble = false;
+      } else {
+        token += ch;
       }
+      hasToken = true;
+      continue;
     }
-    if (!inSingle && !inDouble) {
-      if (ch === " " || ch === "\t" || ch === "\r") {
-        flushToken();
+    if (ch === "\\" && i + 1 < commandLine.length) {
+      if (next !== "\n") {
+        token += next;
+        hasToken = true;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      hasToken = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "#" && !hasToken) {
+      while (i + 1 < commandLine.length && commandLine[i + 1] !== "\n") {
         i += 1;
-        continue;
       }
-      if (ch === "#" && !hasTokenChars) {
-        while (i < segment.length && segment[i] !== "\n") i += 1;
-        continue;
-      }
-      if (ch === "&" && segment[i + 1] === ">") {
-        flushToken();
-        const opLen = segment[i + 2] === ">" ? 3 : 2;
-        const { nextIdx } = readNextShellToken(segment, i + opLen);
-        i = nextIdx;
-        continue;
-      }
-      if (ch === ">" || ch === "<") {
-        if (hasTokenChars && /^\d+$/.test(token)) {
-          token = "";
-          hasTokenChars = false;
-        } else {
-          flushToken();
-        }
-        if (ch === "<" && segment[i + 1] === "<" && segment[i + 2] === "<") {
-          const { nextIdx } = readNextShellToken(segment, i + 3);
-          i = nextIdx;
-          continue;
-        }
-        if (ch === "<" && segment[i + 1] === "<") {
-          const opLen = segment[i + 2] === "-" ? 3 : 2;
-          const { nextIdx } = readNextShellToken(segment, i + opLen);
-          i = nextIdx;
-          continue;
-        }
-        if ((ch === ">" || ch === "<") && segment[i + 1] === "&") {
-          const fdMatch = segment.slice(i + 2).match(/^(?:\d+|-)/);
-          if (fdMatch) {
-            i += 2 + fdMatch[0].length;
-            continue;
-          }
-          const { nextIdx } = readNextShellToken(segment, i + 2);
-          i = nextIdx;
-          continue;
-        }
-        const opLen =
-          segment[i + 1] === ch || segment[i + 1] === "|" || segment[i + 1] === "&" || segment[i + 1] === ">"
-            ? 2
-            : 1;
-        const { nextIdx } = readNextShellToken(segment, i + opLen);
-        i = nextIdx;
-        continue;
-      }
+      continue;
     }
-    hasTokenChars = true;
+    if (ch === ";" || ch === "\n") {
+      flushSegment();
+      continue;
+    }
+    if (ch === "&" && next === ">") {
+      flushToken();
+      i += commandLine[i + 2] === ">" ? 2 : 1;
+      skipNext = true;
+      continue;
+    }
+    if (ch === "&" || ch === "|") {
+      if (next === ch) {
+        i += 1;
+      }
+      flushSegment();
+      continue;
+    }
+    if (isWhitespaceChar(ch)) {
+      flushToken();
+      continue;
+    }
+    if (ch === "(") {
+      if (hasToken) {
+        parenDepth += 1;
+        token += ch;
+      }
+      continue;
+    }
+    if (ch === ")") {
+      if (parenDepth > 0) {
+        parenDepth -= 1;
+        token += ch;
+      } else {
+        flushToken();
+      }
+      continue;
+    }
+    if (ch === ">" || ch === "<") {
+      if (hasToken && isAllDigits(token)) {
+        token = "";
+        hasToken = false;
+      } else {
+        flushToken();
+      }
+      if (ch === "<" && next === "<" && commandLine[i + 2] === "<") {
+        i += 2;
+        skipNext = true;
+      } else if ((ch === ">" && (next === ">" || next === "|")) || (ch === "<" && (next === "<" || next === ">"))) {
+        i += 1;
+        skipNext = true;
+      } else if (next === "&") {
+        i += 1;
+        if (isDigit(commandLine.charCodeAt(i + 1))) {
+          while (isDigit(commandLine.charCodeAt(i + 1))) {
+            i += 1;
+          }
+        } else if (commandLine[i + 1] === "-") {
+          i += 1;
+        } else {
+          skipNext = true;
+        }
+      } else {
+        skipNext = true;
+      }
+      continue;
+    }
     token += ch;
-    i += 1;
+    hasToken = true;
   }
-
-  flushToken();
-  return tokens;
+  flushSegment();
+  return segments;
 }
 
-function assignEnvVar(envObj, outerEnv, key, rawVal) {
-  const priorVal =
-    typeof envObj[key] === "string"
-      ? envObj[key]
-      : outerEnv && typeof outerEnv[key] === "string"
-        ? outerEnv[key]
-        : undefined;
-  if (priorVal !== undefined && rawVal.includes("$")) {
-    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const selfExpanded = rawVal
-      .replace(new RegExp(`\\$\\{${escapedKey}\\}`, "g"), priorVal)
-      .replace(new RegExp(`\\$${escapedKey}(?![A-Za-z0-9_])`, "g"), priorVal);
-    envObj[key] = selfExpanded;
-    return;
-  }
-  envObj[key] = rawVal;
-}
-
-const SHELL_KEYWORD_PREFIXES = new Set([
-  "if",
-  "then",
-  "else",
-  "elif",
-  "fi",
-  "while",
-  "until",
-  "do",
-  "done",
-  "esac",
-  "{",
-  "}",
-  "!",
-]);
-
-const READ_VALUE_FLAGS = new Set(["-p", "-t", "-n", "-N", "-d", "-u", "-i", "-a"]);
-
-function unwrapCommandSegment(tokens, inheritedEnv = {}, outerEnv = {}) {
-  const env = { ...inheritedEnv };
-  const assignedKeys = [];
-  const taintedVars = [];
+function unwrapCommandSegment(tokens) {
+  const inlineEnv = {};
   let idx = 0;
-
   while (idx < tokens.length) {
     const tok = tokens[idx];
-    if (SHELL_KEYWORD_PREFIXES.has(tok)) {
+    if (SHELL_KEYWORDS.has(tok)) {
       idx += 1;
       continue;
     }
-    if ((tok === "for" || tok === "select") && idx === 0) {
-      if (idx + 1 < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*$/.test(tokens[idx + 1])) {
-        taintedVars.push(tokens[idx + 1]);
-      }
-      return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
-    }
-    if (tok === "case" && idx === 0) {
-      return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
-    }
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
-      const eq = tok.indexOf("=");
-      const key = tok.slice(0, eq);
-      assignEnvVar(env, outerEnv, key, tok.slice(eq + 1));
-      assignedKeys.push(key);
+    const eq = tok.indexOf("=");
+    if (eq > 0 && isShellIdent(tok.slice(0, eq))) {
+      inlineEnv[tok.slice(0, eq)] = tok.slice(eq + 1);
       idx += 1;
       continue;
     }
     const base = basename(tok);
-    if (
-      (base === "export" || base === "local" || base === "readonly" || base === "declare" || base === "typeset") &&
-      tok === base
-    ) {
-      for (let j = idx + 1; j < tokens.length; j += 1) {
-        const arg = tokens[j];
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
-          const eq = arg.indexOf("=");
-          const key = arg.slice(0, eq);
-          assignEnvVar(env, outerEnv, key, arg.slice(eq + 1));
-          assignedKeys.push(key);
-        }
-      }
-      return { cmd: "export", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
-    }
-    if (base === "unset" && tok === "unset") {
-      for (let j = idx + 1; j < tokens.length; j += 1) {
-        const arg = tokens[j];
-        if (!arg.startsWith("-")) delete env[arg];
-      }
-      return { cmd: "unset", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
-    }
-    if (base === "read" && tok === "read") {
-      for (let j = idx + 1; j < tokens.length; j += 1) {
-        const arg = tokens[j];
-        if (arg.startsWith("-") && arg.length > 1) {
-          if (READ_VALUE_FLAGS.has(arg)) j += 1;
-          continue;
-        }
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
-          taintedVars.push(arg);
-        }
-      }
-      return { cmd: "read", rawCmd: tok, args: tokens.slice(idx + 1), env, assignedKeys, taintedVars };
-    }
     if (base === "env") {
       idx += 1;
       while (idx < tokens.length) {
-        const envArg = tokens[idx];
-        if (envArg === "-i" || envArg === "-") {
-          idx += 1;
-          continue;
-        }
-        if (envArg === "-u") {
-          if (idx + 1 < tokens.length) delete env[tokens[idx + 1]];
+        const arg = tokens[idx];
+        if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "-S") {
           idx += 2;
           continue;
         }
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(envArg)) {
-          const eq = envArg.indexOf("=");
-          assignEnvVar(env, outerEnv, envArg.slice(0, eq), envArg.slice(eq + 1));
+        if (arg.startsWith("-")) {
+          idx += 1;
+          continue;
+        }
+        const envEq = arg.indexOf("=");
+        if (envEq > 0 && isShellIdent(arg.slice(0, envEq))) {
+          inlineEnv[arg.slice(0, envEq)] = arg.slice(envEq + 1);
           idx += 1;
           continue;
         }
@@ -2092,4974 +1208,591 @@ function unwrapCommandSegment(tokens, inheritedEnv = {}, outerEnv = {}) {
       }
       continue;
     }
-    if (base === "command" || base === "builtin" || base === "nohup" || base === "time") {
+    if (base === "command" || base === "nohup" || base === "time") {
       idx += 1;
       while (idx < tokens.length && tokens[idx].startsWith("-") && tokens[idx] !== "--") {
         idx += 1;
       }
-      if (tokens[idx] === "--") idx += 1;
-      continue;
-    }
-    if (base === "sudo") {
-      idx += 1;
-      while (idx < tokens.length && tokens[idx].startsWith("-")) {
-        const flag = tokens[idx];
+      if (tokens[idx] === "--") {
         idx += 1;
-        if (flag === "-u" || flag === "-g" || flag === "-C" || flag === "-h" || flag === "-p") {
-          idx += 1;
-        }
       }
       continue;
     }
-    if (base === "xargs") {
-      idx += 1;
-      while (idx < tokens.length && tokens[idx].startsWith("-")) {
-        const flag = tokens[idx];
-        idx += 1;
-        if (["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"].includes(flag)) {
-          idx += 1;
-        }
-      }
-      continue;
-    }
-    break;
+    return { cmd: base, args: tokens.slice(idx + 1), inlineEnv };
   }
-
-  if (idx >= tokens.length) {
-    return { cmd: "", rawCmd: "", args: [], env, assignedKeys, taintedVars };
-  }
-  return {
-    cmd: basename(tokens[idx]),
-    rawCmd: tokens[idx],
-    args: tokens.slice(idx + 1),
-    env,
-    assignedKeys,
-    taintedVars,
-  };
-}
-
-function replaceObjectKeys(target, source) {
-  for (const k of Object.keys(target)) delete target[k];
-  Object.assign(target, source);
-}
-
-function collectInvocations(command, depth = 0, inheritedEnv = {}, outerEnv = {}) {
-  if (depth > 8 || !command) return { invocations: [], redirectTargets: [] };
-  const { strippedCommand, unquotedBodies } = preprocessHeredocs(command);
-  const redirectTargets = [];
-  const invocations = [];
-  const scriptEnv = { ...inheritedEnv };
-  const envStack = [];
-
-  const rawItems = splitRawShellSegments(strippedCommand);
-  for (const item of rawItems) {
-    if (item.type === "paren") {
-      if (item.dir === "(") {
-        envStack.push({ ...scriptEnv });
-      } else if (envStack.length > 0) {
-        replaceObjectKeys(scriptEnv, envStack.pop());
-      }
-      continue;
-    }
-
-    const rawSeg = item.text;
-    const isPipelineStage = item.connectorBefore === "|" || item.connectorAfter === "|";
-    const isConditional = item.connectorBefore === "&&" || item.connectorBefore === "||";
-    const tokens = tokenizeSingleSegment(rawSeg);
-    const parsed = unwrapCommandSegment(tokens, scriptEnv, outerEnv);
-
-    for (const sub of extractCommandSubstitutions(rawSeg)) {
-      const subRes = collectInvocations(sub, depth + 1, parsed.env, outerEnv);
-      redirectTargets.push(...subRes.redirectTargets);
-      invocations.push(...subRes.invocations);
-    }
-
-    redirectTargets.push(...extractOutputRedirectTargets(rawSeg, parsed.env));
-
-    for (const tv of parsed.taintedVars) {
-      if (!isPipelineStage) {
-        parsed.env[tv] = "$__TAINTED__";
-        scriptEnv[tv] = "$__TAINTED__";
-      }
-    }
-
-    if (!parsed.cmd) {
-      if (!isPipelineStage) {
-        if (isConditional) {
-          for (const key of parsed.assignedKeys) {
-            scriptEnv[key] = "$__TAINTED__";
-          }
-        } else {
-          Object.assign(scriptEnv, parsed.env);
-        }
-      }
-      continue;
-    }
-    if (parsed.cmd === "export" || parsed.cmd === "unset" || parsed.cmd === "read") {
-      if (!isPipelineStage) {
-        if (isConditional) {
-          for (const key of parsed.assignedKeys) {
-            scriptEnv[key] = "$__TAINTED__";
-          }
-        } else {
-          replaceObjectKeys(scriptEnv, parsed.env);
-        }
-      }
-      continue;
-    }
-    invocations.push(parsed);
-
-    if (["sh", "bash", "zsh", "dash", "ksh"].includes(parsed.cmd)) {
-      for (let i = 0; i < parsed.args.length; i += 1) {
-        const arg = parsed.args[i];
-        if (arg === "--") break;
-        if (/^-[a-zA-Z]*c$/.test(arg) && i + 1 < parsed.args.length) {
-          const inner = collectInvocations(parsed.args[i + 1], depth + 1, parsed.env, outerEnv);
-          redirectTargets.push(...inner.redirectTargets);
-          invocations.push(...inner.invocations);
-          break;
-        }
-      }
-    } else if (parsed.cmd === "eval" && parsed.args.length > 0) {
-      const inner = collectInvocations(parsed.args.join(" "), depth + 1, parsed.env, outerEnv);
-      redirectTargets.push(...inner.redirectTargets);
-      invocations.push(...inner.invocations);
-    }
-  }
-
-  for (const body of unquotedBodies) {
-    for (const sub of extractCommandSubstitutions(body)) {
-      const subRes = collectInvocations(sub, depth + 1, scriptEnv, outerEnv);
-      redirectTargets.push(...subRes.redirectTargets);
-      invocations.push(...subRes.invocations);
-    }
-  }
-
-  return { invocations, redirectTargets };
-}
-
-function extractPositionalPaths(args) {
-  const paths = [];
-  let afterDoubleDash = false;
-  for (const arg of args) {
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      continue;
-    }
-    paths.push(arg);
-  }
-  return paths;
-}
-
-function extractChmodTargets(args) {
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
-    if (arg === "--") {
-      i += 1;
-      break;
-    }
-    if (arg === "--reference") {
-      i += 2;
-      continue;
-    }
-    if (arg.startsWith("--reference=")) {
-      return args.slice(i + 1).filter((a) => a !== "--");
-    }
-    if (
-      ["-R", "-v", "-c", "-f", "-h", "-H", "-L", "-P", "--recursive", "--changes", "--silent", "--quiet", "--verbose"].includes(
-        arg,
-      ) ||
-      /^-[RvcfhHLP]+$/.test(arg)
-    ) {
-      i += 1;
-      continue;
-    }
-    break;
-  }
-  if (i >= args.length) return [];
-  return args.slice(i + 1).filter((a) => a !== "--");
-}
-
-function extractCpOrMvSpec(args) {
-  let targetDir = null;
-  const positionals = [];
-  let afterDoubleDash = false;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (arg === "-t" || arg === "--target-directory") {
-        if (i + 1 >= args.length) return { valid: false, sources: [], destinations: [] };
-        targetDir = args[i + 1];
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--target-directory=")) {
-        targetDir = arg.slice("--target-directory=".length);
-        continue;
-      }
-      if (arg.startsWith("-t") && arg.length > 2) {
-        targetDir = arg.slice(2);
-        continue;
-      }
-      if (arg === "-S" || arg === "--suffix") {
-        i += 1;
-        continue;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-
-  if (targetDir !== null) {
-    if (positionals.length === 0) return { valid: false, sources: [], destinations: [] };
-    return { valid: true, sources: positionals, destinations: [targetDir] };
-  }
-  if (positionals.length < 2) {
-    return { valid: false, sources: [], destinations: [] };
-  }
-  return {
-    valid: true,
-    sources: positionals.slice(0, -1),
-    destinations: [positionals[positionals.length - 1]],
-  };
-}
-
-function extractLnSpec(args) {
-  let isSymbolic = false;
-  let targetDir = null;
-  const positionals = [];
-  let afterDoubleDash = false;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (arg === "--symbolic" || (!arg.startsWith("--") && /^-[a-zA-Z]*s/.test(arg))) {
-        isSymbolic = true;
-      }
-      if (arg === "-t" || arg === "--target-directory") {
-        if (i + 1 >= args.length) return { valid: false, isSymbolic, sources: [], linkPaths: [] };
-        targetDir = args[i + 1];
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--target-directory=")) {
-        targetDir = arg.slice("--target-directory=".length);
-        continue;
-      }
-      if (arg === "-S" || arg === "--suffix") {
-        i += 1;
-        continue;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-
-  if (targetDir !== null) {
-    if (positionals.length === 0) return { valid: false, isSymbolic, sources: [], linkPaths: [] };
-    return { valid: true, isSymbolic, sources: positionals, linkPaths: [targetDir], linkIsDir: true };
-  }
-  if (positionals.length === 1) {
-    return { valid: true, isSymbolic, sources: [positionals[0]], linkPaths: ["."], linkIsDir: true };
-  }
-  if (positionals.length >= 2) {
-    return {
-      valid: true,
-      isSymbolic,
-      sources: positionals.slice(0, -1),
-      linkPaths: [positionals[positionals.length - 1]],
-      linkIsDir: positionals.length > 2,
-    };
-  }
-  return { valid: false, isSymbolic, sources: [], linkPaths: [], linkIsDir: false };
-}
-
-function extractPatchTargets(args) {
-  const dirTargets = [];
-  const fileTargets = [];
-  const positionals = [];
-  let afterDoubleDash = false;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (arg === "-d" || arg === "--directory") {
-        if (i + 1 >= args.length) return { valid: false, dirTargets: [], fileTargets: [] };
-        dirTargets.push(args[i + 1]);
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--directory=")) {
-        dirTargets.push(arg.slice("--directory=".length));
-        continue;
-      }
-      if (arg.startsWith("-d") && arg.length > 2) {
-        dirTargets.push(arg.slice(2));
-        continue;
-      }
-      if (arg === "-o" || arg === "--output" || arg === "-r" || arg === "--reject-file") {
-        if (i + 1 >= args.length) return { valid: false, dirTargets: [], fileTargets: [] };
-        fileTargets.push(args[i + 1]);
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--output=")) {
-        fileTargets.push(arg.slice("--output=".length));
-        continue;
-      }
-      if (arg.startsWith("--reject-file=")) {
-        fileTargets.push(arg.slice("--reject-file=".length));
-        continue;
-      }
-      if (
-        ["-i", "--input", "-p", "--strip", "-F", "--fuzz", "-V", "--version-control", "-B", "--prefix", "-Y", "--basename-prefix", "-z", "--suffix", "-D", "--ifdef", "-g", "--get"].includes(
-          arg,
-        )
-      ) {
-        i += 1;
-        continue;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-
-  if (positionals.length >= 1) {
-    fileTargets.push(positionals[0]);
-  }
-  return { valid: true, dirTargets, fileTargets };
-}
-
-function extractSedInPlaceTargets(args) {
-  let hasInPlace = false;
-  let hasExplicitScript = false;
-  let afterDoubleDash = false;
-  const positionals = [];
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash) {
-      if (arg === "-e" || arg === "--expression" || arg === "-f" || arg === "--file") {
-        hasExplicitScript = true;
-        i += 1;
-        continue;
-      }
-      if (
-        (arg.startsWith("-e") && arg.length > 2) ||
-        arg.startsWith("--expression=") ||
-        (arg.startsWith("-f") && arg.length > 2) ||
-        arg.startsWith("--file=")
-      ) {
-        hasExplicitScript = true;
-        continue;
-      }
-      if (arg === "-i") {
-        hasInPlace = true;
-        if (i + 1 < args.length && (args[i + 1] === "" || args[i + 1].startsWith("."))) {
-          i += 1;
-        }
-        continue;
-      }
-      if (arg === "--in-place" || arg.startsWith("--in-place=") || (!arg.startsWith("--") && /^-[a-zA-Z]*i/.test(arg))) {
-        hasInPlace = true;
-        if (!arg.startsWith("--") && arg.endsWith("i") && i + 1 < args.length && args[i + 1] === "") {
-          i += 1;
-        }
-        continue;
-      }
-      if (arg.startsWith("-") && arg.length > 1) {
-        continue;
-      }
-    }
-    positionals.push(arg);
-  }
-
-  if (!hasInPlace) return null;
-  return hasExplicitScript ? positionals : positionals.slice(1);
-}
-
-function extractPerlRubyInPlaceTargets(args) {
-  let hasInPlace = false;
-  let hasInlineScript = false;
-  let afterDoubleDash = false;
-  const positionals = [];
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (!arg.startsWith("--") && /^-[a-zA-Z]*i/.test(arg)) {
-        hasInPlace = true;
-      }
-      if (arg === "-e" || arg === "-E" || (!arg.startsWith("--") && /^-[a-zA-Z.]*[eE]$/.test(arg))) {
-        hasInlineScript = true;
-        i += 1;
-        continue;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-
-  if (!hasInPlace) return null;
-  return hasInlineScript ? positionals : positionals.slice(1);
-}
-
-function parseCallArguments(code, openParenIdx) {
-  const args = [];
-  let current = "";
-  let depth = 1;
-  let i = openParenIdx + 1;
-  let quote = null;
-
-  while (i < code.length && depth > 0) {
-    const ch = code[i];
-    if (quote) {
-      current += ch;
-      if (ch === "\\" && i + 1 < code.length) {
-        current += code[i + 1];
-        i += 2;
-        continue;
-      }
-      if (quote.length === 3) {
-        if (code.slice(i, i + 3) === quote) {
-          current += code.slice(i + 1, i + 3);
-          quote = null;
-          i += 3;
-          continue;
-        }
-      } else if (ch === quote) {
-        quote = null;
-      }
-      i += 1;
-      continue;
-    }
-
-    if (code.slice(i, i + 3) === "'''" || code.slice(i, i + 3) === '"""') {
-      quote = code.slice(i, i + 3);
-      current += quote;
-      i += 3;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
-      current += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") {
-      depth += 1;
-      current += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === ")" || ch === "]" || ch === "}") {
-      depth -= 1;
-      if (depth === 0) break;
-      current += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === "," && depth === 1) {
-      args.push(current.trim());
-      current = "";
-      i += 1;
-      continue;
-    }
-    current += ch;
-    i += 1;
-  }
-
-  if (depth !== 0) return null;
-  if (current.trim().length > 0 || args.length > 0) {
-    args.push(current.trim());
-  }
-  return args;
-}
-
-function unescapeSimpleLiteral(inner, isRaw = false) {
-  if (isRaw) return inner;
-  let out = "";
-  for (let i = 0; i < inner.length; i += 1) {
-    if (inner[i] === "\\" && i + 1 < inner.length) {
-      const next = inner[i + 1];
-      if (next === "n") out += "\n";
-      else if (next === "r") out += "\r";
-      else if (next === "t") out += "\t";
-      else out += next;
-      i += 1;
-      continue;
-    }
-    out += inner[i];
-  }
-  return out;
-}
-
-function parseStaticJsString(expr) {
-  if (typeof expr !== "string") return { ok: false, value: "" };
-  const trimmed = expr.trim();
-  if (trimmed.length < 2) return { ok: false, value: "" };
-  const q = trimmed[0];
-  if (q !== "'" && q !== '"' && q !== "`") return { ok: false, value: "" };
-  if (trimmed[trimmed.length - 1] !== q) return { ok: false, value: "" };
-  const inner = trimmed.slice(1, -1);
-  for (let i = 0; i < inner.length; i += 1) {
-    if (inner[i] === "\\") {
-      i += 1;
-      continue;
-    }
-    if (inner[i] === q) return { ok: false, value: "" };
-    if (q === "`" && inner[i] === "$" && inner[i + 1] === "{") {
-      return { ok: false, value: "" };
-    }
-  }
-  return { ok: true, value: unescapeSimpleLiteral(inner, false) };
-}
-
-function parseStaticPyString(expr) {
-  if (typeof expr !== "string") return { ok: false, value: "" };
-  let trimmed = expr.trim();
-  let isRaw = false;
-  let isFormat = false;
-  const prefixMatch = trimmed.match(/^([rRbBuUfF]{1,2})(?=['"])/);
-  if (prefixMatch) {
-    const p = prefixMatch[1].toLowerCase();
-    isRaw = p.includes("r");
-    isFormat = p.includes("f");
-    trimmed = trimmed.slice(prefixMatch[1].length);
-  }
-  let quote = "";
-  if (trimmed.startsWith("'''") && trimmed.endsWith("'''") && trimmed.length >= 6) {
-    quote = "'''";
-  } else if (trimmed.startsWith('"""') && trimmed.endsWith('"""') && trimmed.length >= 6) {
-    quote = '"""';
-  } else if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
-    if (trimmed.length >= 2) quote = trimmed[0];
-  }
-  if (!quote) return { ok: false, value: "" };
-  const inner = trimmed.slice(quote.length, trimmed.length - quote.length);
-  if (isFormat && /[{}]/.test(inner)) return { ok: false, value: "" };
-  if (quote.length === 1) {
-    for (let i = 0; i < inner.length; i += 1) {
-      if (inner[i] === "\\") {
-        i += 1;
-        continue;
-      }
-      if (inner[i] === quote) return { ok: false, value: "" };
-    }
-  }
-  return { ok: true, value: unescapeSimpleLiteral(inner, isRaw) };
-}
-
-const JS_NON_MEMBER_PREFIX_KEYWORDS = new Set([
-  "return",
-  "typeof",
-  "await",
-  "yield",
-  "throw",
-  "delete",
-  "void",
-  "case",
-  "in",
-  "of",
-  "else",
-  "new",
-]);
-
-const NODE_MUTATION_NAME_RE =
-  /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b/;
-
-const PYTHON_MUTATION_NAME_RE =
-  /\b(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link|write_text|write_bytes|touch|symlink_to|hardlink_to|link_to)\b/;
-
-const PYTHON_PATH_CLASS_NAMES = new Set([
-  "Path",
-  "PurePath",
-  "PosixPath",
-  "WindowsPath",
-  "PurePosixPath",
-  "PureWindowsPath",
-]);
-
-const PYTHON_FS_MODULE_NAMES = new Set(["os", "posix", "shutil"]);
-
-const PYTHON_OS_SHUTIL_FN_NAMES = new Set([
-  "remove",
-  "unlink",
-  "rmdir",
-  "removedirs",
-  "mkdir",
-  "makedirs",
-  "chmod",
-  "lchmod",
-  "chown",
-  "truncate",
-  "rename",
-  "renames",
-  "replace",
-  "rmtree",
-  "move",
-  "copy",
-  "copy2",
-  "copyfile",
-  "copytree",
-  "symlink",
-  "link",
-]);
-
-const PYTHON_STRING_RETURNING_METHODS = new Set([
-  "read_text",
-  "read",
-  "readline",
-  "strip",
-  "lstrip",
-  "rstrip",
-  "lower",
-  "upper",
-  "casefold",
-  "title",
-  "capitalize",
-  "swapcase",
-  "decode",
-  "format",
-  "format_map",
-  "join",
-  "removeprefix",
-  "removesuffix",
-  "expandtabs",
-  "zfill",
-  "center",
-  "ljust",
-  "rjust",
-  "translate",
-]);
-
-const PYTHON_STATEMENT_KEYWORDS = new Set([
-  "and",
-  "as",
-  "assert",
-  "await",
-  "case",
-  "del",
-  "elif",
-  "else",
-  "for",
-  "from",
-  "if",
-  "import",
-  "in",
-  "is",
-  "lambda",
-  "not",
-  "or",
-  "raise",
-  "return",
-  "while",
-  "with",
-  "yield",
-]);
-
-const PYTHON_REFLECTION_IDENT_RE =
-  /\b(?:getattr|setattr|delattr|vars|globals|locals|methodcaller|attrgetter|__dict__|__getattribute__|__getattr__|__setattr__|__delattr__|__subclasses__|__mro__|__bases__|__base__|__builtins__)\b/;
-
-const PYTHON_EVAL_EXEC_RE = /(?:^|[^\w.])(?:builtins\s*\.\s*)?(?:eval|exec)\b/;
-
-const PYTHON_UNBOUND_MUTATION_ATTR_RE =
-  /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|remove|removedirs|makedirs|chown|truncate|renames|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\b(?!\s*\()/;
-
-const PYTHON_UNBOUND_OPEN_RE =
-  /(?:(?:^|[^\w.])=\s*(?:builtins\s*\.\s*|_?io\s*\.\s*|codecs\s*\.\s*)?open\b(?!\s*\()|\b(?:builtins|_?io|codecs)\s*\.\s*open\b(?!\s*\())/;
-
-function findMatchingCloseForward(str, openIdx) {
-  let depth = 0;
-  let quote = null;
-  let i = openIdx;
-  while (i < str.length) {
-    const ch = str[i];
-    if (quote) {
-      if (ch === "\\") {
-        i += 2;
-        continue;
-      }
-      if (quote.length === 3) {
-        if (str.slice(i, i + 3) === quote) {
-          quote = null;
-          i += 3;
-          continue;
-        }
-      } else if (ch === quote) {
-        quote = null;
-      }
-      i += 1;
-      continue;
-    }
-    if (str.slice(i, i + 3) === "'''" || str.slice(i, i + 3) === '"""') {
-      quote = str.slice(i, i + 3);
-      i += 3;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
-      i += 1;
-      continue;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") {
-      depth += 1;
-    } else if (ch === ")" || ch === "]" || ch === "}") {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-    i += 1;
-  }
-  return -1;
-}
-
-function stripBalancedOuterParens(expr) {
-  let cur = String(expr || "").trim();
-  while (cur.startsWith("(") && cur.endsWith(")")) {
-    if (findMatchingCloseForward(cur, 0) !== cur.length - 1) break;
-    cur = cur.slice(1, -1).trim();
-  }
-  return cur;
-}
-
-function unwrapPythonExprParensAndWalrus(rawExpr) {
-  let cur = stripBalancedOuterParens(rawExpr);
-  while (cur) {
-    const m = cur.match(/^[A-Za-z_][A-Za-z0-9_]*\s*:=\s*([\s\S]+)$/);
-    if (!m) break;
-    cur = stripBalancedOuterParens(m[1]);
-  }
-  return cur;
-}
-
-function findFStringExprSpan(str, openBraceIdx) {
-  let parenDepth = 0;
-  let braceDepth = 1;
-  let inFormatSpec = false;
-  let exprEndIdx = -1;
-  let j = openBraceIdx + 1;
-  while (j < str.length) {
-    const ch = str[j];
-    if (!inFormatSpec) {
-      let nestedPrefix = "";
-      if (/[A-Za-z_]/.test(ch)) {
-        const wStart = j;
-        while (j < str.length && /[A-Za-z0-9_]/.test(str[j])) j += 1;
-        const word = str.slice(wStart, j);
-        if (!/^[rRbBuUfFtT]{1,2}$/.test(word) || (str[j] !== "'" && str[j] !== '"')) {
-          continue;
-        }
-        nestedPrefix = word;
-      }
-      if (str[j] === "'" || str[j] === '"') {
-        const q =
-          str.slice(j, j + 3) === "'''" || str.slice(j, j + 3) === '"""'
-            ? str.slice(j, j + 3)
-            : str[j];
-        const nestedIsFormat = /[fFtT]/.test(nestedPrefix);
-        j += q.length;
-        while (j < str.length) {
-          if (str[j] === "\\") {
-            j += 2;
-            continue;
-          }
-          if (q.length === 3) {
-            if (str.slice(j, j + 3) === q) {
-              j += 3;
-              break;
-            }
-          } else if (str[j] === q) {
-            j += 1;
-            break;
-          }
-          if (nestedIsFormat && str[j] === "{") {
-            if (str[j + 1] === "{") {
-              j += 2;
-              continue;
-            }
-            const innerSpan = findFStringExprSpan(str, j);
-            if (innerSpan) {
-              j = innerSpan.closeBrace + 1;
-              continue;
-            }
-          }
-          j += 1;
-        }
-        continue;
-      }
-      if (ch === "#") {
-        while (j < str.length && str[j] !== "\n" && str[j] !== "\r") j += 1;
-        continue;
-      }
-      if (ch === "(" || ch === "[") {
-        parenDepth += 1;
-        j += 1;
-        continue;
-      }
-      if (ch === ")" || ch === "]") {
-        parenDepth = Math.max(0, parenDepth - 1);
-        j += 1;
-        continue;
-      }
-      if (ch === "{") {
-        braceDepth += 1;
-        j += 1;
-        continue;
-      }
-      if (ch === "}") {
-        braceDepth -= 1;
-        if (braceDepth === 0) {
-          return {
-            exprStart: openBraceIdx + 1,
-            exprEnd: exprEndIdx < 0 ? j : exprEndIdx,
-            closeBrace: j,
-          };
-        }
-        j += 1;
-        continue;
-      }
-      if (parenDepth === 0 && braceDepth === 1) {
-        if (ch === ":") {
-          exprEndIdx = j;
-          inFormatSpec = true;
-          j += 1;
-          continue;
-        }
-        if (ch === "!" && /^[rsa]\s*[:}]/.test(str.slice(j + 1, j + 6))) {
-          exprEndIdx = j;
-          inFormatSpec = true;
-          j += 1;
-          continue;
-        }
-      }
-      j += 1;
-      continue;
-    }
-    if (ch === "{") {
-      braceDepth += 1;
-      j += 1;
-      continue;
-    }
-    if (ch === "}") {
-      braceDepth -= 1;
-      if (braceDepth === 0) {
-        return {
-          exprStart: openBraceIdx + 1,
-          exprEnd: exprEndIdx < 0 ? j : exprEndIdx,
-          closeBrace: j,
-        };
-      }
-      j += 1;
-      continue;
-    }
-    j += 1;
-  }
-  return null;
-}
-
-function scanPythonTokensRange(code, startIdx, limitIdx, tokens, openStack) {
-  let i = startIdx;
-  const end = Math.min(limitIdx, code.length);
-  while (i < end) {
-    const ch = code[i];
-    if (/\s/.test(ch)) {
-      i += 1;
-      continue;
-    }
-    if (ch === "#") {
-      while (i < end && code[i] !== "\n") i += 1;
-      continue;
-    }
-    let prefix = "";
-    let strStart = -1;
-    let quoteIdx = -1;
-    if (/[A-Za-z_]/.test(ch)) {
-      const wStart = i;
-      while (i < end && /[A-Za-z0-9_]/.test(code[i])) i += 1;
-      const word = code.slice(wStart, i);
-      if (
-        i < end &&
-        /^[rRbBuUfFtT]{1,2}$/.test(word) &&
-        (code[i] === "'" || code[i] === '"' || code[i] === "`")
-      ) {
-        prefix = word;
-        strStart = wStart;
-        quoteIdx = i;
-      } else {
-        tokens.push({ kind: "ident", start: wStart, end: i, text: word });
-        continue;
-      }
-    } else if (ch === "'" || ch === '"' || ch === "`") {
-      strStart = i;
-      quoteIdx = i;
-    }
-
-    if (quoteIdx >= 0) {
-      const q =
-        quoteIdx + 3 <= code.length &&
-        (code.slice(quoteIdx, quoteIdx + 3) === "'''" ||
-          code.slice(quoteIdx, quoteIdx + 3) === '"""')
-          ? code.slice(quoteIdx, quoteIdx + 3)
-          : code[quoteIdx];
-      const isFormat = /[fFtT]/.test(prefix);
-      if (!isFormat) {
-        i = quoteIdx + q.length;
-        let closed = false;
-        while (i < end) {
-          if (code[i] === "\\") {
-            i += 2;
-            continue;
-          }
-          if (q.length === 3) {
-            if (i + 3 <= end && code.slice(i, i + 3) === q) {
-              i += 3;
-              closed = true;
-              break;
-            }
-          } else if (code[i] === q) {
-            i += 1;
-            closed = true;
-            break;
-          }
-          i += 1;
-        }
-        tokens.push({ kind: "string", start: strStart, end: Math.min(i, end), closed, isFormat: false });
-        continue;
-      }
-
-      let j = quoteIdx + q.length;
-      let fullStrEnd = -1;
-      const interpSpans = [];
-      while (j < code.length) {
-        if (code[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (q.length === 3) {
-          if (code.slice(j, j + 3) === q) {
-            fullStrEnd = j + 3;
-            break;
-          }
-        } else if (code[j] === q) {
-          fullStrEnd = j + 1;
-          break;
-        }
-        if (code[j] === "{") {
-          if (code[j + 1] === "{") {
-            j += 2;
-            continue;
-          }
-          const span = findFStringExprSpan(code, j);
-          if (span) {
-            interpSpans.push({ openBrace: j, exprStart: span.exprStart, exprEnd: span.exprEnd, closeBrace: span.closeBrace });
-            let sj = span.exprEnd;
-            while (sj < span.closeBrace) {
-              if (code[sj] === "{" && code[sj + 1] !== "{") {
-                const subSpan = findFStringExprSpan(code, sj);
-                if (subSpan) {
-                  interpSpans.push({
-                    openBrace: sj,
-                    exprStart: subSpan.exprStart,
-                    exprEnd: subSpan.exprEnd,
-                    closeBrace: subSpan.closeBrace,
-                  });
-                  sj = subSpan.closeBrace + 1;
-                  continue;
-                }
-              }
-              sj += 1;
-            }
-            j = span.closeBrace + 1;
-            continue;
-          }
-          interpSpans.push({ openBrace: j, exprStart: j + 1, exprEnd: code.length, closeBrace: code.length });
-          break;
-        }
-        if (code[j] === "}" && code[j + 1] === "}") {
-          j += 2;
-          continue;
-        }
-        j += 1;
-      }
-
-      if (fullStrEnd >= 0 && fullStrEnd <= end) {
-        tokens.push({ kind: "string", start: strStart, end: fullStrEnd, closed: true, isFormat: true });
-        i = fullStrEnd;
-        continue;
-      }
-
-      let activeSpan = null;
-      for (const sp of interpSpans) {
-        if (sp.openBrace < end && end <= sp.closeBrace) {
-          if (!activeSpan || sp.openBrace > activeSpan.openBrace) {
-            activeSpan = sp;
-          }
-        }
-      }
-      if (activeSpan && end <= activeSpan.exprEnd) {
-        const openIdx = tokens.length;
-        tokens.push({ kind: "open", start: activeSpan.openBrace, end: activeSpan.openBrace + 1, ch: "{" });
-        openStack.push(openIdx);
-        scanPythonTokensRange(code, activeSpan.exprStart, end, tokens, openStack);
-        i = end;
-        continue;
-      }
-
-      tokens.push({ kind: "string", start: strStart, end, closed: false, isFormat: true });
-      i = end;
-      continue;
-    }
-
-    if (ch === "(" || ch === "[" || ch === "{") {
-      const idx = tokens.length;
-      tokens.push({ kind: "open", start: i, end: i + 1, ch });
-      openStack.push(idx);
-      i += 1;
-      continue;
-    }
-    if (ch === ")" || ch === "]" || ch === "}") {
-      const openTokenIdx = openStack.length > 0 ? openStack.pop() : -1;
-      tokens.push({ kind: "close", start: i, end: i + 1, ch, openTokenIdx });
-      i += 1;
-      continue;
-    }
-    if (ch === ".") {
-      tokens.push({ kind: "dot", start: i, end: i + 1 });
-      i += 1;
-      continue;
-    }
-    tokens.push({ kind: "other", start: i, end: i + 1, ch });
-    i += 1;
-  }
-}
-
-function scanPythonTokensBefore(code, limitIdx) {
-  const tokens = [];
-  const openStack = [];
-  scanPythonTokensRange(code, 0, limitIdx, tokens, openStack);
-  return tokens;
-}
-
-function stripPythonCommentsAndContinuations(rawCode) {
-  let out = "";
-  let bracketDepth = 0;
-  let i = 0;
-  while (i < rawCode.length) {
-    const ch = rawCode[i];
-    let prefix = "";
-    let strStart = -1;
-    let quoteIdx = -1;
-    if (/[A-Za-z_]/.test(ch)) {
-      const wStart = i;
-      while (i < rawCode.length && /[A-Za-z0-9_]/.test(rawCode[i])) i += 1;
-      const word = rawCode.slice(wStart, i);
-      if (/^[rRbBuUfFtT]{1,2}$/.test(word) && (rawCode[i] === "'" || rawCode[i] === '"')) {
-        prefix = word;
-        strStart = wStart;
-        quoteIdx = i;
-      } else {
-        out += word;
-        continue;
-      }
-    } else if (ch === "'" || ch === '"') {
-      strStart = i;
-      quoteIdx = i;
-    }
-
-    if (quoteIdx >= 0) {
-      const q =
-        rawCode.slice(quoteIdx, quoteIdx + 3) === "'''" ||
-        rawCode.slice(quoteIdx, quoteIdx + 3) === '"""'
-          ? rawCode.slice(quoteIdx, quoteIdx + 3)
-          : rawCode[quoteIdx];
-      const isFormat = /[fFtT]/.test(prefix);
-      i = quoteIdx + q.length;
-      if (!isFormat) {
-        while (i < rawCode.length) {
-          if (rawCode[i] === "\\") {
-            i += 2;
-            continue;
-          }
-          if (q.length === 3) {
-            if (rawCode.slice(i, i + 3) === q) {
-              i += 3;
-              break;
-            }
-          } else if (rawCode[i] === q) {
-            i += 1;
-            break;
-          }
-          i += 1;
-        }
-        out += rawCode.slice(strStart, Math.min(i, rawCode.length));
-        continue;
-      }
-
-      out += prefix + q;
-      while (i < rawCode.length) {
-        if (rawCode[i] === "\\") {
-          out += rawCode.slice(i, Math.min(i + 2, rawCode.length));
-          i += 2;
-          continue;
-        }
-        if (q.length === 3) {
-          if (rawCode.slice(i, i + 3) === q) {
-            out += q;
-            i += 3;
-            break;
-          }
-        } else if (rawCode[i] === q) {
-          out += q;
-          i += 1;
-          break;
-        }
-        if (rawCode[i] === "{") {
-          if (rawCode[i + 1] === "{") {
-            out += "{{";
-            i += 2;
-            continue;
-          }
-          const span = findFStringExprSpan(rawCode, i);
-          if (span) {
-            const normExpr = normalizeInlinePythonCode(rawCode.slice(span.exprStart, span.exprEnd));
-            const specRaw = rawCode.slice(span.exprEnd, span.closeBrace);
-            let normSpec = "";
-            let sj = 0;
-            while (sj < specRaw.length) {
-              if (specRaw[sj] === "{" && specRaw[sj + 1] !== "{") {
-                const subSpan = findFStringExprSpan(specRaw, sj);
-                if (subSpan) {
-                  normSpec += `{${normalizeInlinePythonCode(specRaw.slice(subSpan.exprStart, subSpan.exprEnd))}${specRaw.slice(subSpan.exprEnd, subSpan.closeBrace + 1)}`;
-                  sj = subSpan.closeBrace + 1;
-                  continue;
-                }
-              }
-              normSpec += specRaw[sj];
-              sj += 1;
-            }
-            out += `{${normExpr}${normSpec}}`;
-            i = span.closeBrace + 1;
-            continue;
-          }
-        }
-        if (rawCode[i] === "}" && rawCode[i + 1] === "}") {
-          out += "}}";
-          i += 2;
-          continue;
-        }
-        out += rawCode[i];
-        i += 1;
-      }
-      continue;
-    }
-
-    if (ch === "\\") {
-      if (rawCode[i + 1] === "\r" && rawCode[i + 2] === "\n") {
-        out += " ";
-        i += 3;
-        continue;
-      }
-      if (rawCode[i + 1] === "\n" || rawCode[i + 1] === "\r") {
-        out += " ";
-        i += 2;
-        continue;
-      }
-    }
-    if (ch === "#") {
-      out += " ";
-      while (i < rawCode.length && rawCode[i] !== "\n" && rawCode[i] !== "\r") i += 1;
-      continue;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") {
-      bracketDepth += 1;
-      out += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === ")" || ch === "]" || ch === "}") {
-      bracketDepth = Math.max(0, bracketDepth - 1);
-      out += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === "\r" || ch === "\n") {
-      if (ch === "\r" && rawCode[i + 1] === "\n") i += 2;
-      else i += 1;
-      out += bracketDepth > 0 ? " " : "\n";
-      continue;
-    }
-    out += ch;
-    i += 1;
-  }
-  return out;
-}
-
-function unwrapParenthesizedPythonRefs(code) {
-  const chars = code.split("");
-  const maxPasses = Math.max(1, Math.floor(chars.length / 2) + 1);
-  for (let pass = 0; pass < maxPasses; pass += 1) {
-    const cur = chars.join("");
-    const tokens = scanPythonTokensBefore(cur, cur.length);
-    let changed = false;
-    for (let closeIdx = 0; closeIdx < tokens.length; closeIdx += 1) {
-      const closeTok = tokens[closeIdx];
-      if (closeTok.kind !== "close" || closeTok.ch !== ")" || closeTok.openTokenIdx < 0) continue;
-      const openIdx = closeTok.openTokenIdx;
-      const openTok = tokens[openIdx];
-      if (openTok.ch !== "(" || openIdx + 1 >= closeIdx) continue;
-      const prev = openIdx > 0 ? tokens[openIdx - 1] : null;
-      const isGroupingOpen =
-        prev === null ||
-        prev.kind === "open" ||
-        prev.kind === "other" ||
-        (prev.kind === "ident" && PYTHON_STATEMENT_KEYWORDS.has(prev.text) && prev.text !== "import");
-      if (!isGroupingOpen) continue;
-
-      const topTokens = [];
-      let validPrimary = true;
-      let k = openIdx + 1;
-      while (k < closeIdx) {
-        const t = tokens[k];
-        if (t.kind === "open") {
-          let matchClose = -1;
-          for (let m = k + 1; m < closeIdx; m += 1) {
-            if (tokens[m].kind === "close" && tokens[m].openTokenIdx === k) {
-              matchClose = m;
-              break;
-            }
-          }
-          if (matchClose < 0) {
-            validPrimary = false;
-            break;
-          }
-          topTokens.push({ kind: "group" });
-          k = matchClose + 1;
-          continue;
-        }
-        if (
-          t.kind === "ident" &&
-          !PYTHON_STATEMENT_KEYWORDS.has(t.text) &&
-          t.text !== "class" &&
-          t.text !== "def"
-        ) {
-          topTokens.push(t);
-          k += 1;
-          continue;
-        }
-        if (t.kind === "string") {
-          if (topTokens.length > 0 && topTokens[topTokens.length - 1].kind === "string") {
-            validPrimary = false;
-            break;
-          }
-          topTokens.push(t);
-          k += 1;
-          continue;
-        }
-        if (t.kind === "dot") {
-          topTokens.push(t);
-          k += 1;
-          continue;
-        }
-        validPrimary = false;
-        break;
-      }
-      if (
-        !validPrimary ||
-        topTokens.length === 0 ||
-        topTokens[0].kind === "dot" ||
-        topTokens[topTokens.length - 1].kind === "dot"
-      ) {
-        continue;
-      }
-
-      const endsWithAttr =
-        topTokens.length >= 3 &&
-        topTokens[topTokens.length - 1].kind === "ident" &&
-        topTokens[topTokens.length - 2].kind === "dot";
-      const nextTok = closeIdx + 1 < tokens.length ? tokens[closeIdx + 1] : null;
-      const followedByChain =
-        nextTok !== null &&
-        (nextTok.kind === "dot" ||
-          (nextTok.kind === "open" && (nextTok.ch === "(" || nextTok.ch === "[")) ||
-          (nextTok.kind === "close" && nextTok.ch === ")"));
-      if (endsWithAttr || followedByChain) {
-        chars[openTok.start] = " ";
-        chars[closeTok.start] = " ";
-        changed = true;
-        break;
-      }
-    }
-    if (!changed) return cur;
-  }
-  return chars.join("");
-}
-
-function normalizeInlinePythonCode(rawCode) {
-  const stripped = stripPythonCommentsAndContinuations(String(rawCode || ""));
-  return unwrapParenthesizedPythonRefs(stripped);
-}
-
-function maskSlicePreservingNewlines(slice) {
-  let out = "";
-  for (let idx = 0; idx < slice.length; idx += 1) {
-    out += slice[idx] === "\n" ? "\n" : " ";
-  }
-  return out;
-}
-
-function maskPythonNonCodeStrings(code) {
-  let out = "";
-  let i = 0;
-  while (i < code.length) {
-    const ch = code[i];
-    let prefix = "";
-    let quoteIdx = -1;
-    if (/[A-Za-z_]/.test(ch)) {
-      const wStart = i;
-      while (i < code.length && /[A-Za-z0-9_]/.test(code[i])) i += 1;
-      const word = code.slice(wStart, i);
-      if (/^[rRbBuUfFtT]{1,2}$/.test(word) && (code[i] === "'" || code[i] === '"')) {
-        prefix = word;
-        quoteIdx = i;
-      } else {
-        out += word;
-        continue;
-      }
-    } else if (ch === "'" || ch === '"') {
-      quoteIdx = i;
-    }
-
-    if (quoteIdx >= 0) {
-      const q =
-        code.slice(quoteIdx, quoteIdx + 3) === "'''" || code.slice(quoteIdx, quoteIdx + 3) === '"""'
-          ? code.slice(quoteIdx, quoteIdx + 3)
-          : code[quoteIdx];
-      const isFormat = /[fFtT]/.test(prefix);
-      out += prefix + q;
-      i = quoteIdx + q.length;
-      if (!isFormat) {
-        const innerStart = i;
-        let closed = false;
-        while (i < code.length) {
-          if (code[i] === "\\") {
-            if (i + 1 < code.length) {
-              i += 2;
-            } else {
-              i += 1;
-            }
-            continue;
-          }
-          if (q.length === 3) {
-            if (code.slice(i, i + 3) === q) {
-              out += maskSlicePreservingNewlines(code.slice(innerStart, i)) + q;
-              i += 3;
-              closed = true;
-              break;
-            }
-          } else if (code[i] === q) {
-            out += maskSlicePreservingNewlines(code.slice(innerStart, i)) + q;
-            i += 1;
-            closed = true;
-            break;
-          }
-          i += 1;
-        }
-        if (!closed) {
-          out += maskSlicePreservingNewlines(code.slice(innerStart));
-        }
-        continue;
-      }
-
-      while (i < code.length) {
-        if (code[i] === "\\") {
-          const escSlice = code.slice(i, Math.min(i + 2, code.length));
-          out += maskSlicePreservingNewlines(escSlice);
-          i += escSlice.length;
-          continue;
-        }
-        if (q.length === 3) {
-          if (code.slice(i, i + 3) === q) {
-            out += q;
-            i += 3;
-            break;
-          }
-        } else if (code[i] === q) {
-          out += q;
-          i += 1;
-          break;
-        }
-        if (code[i] === "{") {
-          if (code[i + 1] === "{") {
-            out += "  ";
-            i += 2;
-            continue;
-          }
-          const span = findFStringExprSpan(code, i);
-          if (span) {
-            const maskedExpr = maskPythonNonCodeStrings(code.slice(span.exprStart, span.exprEnd));
-            const specRaw = code.slice(span.exprEnd, span.closeBrace);
-            let maskedSpec = "";
-            let sj = 0;
-            while (sj < specRaw.length) {
-              if (specRaw[sj] === "{" && specRaw[sj + 1] !== "{") {
-                const subSpan = findFStringExprSpan(specRaw, sj);
-                if (subSpan) {
-                  maskedSpec += `{${maskPythonNonCodeStrings(specRaw.slice(subSpan.exprStart, subSpan.exprEnd))}${maskSlicePreservingNewlines(specRaw.slice(subSpan.exprEnd, subSpan.closeBrace))}}`;
-                  sj = subSpan.closeBrace + 1;
-                  continue;
-                }
-              }
-              maskedSpec += specRaw[sj] === "\n" ? "\n" : " ";
-              sj += 1;
-            }
-            out += `{${maskedExpr}${maskedSpec}}`;
-            i = span.closeBrace + 1;
-            continue;
-          }
-          out += code.slice(i);
-          i = code.length;
-          break;
-        }
-        if (code[i] === "}" && code[i + 1] === "}") {
-          out += "  ";
-          i += 2;
-          continue;
-        }
-        out += code[i] === "\n" ? "\n" : " ";
-        i += 1;
-      }
-      continue;
-    }
-
-    out += ch;
-    i += 1;
-  }
-  return out;
-}
-
-function extractPythonReceiverBeforeDot(code, dotIdx) {
-  const tokens = scanPythonTokensBefore(code, dotIdx);
-  if (tokens.length === 0) return "";
-  let cur = tokens.length - 1;
-  const endCharIdx = tokens[cur].end;
-  let startCharIdx = null;
-  while (cur >= 0) {
-    const tok = tokens[cur];
-    if (tok.kind === "string") {
-      startCharIdx = tok.start;
-      break;
-    }
-    if (tok.kind === "close") {
-      if (tok.openTokenIdx < 0) return null;
-      startCharIdx = tokens[tok.openTokenIdx].start;
-      cur = tok.openTokenIdx - 1;
-      if (
-        cur >= 0 &&
-        (tokens[cur].kind === "ident" || tokens[cur].kind === "close" || tokens[cur].kind === "string")
-      ) {
-        continue;
-      }
-      if (cur >= 0 && tokens[cur].kind === "dot") {
-        startCharIdx = tokens[cur].start;
-        cur -= 1;
-        continue;
-      }
-      break;
-    }
-    if (tok.kind === "ident") {
-      if (cur === 0 || tokens[cur - 1].kind !== "dot") {
-        if (PYTHON_STATEMENT_KEYWORDS.has(tok.text)) break;
-        startCharIdx = tok.start;
-        break;
-      }
-      startCharIdx = tokens[cur - 1].start;
-      cur -= 2;
-      if (cur < 0) return null;
-      continue;
-    }
-    break;
-  }
-  if (startCharIdx === null) return "";
-  return code.slice(startCharIdx, endCharIdx);
-}
-
-function isSinglePyStringLiteralExpr(expr) {
-  const trimmed = stripBalancedOuterParens(expr);
-  if (!trimmed) return false;
-  const tokens = scanPythonTokensBefore(trimmed, trimmed.length);
-  return tokens.length === 1 && tokens[0].kind === "string" && tokens[0].closed === true;
-}
-
-function isPythonPathlibModuleExpr(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return false;
-  if (symbols.pathlibModuleIdents.has(expr)) return true;
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  if (
-    tokens.length >= 3 &&
-    tokens[tokens.length - 1].kind === "ident" &&
-    tokens[tokens.length - 2].kind === "dot"
-  ) {
-    const subAttr = tokens[tokens.length - 1].text;
-    const base = expr.slice(0, tokens[tokens.length - 2].start);
-    if ((subAttr === "_local" || subAttr === "_abc") && isPythonPathlibModuleExpr(base, symbols)) {
-      return true;
-    }
-  }
-  if (
-    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"]\s*\)$/.test(
-      expr,
-    )
-  ) {
-    return true;
-  }
-  return /^sys\s*\.\s*modules\s*(?:\[\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"]\s*\]|\.\s*get\s*\(\s*['"]pathlib(?:\.[A-Za-z0-9_]+)?['"])/.test(
-    expr,
-  );
-}
-
-function isPythonFsModuleExpr(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return false;
-  if (symbols.fsModuleIdents.has(expr)) return true;
-  if (
-    /^(?:__import__|builtins\s*\.\s*__import__|importlib\s*\.\s*import_module|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)$/.test(
-      expr,
-    )
-  ) {
-    return true;
-  }
-  return /^sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
-    expr,
-  );
-}
-
-function receiverReferencesFsModule(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return false;
-  if (isPythonFsModuleExpr(expr, symbols)) return true;
-  if (
-    /\b(?:__import__|import_module)\s*\(\s*['"](?:os|posix|shutil)['"]\s*\)|sys\s*\.\s*modules\s*(?:\[\s*['"](?:os|posix|shutil)['"]\s*\]|\.\s*get\s*\(\s*['"](?:os|posix|shutil)['"])/.test(
-      expr,
-    )
-  ) {
-    return true;
-  }
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  for (let idx = 0; idx < tokens.length; idx += 1) {
-    const tok = tokens[idx];
-    if (tok.kind !== "ident") continue;
-    if (symbols.fsModuleReturningFuncs && symbols.fsModuleReturningFuncs.has(tok.text)) return true;
-    if (symbols.fsModuleIdents.has(tok.text)) {
-      const t1 = idx + 1 < tokens.length ? tokens[idx + 1] : null;
-      const t2 = idx + 2 < tokens.length ? tokens[idx + 2] : null;
-      if (
-        t1 &&
-        t1.kind === "dot" &&
-        t2 &&
-        t2.kind === "ident" &&
-        (t2.text === "path" ||
-          t2.text === "environ" ||
-          t2.text === "sep" ||
-          t2.text === "linesep" ||
-          t2.text === "devnull" ||
-          t2.text === "getpid" ||
-          t2.text === "getcwd")
-      ) {
-        continue;
-      }
-      return true;
-    }
-  }
-  return false;
-}
-
-function isPythonPathClassExpr(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return false;
-  if (symbols.pathClassIdents.has(expr)) return true;
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  if (tokens.length === 0) return false;
-  const last = tokens[tokens.length - 1];
-  if (last.kind === "ident" && tokens.length >= 3 && tokens[tokens.length - 2].kind === "dot") {
-    const attr = last.text;
-    const base = expr.slice(0, tokens[tokens.length - 2].start);
-    if (attr === "__class__") return true;
-    if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
-      return true;
-    }
-  }
-  if (last.kind === "close" && last.ch === ")" && last.openTokenIdx > 0) {
-    const callee = unwrapPythonExprParensAndWalrus(expr.slice(0, tokens[last.openTokenIdx].start));
-    if (callee === "type" || callee === "builtins.type") return true;
-    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(callee)) return true;
-  }
-  return false;
-}
-
-function receiverReferencesUnboundPathClass(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return false;
-  if (isPythonPathClassExpr(expr, symbols)) return true;
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  for (let idx = 0; idx < tokens.length; idx += 1) {
-    const tok = tokens[idx];
-    if (tok.kind !== "ident") continue;
-    if (symbols.pathClassReturningFuncs && symbols.pathClassReturningFuncs.has(tok.text)) return true;
-    if (tok.text === "__class__" || tok.text === "type") return true;
-    if (symbols.pathClassIdents.has(tok.text)) {
-      const nextTok = idx + 1 < tokens.length ? tokens[idx + 1] : null;
-      if (!nextTok || nextTok.kind !== "open" || nextTok.ch !== "(") {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function isPythonPathCtorCallExpr(rawExpr, symbols) {
-  const expr = unwrapPythonExprParensAndWalrus(rawExpr);
-  if (!expr) return null;
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  if (tokens.length < 2) return null;
-  const last = tokens[tokens.length - 1];
-  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return null;
-  const callee = unwrapPythonExprParensAndWalrus(expr.slice(0, tokens[last.openTokenIdx].start));
-  let isPathCallee = symbols.pathClassIdents.has(callee) || PYTHON_PATH_CLASS_NAMES.has(callee);
-  if (!isPathCallee) {
-    const calleeTokens = scanPythonTokensBefore(callee, callee.length);
-    if (
-      calleeTokens.length >= 3 &&
-      calleeTokens[calleeTokens.length - 1].kind === "ident" &&
-      calleeTokens[calleeTokens.length - 2].kind === "dot"
-    ) {
-      const attr = calleeTokens[calleeTokens.length - 1].text;
-      const base = callee.slice(0, calleeTokens[calleeTokens.length - 2].start);
-      if (PYTHON_PATH_CLASS_NAMES.has(attr) && isPythonPathlibModuleExpr(base, symbols)) {
-        isPathCallee = true;
-      }
-    }
-  }
-  if (!isPathCallee) return null;
-  return parseCallArguments(expr, tokens[last.openTokenIdx].start);
-}
-
-function collectPythonSymbolBindings(code, preMasked = null) {
-  const masked = preMasked ?? maskPythonNonCodeStrings(code);
-  const pathClassIdents = new Set(PYTHON_PATH_CLASS_NAMES);
-  const pathInstanceIdents = new Set();
-  const pathClassReturningFuncs = new Set();
-  const fsModuleReturningFuncs = new Set();
-  const fsModuleIdents = new Set(PYTHON_FS_MODULE_NAMES);
-  const pathlibModuleIdents = new Set(["pathlib", "pathlib._local", "pathlib._abc"]);
-  const fsFuncAliases = new Map();
-  const openAliases = new Set();
-  const fsOpenAliases = new Set();
-  const taintedIdents = new Set([
-    ...pathClassIdents,
-    ...fsModuleIdents,
-    ...pathlibModuleIdents,
-    "sys",
-    "builtins",
-    "importlib",
-    "posixpath",
-    "ntpath",
-    "genericpath",
-    "io",
-    "_io",
-    "codecs",
-    "operator",
-    "type",
-  ]);
-
-  const plainImportRe = /(?:^|[\n;])\s*import\s+([^\n;#]+)/g;
-  let im;
-  while ((im = plainImportRe.exec(masked)) !== null) {
-    for (const part of im[1].split(",")) {
-      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
-      if (!m) continue;
-      const mod = m[1];
-      const bound = m[2] || mod.split(".")[0];
-      taintedIdents.add(bound);
-      if (PYTHON_FS_MODULE_NAMES.has(mod)) fsModuleIdents.add(bound);
-      if (mod === "pathlib" || mod.startsWith("pathlib.")) {
-        pathlibModuleIdents.add(bound);
-        if (!m[2]) pathlibModuleIdents.add(mod);
-      }
-    }
-  }
-
-  const fromImportRe = /\bfrom\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+([^\n;#]+)/g;
-  while ((im = fromImportRe.exec(masked)) !== null) {
-    const mod = im[1];
-    const clause = stripBalancedOuterParens(im[2]);
-    for (const part of clause.split(",")) {
-      const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
-      if (!m) continue;
-      const orig = m[1];
-      const bound = m[2] || orig;
-      taintedIdents.add(bound);
-      if (
-        (mod === "pathlib" || mod.startsWith("pathlib.") || pathlibModuleIdents.has(mod)) &&
-        PYTHON_PATH_CLASS_NAMES.has(orig)
-      ) {
-        pathClassIdents.add(bound);
-      }
-      if (mod === "pathlib" && (orig === "_local" || orig === "_abc")) {
-        pathlibModuleIdents.add(bound);
-      }
-      if (PYTHON_FS_MODULE_NAMES.has(mod) && PYTHON_OS_SHUTIL_FN_NAMES.has(orig)) {
-        fsFuncAliases.set(bound, { fnName: orig, mod });
-      }
-      if (PYTHON_FS_MODULE_NAMES.has(mod) && orig === "open") {
-        fsOpenAliases.add(bound);
-      }
-      if (["io", "_io", "builtins", "codecs"].includes(mod) && orig === "open") {
-        openAliases.add(bound);
-      }
-      if (PYTHON_FS_MODULE_NAMES.has(orig)) fsModuleIdents.add(bound);
-      if (orig === "pathlib") pathlibModuleIdents.add(bound);
-    }
-  }
-
-  const classDefs = [];
-  const classDefRe = /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
-  let cm;
-  while ((cm = classDefRe.exec(masked)) !== null) {
-    const clsName = cm[1];
-    const openParenIdx = cm.index + cm[0].length - 1;
-    const baseArgs = parseCallArguments(code, openParenIdx);
-    if (baseArgs === null) {
-      pathClassIdents.add(clsName);
-      taintedIdents.add(clsName);
-    } else {
-      classDefs.push([clsName, baseArgs]);
-    }
-  }
-
-  const defHeaders = [];
-  const defRe = /\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
-  let dm;
-  while ((dm = defRe.exec(masked)) !== null) {
-    defHeaders.push({ name: dm[1], index: dm.index });
-  }
-  const defReturns = [];
-  if (defHeaders.length > 0) {
-    const retRe = /\breturn\s+([^\n;#]+)/g;
-    let rm;
-    while ((rm = retRe.exec(masked)) !== null) {
-      let owner = null;
-      for (const dh of defHeaders) {
-        if (dh.index < rm.index) owner = dh.name;
-      }
-      if (owner) {
-        const retStart = rm.index + rm[0].length - rm[1].length;
-        defReturns.push([owner, code.slice(retStart, retStart + rm[1].length).trim()]);
-      }
-    }
-  }
-
-  const pairs = [];
-  const assignStmtRe = /(?:^|[\n;])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*|\s*=\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*=(?!=)\s*([^\n;#]+)/g;
-  let am;
-  while ((am = assignStmtRe.exec(masked)) !== null) {
-    const lhsRaw = am[1].trim();
-    const rhsStart = am.index + am[0].length - am[2].length;
-    const rhsRaw = code.slice(rhsStart, rhsStart + am[2].length).trim();
-    if (lhsRaw.includes(",")) {
-      const lhsNames = lhsRaw.split(",").map((s) => s.trim());
-      const rhsTuple = parseCallArguments(`(${stripBalancedOuterParens(rhsRaw)})`, 0);
-      if (rhsTuple && rhsTuple.length === lhsNames.length) {
-        for (let idx = 0; idx < lhsNames.length; idx += 1) {
-          pairs.push([lhsNames[idx], rhsTuple[idx]]);
-        }
-      } else {
-        for (const name of lhsNames) pairs.push([name, rhsRaw]);
-      }
-    } else {
-      for (const name of lhsRaw.split("=").map((s) => s.trim())) {
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) pairs.push([name, rhsRaw]);
-      }
-    }
-  }
-
-  const walrusRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([^,)\]\n;#]+)/g;
-  while ((am = walrusRe.exec(masked)) !== null) {
-    const rhsStart = am.index + am[0].length - am[2].length;
-    pairs.push([am[1], code.slice(rhsStart, rhsStart + am[2].length).trim()]);
-  }
-
-  const forLoopRe = /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^\n:#]+):/g;
-  const forPairs = [];
-  while ((am = forLoopRe.exec(masked)) !== null) {
-    const iterStart = am.index + am[0].length - 1 - am[2].length;
-    forPairs.push([am[1], code.slice(iterStart, iterStart + am[2].length).trim()]);
-  }
-
-  const symbols = {
-    pathClassIdents,
-    pathInstanceIdents,
-    pathClassReturningFuncs,
-    fsModuleReturningFuncs,
-    fsModuleIdents,
-    pathlibModuleIdents,
-    fsFuncAliases,
-    openAliases,
-    fsOpenAliases,
-    taintedIdents,
-  };
-  const maxPasses = pairs.length + classDefs.length + forPairs.length + defReturns.length + 8;
-  for (let pass = 0; pass < maxPasses; pass += 1) {
-    const beforeSize =
-      pathClassIdents.size +
-      pathInstanceIdents.size +
-      pathClassReturningFuncs.size +
-      fsModuleReturningFuncs.size +
-      fsModuleIdents.size +
-      pathlibModuleIdents.size +
-      fsFuncAliases.size +
-      openAliases.size +
-      fsOpenAliases.size +
-      taintedIdents.size;
-    for (const [lhs, rhs] of pairs) {
-      if (isPythonFsModuleExpr(rhs, symbols)) {
-        fsModuleIdents.add(lhs);
-        taintedIdents.add(lhs);
-      } else if (isPythonPathlibModuleExpr(rhs, symbols)) {
-        pathlibModuleIdents.add(lhs);
-        taintedIdents.add(lhs);
-      } else if (isPythonPathClassExpr(rhs, symbols)) {
-        pathClassIdents.add(lhs);
-        taintedIdents.add(lhs);
-      } else {
-        const stripped = unwrapPythonExprParensAndWalrus(rhs);
-        const maskedStripped = maskPythonNonCodeStrings(stripped);
-        if (fsFuncAliases.has(stripped)) {
-          fsFuncAliases.set(lhs, fsFuncAliases.get(stripped));
-          taintedIdents.add(lhs);
-        } else if (openAliases.has(stripped)) {
-          openAliases.add(lhs);
-          taintedIdents.add(lhs);
-        } else if (fsOpenAliases.has(stripped)) {
-          fsOpenAliases.add(lhs);
-          taintedIdents.add(lhs);
-        } else if (isPythonPathCtorCallExpr(stripped, symbols) !== null || pathInstanceIdents.has(stripped)) {
-          pathInstanceIdents.add(lhs);
-          taintedIdents.add(lhs);
-        } else if (
-          taintedIdents.has(stripped) ||
-          receiverReferencesUnboundPathClass(stripped, symbols) ||
-          receiverReferencesFsModule(stripped, symbols) ||
-          /\b(?:__import__|import_module|globals|locals|vars|getattr|type)\s*\(|\b(?:__class__|__base__|__bases__|__mro__|__subclasses__|__dict__)\b|sys\s*\.\s*modules/.test(
-            maskedStripped,
-          )
-        ) {
-          taintedIdents.add(lhs);
-        }
-      }
-    }
-    for (const [fnName, retExpr] of defReturns) {
-      if (receiverReferencesUnboundPathClass(retExpr, symbols)) {
-        pathClassReturningFuncs.add(fnName);
-        taintedIdents.add(fnName);
-      }
-      if (receiverReferencesFsModule(retExpr, symbols)) {
-        fsModuleReturningFuncs.add(fnName);
-        taintedIdents.add(fnName);
-      }
-    }
-    for (const [clsName, baseArgs] of classDefs) {
-      for (const rawBase of baseArgs) {
-        const baseExpr = unwrapPythonExprParensAndWalrus(rawBase);
-        if (!baseExpr) continue;
-        if (
-          isPythonPathClassExpr(baseExpr, symbols) ||
-          isPythonPathlibModuleExpr(baseExpr, symbols)
-        ) {
-          pathClassIdents.add(clsName);
-          taintedIdents.add(clsName);
-          break;
-        }
-        const baseTokens = scanPythonTokensBefore(baseExpr, baseExpr.length);
-        if (
-          baseTokens.some(
-            (tok) =>
-              tok.kind === "ident" &&
-              (pathClassIdents.has(tok.text) || pathlibModuleIdents.has(tok.text)),
-          )
-        ) {
-          pathClassIdents.add(clsName);
-          taintedIdents.add(clsName);
-          break;
-        }
-      }
-    }
-    for (const [loopVar, iterExpr] of forPairs) {
-      const iterTokens = scanPythonTokensBefore(iterExpr, iterExpr.length);
-      for (const tok of iterTokens) {
-        if (tok.kind !== "ident") continue;
-        if (pathClassIdents.has(tok.text) || tok.text === "type" || tok.text === "__class__") {
-          pathClassIdents.add(loopVar);
-          taintedIdents.add(loopVar);
-        } else if (fsModuleIdents.has(tok.text)) {
-          fsModuleIdents.add(loopVar);
-          taintedIdents.add(loopVar);
-        } else if (pathlibModuleIdents.has(tok.text)) {
-          pathlibModuleIdents.add(loopVar);
-          taintedIdents.add(loopVar);
-        }
-      }
-    }
-    const afterSize =
-      pathClassIdents.size +
-      pathInstanceIdents.size +
-      pathClassReturningFuncs.size +
-      fsModuleReturningFuncs.size +
-      fsModuleIdents.size +
-      pathlibModuleIdents.size +
-      fsFuncAliases.size +
-      openAliases.size +
-      fsOpenAliases.size +
-      taintedIdents.size;
-    if (afterSize === beforeSize) break;
-  }
-
-  return symbols;
-}
-
-function isValidStrReplaceArgs(methodArgs) {
-  const effective =
-    methodArgs.length > 0 && methodArgs[methodArgs.length - 1] === ""
-      ? methodArgs.slice(0, -1)
-      : methodArgs;
-  if (effective.length !== 2 && effective.length !== 3) return false;
-  if (effective.some((a) => a.length === 0 || a.startsWith("*"))) return false;
-  const { positionals, kwargs } = splitPythonCallArgs(effective);
-  const kwKeys = Object.keys(kwargs);
-  if (kwKeys.length === 0) {
-    return positionals.length === 2 || positionals.length === 3;
-  }
-  return positionals.length === 2 && kwKeys.length === 1 && kwKeys[0] === "count";
-}
-
-function isSafeStrReplaceReceiver(rawExpr, symbols, depth = 0) {
-  if (depth > 6 || rawExpr === null) return false;
-  const expr = stripBalancedOuterParens(rawExpr);
-  if (!expr) return false;
-  if (isPythonPathClassExpr(expr, symbols) || isPythonFsModuleExpr(expr, symbols)) return false;
-  if (isSinglePyStringLiteralExpr(expr)) return true;
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(expr)) {
-    return !symbols.taintedIdents.has(expr);
-  }
-  const tokens = scanPythonTokensBefore(expr, expr.length);
-  if (tokens.length < 2) return false;
-  const last = tokens[tokens.length - 1];
-  if (last.kind !== "close" || last.ch !== ")" || last.openTokenIdx <= 0) return false;
-  const callArgs = parseCallArguments(expr, tokens[last.openTokenIdx].start);
-  if (!callArgs) return false;
-  if (last.openTokenIdx === 1 && tokens[0].kind === "ident") {
-    const fn = tokens[0].text;
-    return ["str", "repr", "chr", "format", "ascii"].includes(fn) && !symbols.taintedIdents.has(fn);
-  }
-  if (
-    last.openTokenIdx >= 3 &&
-    tokens[last.openTokenIdx - 1].kind === "ident" &&
-    tokens[last.openTokenIdx - 2].kind === "dot"
-  ) {
-    const methodName = tokens[last.openTokenIdx - 1].text;
-    const subRecv = stripBalancedOuterParens(expr.slice(0, tokens[last.openTokenIdx - 2].start));
-    if (!subRecv) return false;
-    if (methodName === "replace") {
-      return isValidStrReplaceArgs(callArgs) && isSafeStrReplaceReceiver(subRecv, symbols, depth + 1);
-    }
-    if (methodName === "get") {
-      if (subRecv === "os.environ" || subRecv === "posix.environ") return true;
-      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(subRecv) && !symbols.taintedIdents.has(subRecv);
-    }
-    if (methodName === "dumps" && subRecv === "json") return true;
-    if (PYTHON_STRING_RETURNING_METHODS.has(methodName)) {
-      return !isPythonPathClassExpr(subRecv, symbols) && !isPythonFsModuleExpr(subRecv, symbols);
-    }
-  }
-  return false;
-}
-
-function isVarBoundToVerifiedTmpRoot(varName, code) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return false;
-  const varEsc = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const assignRe = new RegExp(
-    `(?:^|[\\n;])\\s*(?:(?:const|let|var)\\s+)?${varEsc}\\s*=\\s*([^\\n;]+)`,
-    "g",
-  );
-  let lastRhs = null;
-  let m;
-  while ((m = assignRe.exec(code)) !== null) {
-    lastRhs = m[1].trim();
-  }
-  if (!lastRhs || lastRhs.includes("..")) return false;
-  return /^(?:[fFrRuUbB]{0,2}['"`](?:\/private)?\/tmp(?:\/|['"`\b])|[^\n;]*(?:mkdtemp|mkdtempSync|gettempdir|tmpdir)\s*\(|os\.environ\.get\(\s*['"]TMPDIR['"])/.test(
-    lastRhs,
-  );
-}
-
-function isSafeTmpTemplateOrJoin(expr, code, allowPath) {
-  if (!allowPath("/tmp/__pstack_probe__", { allowRootEqual: false, allowDevNull: false })) {
-    return false;
-  }
-  const trimmed = expr.trim();
-  if (trimmed.includes("..")) return false;
-  if (/^`(?:\/private)?\/tmp\/[^`]+`$/.test(trimmed)) {
-    return true;
-  }
-  const jsVarTemplate = trimmed.match(/^`\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?:\/[^`]*)?`$/);
-  if (jsVarTemplate && isVarBoundToVerifiedTmpRoot(jsVarTemplate[1], code)) {
-    return true;
-  }
-  if (
-    /^[fF](?:'''[\s\S]*'''|"""[\s\S]*"""|'[^']*'|"[^"]*")$/.test(trimmed) &&
-    /^[fF]['"]{1,3}(?:\/private)?\/tmp\//.test(trimmed)
-  ) {
-    return true;
-  }
-  const pyVarTemplate = trimmed.match(/^[fF](?:'''|"""|'|\")\{([A-Za-z_][A-Za-z0-9_]*)\}(?:\/[^'"]*)?(?:'''|"""|'|\")$/);
-  if (pyVarTemplate && isVarBoundToVerifiedTmpRoot(pyVarTemplate[1], code)) {
-    return true;
-  }
-  const joinMatch = trimmed.match(/^(?:path\s*\.\s*join|os\s*\.\s*path\s*\.\s*join|join)\s*\(([\s\S]*)\)$/);
-  if (joinMatch) {
-    const innerArgs = parseCallArguments(`(${joinMatch[1]})`, 0);
-    if (innerArgs && innerArgs.length >= 1) {
-      if (innerArgs.some((a) => a.includes(".."))) return false;
-      const rootArg = innerArgs[0].trim();
-      if (
-        /^['"`](?:\/private)?\/tmp(?:\/|['"`]$)/.test(rootArg) ||
-        /\b(?:mkdtemp|mkdtempSync|gettempdir|tmpdir)\s*\(/.test(rootArg)
-      ) {
-        return true;
-      }
-      if (isVarBoundToVerifiedTmpRoot(rootArg, code)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function unwrapPythonPathCtor(expr, symbols = null) {
-  const trimmed = stripBalancedOuterParens(expr);
-  if (!trimmed) return "";
-  if (symbols) {
-    const ctorArgs = isPythonPathCtorCallExpr(trimmed, symbols);
-    if (ctorArgs) {
-      if (ctorArgs.length === 0) return trimmed;
-      if (ctorArgs.length === 1) return ctorArgs[0].trim();
-      return `os.path.join(${ctorArgs.join(", ")})`;
-    }
-  }
-  const m = trimmed.match(
-    /^(?:pathlib\s*\.\s*)?(?:Path|PurePath|PosixPath|WindowsPath|PurePosixPath|PureWindowsPath)\s*\(([\s\S]*)\)$/,
-  );
-  if (!m) return trimmed;
-  const args = parseCallArguments(`(${m[1]})`, 0);
-  if (!args || args.length === 0) return trimmed;
-  if (args.length === 1) return args[0].trim();
-  return `os.path.join(${args.join(", ")})`;
-}
-
-function resolveSimpleVarBinding(code, expr, isPython) {
-  const trimmed = expr.trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return null;
-  const varEsc = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const assignRe = new RegExp(`(?:^|[\\n;])\\s*(?:(?:const|let|var)\\s+)?${varEsc}\\s*=\\s*([^\\n;]+)`, "g");
-  let lastRhs = null;
-  let m;
-  while ((m = assignRe.exec(code)) !== null) {
-    lastRhs = m[1].trim();
-  }
-  if (!lastRhs) return null;
-  const normalizedRhs = isPython ? unwrapPythonPathCtor(lastRhs) : lastRhs;
-  return isPython ? parseStaticPyString(normalizedRhs) : parseStaticJsString(normalizedRhs);
-}
-
-function resolveStaticArgValue(argExpr, code, isPython) {
-  const normalizedExpr = isPython ? unwrapPythonPathCtor(argExpr || "") : String(argExpr || "");
-  const lit = isPython ? parseStaticPyString(normalizedExpr) : parseStaticJsString(normalizedExpr);
-  if (lit.ok) return lit.value;
-  const bound = resolveSimpleVarBinding(code, normalizedExpr, isPython);
-  if (bound && bound.ok) return bound.value;
-  return null;
-}
-
-function resolveStaticJoinOrTemplate(expr, code, isPython) {
-  const trimmed = String(expr || "").trim();
-  if (!trimmed || trimmed.includes("..")) return null;
-
-  const joinMatch = trimmed.match(
-    /^(?:path\s*\.\s*join|os\s*\.\s*path\s*\.\s*join|join)\s*\(([\s\S]*)\)$/,
-  );
-  if (joinMatch) {
-    const innerArgs = parseCallArguments(`(${joinMatch[1]})`, 0);
-    if (!innerArgs || innerArgs.length === 0) return null;
-    const rootVal = resolveStaticArgValue(innerArgs[0], code, isPython);
-    if (rootVal === null) return null;
-    const parts = [rootVal];
-    for (let i = 1; i < innerArgs.length; i += 1) {
-      const staticPart = resolveStaticArgValue(innerArgs[i], code, isPython);
-      if (staticPart !== null) {
-        parts.push(staticPart);
-        continue;
-      }
-      const subTemplate = resolveStaticJoinOrTemplate(innerArgs[i], code, isPython);
-      if (subTemplate !== null && !isAbsolute(subTemplate)) {
-        parts.push(subTemplate);
-        continue;
-      }
-      return null;
-    }
-    return join(...parts);
-  }
-
-  if (!isPython && trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length >= 2) {
-    const inner = trimmed.slice(1, -1);
-    let out = "";
-    let i = 0;
-    while (i < inner.length) {
-      if (inner[i] === "\\" && i + 1 < inner.length) {
-        out += inner.slice(i, i + 2);
-        i += 2;
-        continue;
-      }
-      if (inner[i] === "`") return null;
-      if (inner[i] === "$" && inner[i + 1] === "{") {
-        const closeIdx = findMatchingBrace(inner, i + 1);
-        if (closeIdx < 0) return null;
-        const slot = inner.slice(i + 2, closeIdx).trim();
-        const bound = resolveSimpleVarBinding(code, slot, false);
-        if (bound && bound.ok) {
-          out += bound.value;
-        } else if (
-          out.length > 0 &&
-          !out.endsWith("/") &&
-          !out.endsWith("\\") &&
-          !out.endsWith(".") &&
-          !/[/\\]/.test(slot)
-        ) {
-          out += "0";
-        } else {
-          return null;
-        }
-        i = closeIdx + 1;
-        continue;
-      }
-      out += inner[i];
-      i += 1;
-    }
-    return unescapeSimpleLiteral(out, false);
-  }
-
-  if (isPython && /^[fF](?:'''[\s\S]*'''|"""[\s\S]*"""|'[^']*'|"[^"]*")$/.test(trimmed)) {
-    const body = trimmed.slice(1);
-    const quote = body.startsWith("'''") || body.startsWith('"""') ? body.slice(0, 3) : body[0];
-    const inner = body.slice(quote.length, body.length - quote.length);
-    let out = "";
-    let i = 0;
-    while (i < inner.length) {
-      if (inner[i] === "\\" && i + 1 < inner.length) {
-        out += inner.slice(i, i + 2);
-        i += 2;
-        continue;
-      }
-      if (inner[i] === "{") {
-        const closeIdx = findMatchingBrace(inner, i);
-        if (closeIdx < 0) return null;
-        const slot = inner.slice(i + 1, closeIdx).trim();
-        const bound = resolveSimpleVarBinding(code, slot, true);
-        if (bound && bound.ok) {
-          out += bound.value;
-        } else if (
-          out.length > 0 &&
-          !out.endsWith("/") &&
-          !out.endsWith("\\") &&
-          !out.endsWith(".") &&
-          !/[/\\]/.test(slot)
-        ) {
-          out += "0";
-        } else {
-          return null;
-        }
-        i = closeIdx + 1;
-        continue;
-      }
-      out += inner[i];
-      i += 1;
-    }
-    return unescapeSimpleLiteral(out, false);
-  }
-
-  return null;
-}
-
-function extractJsObjectProperty(objExpr, propName) {
-  const trimmed = String(objExpr || "").trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
-  const props = parseCallArguments(`(${trimmed.slice(1, -1)})`, 0);
-  if (!props) return null;
-  const propEsc = propName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const kvRe = new RegExp(`^(?:['"]${propEsc}['"]|${propEsc})\\s*:\\s*([\\s\\S]+)$`);
-  for (const prop of props) {
-    if (prop === propName) return propName;
-    const m = prop.match(kvRe);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
-
-function checkInlineNodeFs(code, allowPath, options = {}) {
-  const {
-    allowDynamicPaths = false,
-    roleLabel = "read-only ro-* workers",
-    allowReadOnlyArtifactCopySource = null,
-    registerReadOnlyMkdir = null,
-  } = options;
-
-  const bracketRe = /(?:([A-Za-z_$][A-Za-z0-9_$]*)|([)\]'"]))\s*\[([^\]]*)\]/g;
-  let bm;
-  while ((bm = bracketRe.exec(code)) !== null) {
-    const ident = bm[1] || "";
-    const bracketBody = bm[3] || "";
-    if (ident && JS_NON_MEMBER_PREFIX_KEYWORDS.has(ident)) continue;
-    const afterBracket = code.slice(bm.index + bm[0].length);
-    const isFsReceiver =
-      ident === "fs" ||
-      ident === "fsp" ||
-      ident === "promises" ||
-      /require\s*\(\s*['"](?:node:)?fs(?:\/promises)?['"]\s*\)\s*$/.test(code.slice(0, bm.index + (bm[2] ? 1 : 0)));
-    if (NODE_MUTATION_NAME_RE.test(bracketBody) || (isFsReceiver && /^\s*\(/.test(afterBracket))) {
-      if (!allowDynamicPaths) {
-        return `Dynamic fs mutation via inline Node script is blocked for ${roleLabel}.`;
-      }
-    }
-  }
-
-  if (
-    !allowDynamicPaths &&
-    (/\.\s*(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\b(?!\s*\()/.test(
-      code,
-    ) ||
-      /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*\bas\b/.test(
-        code,
-      ) ||
-      /(?:const|let|var|\(|^|[;\n,])\s*\{[^}]*\b(?:writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync)\s*:[^}]*\}\s*=/.test(
-        code,
-      ))
-  ) {
-    return `Aliased fs mutation API in inline Node script is blocked for ${roleLabel}.`;
-  }
-
-  const checkNodePathArg = (argExpr, opts) => {
-    const rawExpr = String(argExpr || "");
-    const lit = parseStaticJsString(rawExpr);
-    if (lit.ok) {
-      return allowPath(lit.value, opts);
-    }
-    const bound = resolveSimpleVarBinding(code, rawExpr, false);
-    if (bound && bound.ok) {
-      return allowPath(bound.value, opts);
-    }
-    const joined = resolveStaticJoinOrTemplate(rawExpr, code, false);
-    if (joined !== null) {
-      return allowPath(joined, opts);
-    }
-    if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
-      return true;
-    }
-    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
-      return false;
-    }
-    return allowDynamicPaths;
-  };
-
-  const callRe =
-    /\b(writeFileSync|writeFile|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rm|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|cpSync|cp|mkdirSync|mkdir|mkdtempSync|mkdtemp|chmodSync|chmod|chownSync|chown|truncateSync|truncate|symlinkSync|symlink|linkSync|link|createWriteStream|openSync|open)\s*\(/g;
-
-  let match;
-  while ((match = callRe.exec(code)) !== null) {
-    const fnName = match[1];
-    if ((fnName === "open" || fnName === "openSync") && !/\bfs\b|node:fs/.test(code)) {
-      continue;
-    }
-    const openParenIdx = match.index + match[0].length - 1;
-    const callArgs = parseCallArguments(code, openParenIdx);
-    if (!callArgs) {
-      return `Unparseable fs.${fnName} call in inline Node script is blocked for ${roleLabel}.`;
-    }
-
-    if (fnName === "open" || fnName === "openSync") {
-      if (callArgs.length >= 2) {
-        const modeLit = parseStaticJsString(callArgs[1]);
-        if (modeLit.ok && (modeLit.value === "r" || modeLit.value === "rs")) {
-          continue;
-        }
-      } else {
-        continue;
-      }
-      if (!checkNodePathArg(callArgs[0], { allowRootEqual: false, allowDevNull: true })) {
-        return `Inline Node fs.${fnName} write outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      continue;
-    }
-
-    if (NODE_SINGLE_PATH_FS_APIS.has(fnName)) {
-      const isMkdir = fnName === "mkdirSync" || fnName === "mkdir";
-      const forbidRoArtifact =
-        fnName === "rmdirSync" ||
-        fnName === "rmdir" ||
-        fnName === "mkdtempSync" ||
-        fnName === "mkdtemp" ||
-        fnName === "chmodSync" ||
-        fnName === "chmod" ||
-        fnName === "chownSync" ||
-        fnName === "chown";
-      const allowNull =
-        fnName === "writeFileSync" ||
-        fnName === "writeFile" ||
-        fnName === "appendFileSync" ||
-        fnName === "appendFile" ||
-        fnName === "createWriteStream";
-      if (
-        !checkNodePathArg(callArgs[0], {
-          allowRootEqual: isMkdir,
-          allowDevNull: allowNull,
-          allowArtifactDir: isMkdir,
-          requireArtifactDir: isMkdir,
-          allowArtifactRoot: isMkdir,
-          forbidReadOnlyArtifact: forbidRoArtifact,
-        })
-      ) {
-        return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      if (isMkdir && registerReadOnlyMkdir) {
-        const mkdirVal =
-          resolveStaticArgValue(callArgs[0] || "", code, false) ??
-          resolveStaticJoinOrTemplate(callArgs[0] || "", code, false);
-        if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
-      }
-      continue;
-    }
-
-    if (NODE_COPY_FS_APIS.has(fnName)) {
-      const isCpDirApi = fnName === "cpSync" || fnName === "cp";
-      const hasRecursiveOpt =
-        isCpDirApi && callArgs.length >= 3 && /\brecursive\b/.test(String(callArgs[2] || ""));
-      const srcVal = resolveStaticArgValue(callArgs[0] || "", code, false);
-      const srcOkForRoArtifact =
-        !hasRecursiveOpt &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      if (
-        !checkNodePathArg(callArgs[1], {
-          allowRootEqual: true,
-          allowDevNull: true,
-          allowArtifactDir: false,
-          allowArtifactRoot: false,
-          forbidReadOnlyArtifact: !srcOkForRoArtifact,
-        })
-      ) {
-        return `Inline Node fs.${fnName} destination outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      continue;
-    }
-
-    if (NODE_TWO_PATH_FS_APIS.has(fnName)) {
-      const isSymlink = fnName === "symlinkSync" || fnName === "symlink";
-      const isLink = isSymlink || fnName === "linkSync" || fnName === "link";
-      const srcVal = resolveStaticArgValue(callArgs[0] || "", code, false);
-      const dstVal = resolveStaticArgValue(callArgs[1] || "", code, false);
-      const symlinkBaseDir =
-        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
-      const srcOkForRoArtifact =
-        !isLink &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      if (
-        !checkNodePathArg(callArgs[0], {
-          allowRootEqual: false,
-          allowDevNull: false,
-          forbidReadOnlyArtifact: isLink,
-          disallowArtifactRoot: isLink,
-          customBaseDir: symlinkBaseDir,
-        }) ||
-        !checkNodePathArg(callArgs[1], {
-          allowRootEqual: true,
-          allowDevNull: false,
-          allowArtifactDir: false,
-          allowArtifactRoot: false,
-          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
-          disallowArtifactRoot: isLink,
-        })
-      ) {
-        return `Inline Node fs.${fnName} outside allowed roots is blocked for ${roleLabel}.`;
-      }
-    }
-  }
-
-  const screenshotRe = /\.\s*screenshot\s*\(/g;
-  while ((match = screenshotRe.exec(code)) !== null) {
-    const openParenIdx = match.index + match[0].length - 1;
-    const callArgs = parseCallArguments(code, openParenIdx);
-    if (!callArgs) {
-      if (!allowDynamicPaths) {
-        return `Unparseable .screenshot() call in inline Node script is blocked for ${roleLabel}.`;
-      }
-      continue;
-    }
-    if (callArgs.length >= 1) {
-      const pathProp = extractJsObjectProperty(callArgs[0], "path");
-      if (
-        pathProp !== null &&
-        !checkNodePathArg(pathProp, { allowRootEqual: false, allowDevNull: false })
-      ) {
-        return `Inline Node .screenshot() path outside allowed roots is blocked for ${roleLabel}.`;
-      }
-    }
-  }
-
-  return null;
-}
-
-function splitPythonCallArgs(callArgs) {
-  const positionals = [];
-  const kwargs = {};
-  const trimmed =
-    callArgs.length > 0 && callArgs[callArgs.length - 1] === ""
-      ? callArgs.slice(0, -1)
-      : callArgs;
-  for (const arg of trimmed) {
-    const kwMatch = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*([\s\S]*)$/);
-    if (kwMatch) {
-      kwargs[kwMatch[1]] = kwMatch[2].trim();
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { positionals, kwargs };
-}
-
-function hasDisallowedPythonAlias(code) {
-  const fromImportRe = /\bfrom\s+pathlib(?:\.[A-Za-z0-9_]+)?\s+import\s+([^\n;]+)/g;
-  let im;
-  while ((im = fromImportRe.exec(code)) !== null) {
-    const clause = im[1];
-    if (/\bas\b/.test(clause) && PYTHON_MUTATION_NAME_RE.test(clause)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function checkInlinePythonFs(rawCode, allowPath, options = {}) {
-  const {
-    allowDynamicPaths = false,
-    roleLabel = "read-only ro-* workers",
-    allowReadOnlyArtifactCopySource = null,
-    registerReadOnlyMkdir = null,
-  } = options;
-
-  const code = normalizeInlinePythonCode(rawCode);
-  const maskedCode = maskPythonNonCodeStrings(code);
-
-  if (PYTHON_REFLECTION_IDENT_RE.test(maskedCode) || PYTHON_EVAL_EXEC_RE.test(maskedCode)) {
-    return `Dynamic Python reflection or attribute dispatch in inline Python script is blocked for ${roleLabel}.`;
-  }
-
-  if (PYTHON_UNBOUND_MUTATION_ATTR_RE.test(maskedCode) || PYTHON_UNBOUND_OPEN_RE.test(maskedCode)) {
-    return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
-  }
-
-  if (!allowDynamicPaths && hasDisallowedPythonAlias(maskedCode)) {
-    return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
-  }
-
-  const pySymbols = collectPythonSymbolBindings(code, maskedCode);
-
-  const checkPyPathArg = (argExpr, opts) => {
-    const rawExpr = unwrapPythonPathCtor(argExpr || "", pySymbols);
-    const lit = parseStaticPyString(rawExpr);
-    if (lit.ok) {
-      return allowPath(lit.value, opts);
-    }
-    const bound = resolveSimpleVarBinding(code, rawExpr, true);
-    if (bound && bound.ok) {
-      return allowPath(bound.value, opts);
-    }
-    const joined = resolveStaticJoinOrTemplate(rawExpr, code, true);
-    if (joined !== null) {
-      return allowPath(joined, opts);
-    }
-    if (isSafeTmpTemplateOrJoin(rawExpr, code, allowPath)) {
-      return true;
-    }
-    if (/\.system_generated(?:[/\\'"`]|$)/.test(rawExpr)) {
-      return false;
-    }
-    return allowDynamicPaths;
-  };
-
-  const resolvePythonPathReceiverArg = (rawRecv) => {
-    if (rawRecv === null) return { valid: false, found: true, expr: null };
-    const recvExpr = unwrapPythonExprParensAndWalrus(rawRecv);
-    const ctorArgs = isPythonPathCtorCallExpr(recvExpr, pySymbols);
-    if (ctorArgs !== null) {
-      if (ctorArgs.length !== 1) return { valid: false, found: true, expr: null };
-      return { valid: true, found: true, expr: ctorArgs[0] };
-    }
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(recvExpr)) {
-      const varEsc = recvExpr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const assignRe = new RegExp(`(?:^|[\\n;])\\s*${varEsc}\\s*=\\s*([^\\n;#]+)`, "g");
-      let lastRhs = null;
-      let am;
-      while ((am = assignRe.exec(code)) !== null) {
-        lastRhs = am[1].trim();
-      }
-      if (lastRhs !== null) {
-        const boundCtorArgs = isPythonPathCtorCallExpr(lastRhs, pySymbols);
-        if (boundCtorArgs !== null && boundCtorArgs.length === 1) {
-          return { valid: true, found: true, expr: boundCtorArgs[0] };
-        }
-      }
-    }
-    return { valid: true, found: false, expr: null };
-  };
-
-  const validateOsShutilCall = (fnName, qualifier, callArgs) => {
-    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
-    if (["copy", "copy2", "copyfile", "copytree"].includes(fnName)) {
-      if (!qualifier && !/\bshutil\b/.test(maskedCode)) return null;
-      const srcExpr = positionals[0] ?? kwargs.src ?? "";
-      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
-      const isCopyTree = fnName === "copytree";
-      const srcVal = !isCopyTree ? resolveStaticArgValue(srcExpr, code, true) : null;
-      const srcOkForRoArtifact =
-        !isCopyTree &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      const allowImgDir = srcOkForRoArtifact && (fnName === "copy" || fnName === "copy2");
-      if (
-        !dstExpr ||
-        !checkPyPathArg(dstExpr, {
-          allowRootEqual: true,
-          allowDevNull: true,
-          allowArtifactDir: allowImgDir,
-          allowArtifactRoot: allowImgDir,
-          forbidReadOnlyArtifact: isCopyTree || !srcOkForRoArtifact,
-        })
-      ) {
-        return `Inline Python ${fnName}() destination outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      return null;
-    }
-    if (["rename", "renames", "replace", "move", "symlink", "link"].includes(fnName)) {
-      const srcExpr = positionals[0] ?? kwargs.src ?? "";
-      const dstExpr = positionals[1] ?? kwargs.dst ?? "";
-      const isSymlink = fnName === "symlink";
-      const isLink = isSymlink || fnName === "link";
-      const srcVal = !isLink ? resolveStaticArgValue(srcExpr, code, true) : null;
-      const dstVal = isSymlink ? resolveStaticArgValue(dstExpr, code, true) : null;
-      const symlinkBaseDir =
-        isSymlink && dstVal && isAbsolute(dstVal) ? dirname(dstVal) : null;
-      const srcOkForRoArtifact =
-        !isLink &&
-        (allowReadOnlyArtifactCopySource
-          ? Boolean(srcVal && allowReadOnlyArtifactCopySource(srcVal))
-          : Boolean(srcVal && /\.(?:png|jpe?g|webp)$/i.test(srcVal)));
-      const allowMoveDir = srcOkForRoArtifact && fnName === "move";
-      if (
-        !srcExpr ||
-        !dstExpr ||
-        !checkPyPathArg(srcExpr, {
-          allowRootEqual: false,
-          allowDevNull: false,
-          forbidReadOnlyArtifact: isLink,
-          disallowArtifactRoot: isLink,
-          customBaseDir: symlinkBaseDir,
-        }) ||
-        !checkPyPathArg(dstExpr, {
-          allowRootEqual: fnName === "move",
-          allowDevNull: false,
-          allowArtifactDir: allowMoveDir,
-          allowArtifactRoot: allowMoveDir,
-          forbidReadOnlyArtifact: isLink || !srcOkForRoArtifact,
-          disallowArtifactRoot: isLink || fnName !== "move",
-        })
-      ) {
-        return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      return null;
-    }
-    const singleExpr = positionals[0] ?? kwargs.path ?? kwargs.name ?? "";
-    const isMkdir = fnName === "mkdir" || fnName === "makedirs";
-    const forbidRo = ["rmdir", "removedirs", "rmtree", "chmod", "lchmod", "chown"].includes(fnName);
-    if (
-      !singleExpr ||
-      !checkPyPathArg(singleExpr, {
-        allowRootEqual: isMkdir,
-        allowDevNull: false,
-        allowArtifactDir: isMkdir,
-        requireArtifactDir: isMkdir,
-        allowArtifactRoot: isMkdir,
-        forbidReadOnlyArtifact: forbidRo,
-      })
-    ) {
-      return `Inline Python ${fnName}() outside allowed roots is blocked for ${roleLabel}.`;
-    }
-    if (isMkdir && registerReadOnlyMkdir) {
-      const mkdirVal =
-        resolveStaticArgValue(singleExpr, code, true) ??
-        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(singleExpr, pySymbols), code, true);
-      if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
-    }
-    return null;
-  };
-
-  const validatePyOpenArgs = (openArgs) => {
-    const { positionals, kwargs } = splitPythonCallArgs(openArgs);
-    const modeExpr = positionals[1] ?? kwargs.mode ?? null;
-    if (modeExpr === null) return null;
-    const modeLit = parseStaticPyString(modeExpr);
-    if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
-      return null;
-    }
-    const pathExpr = positionals[0] ?? kwargs.file ?? "";
-    if (!checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
-      return `Inline Python open() for write outside allowed roots is blocked for ${roleLabel}.`;
-    }
-    return null;
-  };
-
-  if (registerReadOnlyMkdir) {
-    const preMkdirRe = /(?:(?:os|posix)\s*\.\s*|\b)(?:mkdir|makedirs)\s*\(/g;
-    let pm;
-    while ((pm = preMkdirRe.exec(maskedCode)) !== null) {
-      const mArgs = parseCallArguments(code, pm.index + pm[0].length - 1);
-      if (!mArgs) continue;
-      const { positionals: pPos, kwargs: pKw } = splitPythonCallArgs(mArgs);
-      const dExpr = pPos[0] ?? pKw.path ?? pKw.name ?? "";
-      const dVal =
-        resolveStaticArgValue(dExpr, code, true) ??
-        resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr, pySymbols), code, true);
-      if (dVal) registerReadOnlyMkdir(dVal);
-    }
-    for (const [alias, entry] of pySymbols.fsFuncAliases.entries()) {
-      if (entry.fnName !== "mkdir" && entry.fnName !== "makedirs") continue;
-      const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const aliasCallRe = new RegExp(`(?:^|[^\\w.])${aliasEsc}\\s*\\(`, "g");
-      while ((pm = aliasCallRe.exec(maskedCode)) !== null) {
-        const mArgs = parseCallArguments(code, pm.index + pm[0].length - 1);
-        if (!mArgs) continue;
-        const { positionals: pPos, kwargs: pKw } = splitPythonCallArgs(mArgs);
-        const dExpr = pPos[0] ?? pKw.path ?? pKw.name ?? "";
-        const dVal =
-          resolveStaticArgValue(dExpr, code, true) ??
-          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(dExpr, pySymbols), code, true);
-        if (dVal) registerReadOnlyMkdir(dVal);
-      }
-    }
-  }
-
-  const pathMethodRe =
-    /\.\s*(write_text|write_bytes|unlink|rmdir|mkdir|touch|chmod|lchmod|rename|replace|symlink_to|hardlink_to|link_to|open)\s*\(/g;
-  let match;
-  while ((match = pathMethodRe.exec(maskedCode)) !== null) {
-    const method = match[1];
-    const openParenIdx = match.index + match[0].length - 1;
-    const methodArgs = parseCallArguments(code, openParenIdx);
-    if (!methodArgs) {
-      return `Unparseable .${method}() call in inline Python script is blocked for ${roleLabel}.`;
-    }
-    const rawRecv = extractPythonReceiverBeforeDot(code, match.index);
-    if (rawRecv === null) {
-      return `Unparseable .${method}() receiver in inline Python script is blocked for ${roleLabel}.`;
-    }
-    if (receiverReferencesUnboundPathClass(rawRecv, pySymbols)) {
-      return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
-    }
-    if (PYTHON_OS_SHUTIL_FN_NAMES.has(method) && isPythonFsModuleExpr(rawRecv, pySymbols)) {
-      continue;
-    }
-    if (receiverReferencesFsModule(rawRecv, pySymbols)) {
-      return `Wrapped filesystem module .${method}() call in inline Python script is blocked for ${roleLabel}.`;
-    }
-    if (method === "open") {
-      const recvTrimmed = unwrapPythonExprParensAndWalrus(rawRecv);
-      if (
-        recvTrimmed === "io" ||
-        recvTrimmed === "_io" ||
-        recvTrimmed === "builtins" ||
-        recvTrimmed === "codecs"
-      ) {
-        const openDeny = validatePyOpenArgs(methodArgs);
-        if (openDeny) return openDeny;
-        continue;
-      }
-      if (isPythonFsModuleExpr(rawRecv, pySymbols)) {
-        const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
-        const pathExpr = positionals[0] ?? kwargs.path ?? "";
-        if (!pathExpr || !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
-          return `Inline Python os.open() outside allowed roots is blocked for ${roleLabel}.`;
-        }
-        continue;
-      }
-      const { positionals, kwargs } = splitPythonCallArgs(methodArgs);
-      const modeExpr = positionals[0] ?? kwargs.mode ?? null;
-      if (modeExpr === null) continue;
-      const modeLit = parseStaticPyString(modeExpr);
-      if (modeLit.ok && /^[rbtU]+$/.test(modeLit.value) && modeLit.value.includes("r")) {
-        continue;
-      }
-    }
-    if (
-      method === "replace" &&
-      isValidStrReplaceArgs(methodArgs) &&
-      isSafeStrReplaceReceiver(rawRecv, pySymbols)
-    ) {
-      continue;
-    }
-    if (
-      ["write_text", "write_bytes", "unlink", "rmdir", "mkdir", "touch", "chmod", "lchmod"].includes(
-        method,
-      )
-    ) {
-      const { positionals: uPos, kwargs: uKw } = splitPythonCallArgs(methodArgs);
-      const selfCandidate = uPos[0] ?? uKw.self ?? null;
-      if (selfCandidate !== null) {
-        const trimmedSelf = unwrapPythonExprParensAndWalrus(selfCandidate);
-        if (
-          isPythonPathCtorCallExpr(trimmedSelf, pySymbols) !== null ||
-          pySymbols.pathInstanceIdents.has(trimmedSelf) ||
-          resolvePythonPathReceiverArg(trimmedSelf).found
-        ) {
-          return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
-        }
-      }
-    }
-    const recv = resolvePythonPathReceiverArg(rawRecv);
-    const isMkdir = method === "mkdir";
-    const isLinkMethod =
-      method === "symlink_to" || method === "hardlink_to" || method === "link_to";
-    const forbidRo =
-      isLinkMethod ||
-      method === "rmdir" ||
-      method === "chmod" ||
-      method === "lchmod";
-    if (!recv.valid) {
-      return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
-    }
-    if (recv.found) {
-      if (
-        !checkPyPathArg(recv.expr, {
-          allowRootEqual: isMkdir,
-          allowDevNull: false,
-          allowArtifactDir: isMkdir,
-          requireArtifactDir: isMkdir,
-          allowArtifactRoot: isMkdir,
-          forbidReadOnlyArtifact: forbidRo,
-          disallowArtifactRoot: isLinkMethod,
-        })
-      ) {
-        return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      if (isMkdir && registerReadOnlyMkdir) {
-        const mkdirVal =
-          resolveStaticArgValue(recv.expr, code, true) ??
-          resolveStaticJoinOrTemplate(unwrapPythonPathCtor(recv.expr, pySymbols), code, true);
-        if (mkdirVal) registerReadOnlyMkdir(mkdirVal);
-      }
-    } else if (!allowDynamicPaths) {
-      return `Inline Python Path.${method}() on non-literal receiver is blocked for ${roleLabel}.`;
-    }
-
-    if (isLinkMethod) {
-      const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
-      if (mPos.length >= 2 || Object.hasOwn(mKw, "self")) {
-        return `Unbound Python Path.${method}() call in inline Python script is blocked for ${roleLabel}.`;
-      }
-      const targetExpr = mPos[0] ?? mKw.target ?? "";
-      const recvVal = recv.found ? resolveStaticArgValue(recv.expr, code, true) : null;
-      const symlinkBaseDir =
-        method === "symlink_to" && recvVal && isAbsolute(recvVal) ? dirname(recvVal) : null;
-      if (
-        !targetExpr ||
-        !checkPyPathArg(targetExpr, {
-          allowRootEqual: false,
-          allowDevNull: false,
-          allowArtifactDir: false,
-          allowArtifactRoot: false,
-          forbidReadOnlyArtifact: true,
-          disallowArtifactRoot: true,
-          customBaseDir: symlinkBaseDir,
-        })
-      ) {
-        return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
-      }
-    } else if (method === "rename" || method === "replace") {
-      const { positionals: mPos, kwargs: mKw } = splitPythonCallArgs(methodArgs);
-      const isTwoArgCall = mPos.length >= 2 || (mPos.length === 1 && Object.hasOwn(mKw, "target"));
-      const srcArgExpr = isTwoArgCall ? mPos[0] : null;
-      const targetExpr = isTwoArgCall ? (mPos[1] ?? mKw.target ?? "") : (mPos[0] ?? mKw.target ?? "");
-      const recvVal = srcArgExpr
-        ? resolveStaticArgValue(srcArgExpr, code, true)
-        : recv.found
-          ? resolveStaticArgValue(recv.expr, code, true)
-          : null;
-      const srcOkForRoArtifact = allowReadOnlyArtifactCopySource
-        ? Boolean(recvVal && allowReadOnlyArtifactCopySource(recvVal))
-        : Boolean(recvVal && /\.(?:png|jpe?g|webp)$/i.test(recvVal));
-      if (
-        srcArgExpr !== null &&
-        !checkPyPathArg(srcArgExpr, {
-          allowRootEqual: false,
-          allowDevNull: false,
-          allowArtifactDir: false,
-          allowArtifactRoot: false,
-          disallowArtifactRoot: true,
-        })
-      ) {
-        return `Inline Python Path.${method}() outside allowed roots is blocked for ${roleLabel}.`;
-      }
-      if (
-        !targetExpr ||
-        !checkPyPathArg(targetExpr, {
-          allowRootEqual: false,
-          allowDevNull: false,
-          allowArtifactDir: false,
-          allowArtifactRoot: false,
-          disallowArtifactRoot: true,
-          forbidReadOnlyArtifact: !srcOkForRoArtifact,
-        })
-      ) {
-        return `Inline Python Path.${method}() target outside allowed roots is blocked for ${roleLabel}.`;
-      }
-    }
-  }
-
-  const openRe = /(?:^|[^\w.])(?:_?io\s*\.\s*|builtins\s*\.\s*|codecs\s*\.\s*)?open\s*\(/g;
-  while ((match = openRe.exec(maskedCode)) !== null) {
-    const openParenIdx = match.index + match[0].length - 1;
-    const openArgs = parseCallArguments(code, openParenIdx);
-    if (!openArgs) {
-      return `Unparseable open() call in inline Python script is blocked for ${roleLabel}.`;
-    }
-    const openDeny = validatePyOpenArgs(openArgs);
-    if (openDeny) return openDeny;
-  }
-
-  const hasFsImport = /\b(?:os|posix|shutil)\b/.test(maskedCode);
-  const osShutilRe =
-    /(?:(os|posix|shutil)\s*\.\s*|\b)(remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|lchmod|chown|truncate|rename|renames|replace|rmtree|move|copy|copy2|copyfile|copytree|symlink|link)\s*\(/g;
-  while ((match = osShutilRe.exec(maskedCode)) !== null) {
-    let qualifier = match[1] || "";
-    const fnName = match[2];
-    if (!qualifier) {
-      const dotMatch = maskedCode.slice(0, match.index).match(/\.\s*$/);
-      if (dotMatch) {
-        const memberRecv = extractPythonReceiverBeforeDot(code, match.index - dotMatch[0].length);
-        if (!isPythonFsModuleExpr(memberRecv, pySymbols)) {
-          if (receiverReferencesFsModule(memberRecv, pySymbols)) {
-            return `Wrapped filesystem module .${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
-          }
-          continue;
-        }
-        qualifier = "fs_alias";
-      } else if (!hasFsImport) {
-        continue;
-      }
-    }
-    const openParenIdx = match.index + match[0].length - 1;
-    const callArgs = parseCallArguments(code, openParenIdx);
-    if (!callArgs) {
-      return `Unparseable ${fnName}() call in inline Python script is blocked for ${roleLabel}.`;
-    }
-    const callDeny = validateOsShutilCall(fnName, qualifier, callArgs);
-    if (callDeny) return callDeny;
-  }
-
-  if (
-    pySymbols.fsFuncAliases.size > 0 ||
-    pySymbols.openAliases.size > 0 ||
-    pySymbols.fsOpenAliases.size > 0
-  ) {
-    const bodyMasked = maskedCode
-      .replace(/\bfrom\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+[^\n;]+/g, (s) => " ".repeat(s.length))
-      .replace(/(?:^|[\n;])\s*import\s+[^\n;]+/g, (s) =>
-        s.replace(/[^\n]/g, " "),
-      );
-
-    const checkAliasUsages = (alias, validateCallFn, fnLabel) => {
-      const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const refRe = new RegExp(`(?:^|[^\\w.])(${aliasEsc})\\b`, "g");
-      let rm;
-      while ((rm = refRe.exec(bodyMasked)) !== null) {
-        const aliasEnd = rm.index + rm[0].length;
-        const aliasStart = aliasEnd - rm[1].length;
-        const beforeTrimmed = bodyMasked.slice(0, aliasStart).trimEnd();
-        if (beforeTrimmed.endsWith(".")) continue;
-        const afterAlias = bodyMasked.slice(aliasEnd);
-        const callMatch = afterAlias.match(/^\s*\(/);
-        if (callMatch) {
-          const openParenIdx = aliasEnd + callMatch[0].length - 1;
-          const callArgs = parseCallArguments(code, openParenIdx);
-          if (!callArgs) {
-            return `Unparseable ${fnLabel}() call in inline Python script is blocked for ${roleLabel}.`;
-          }
-          const deny = validateCallFn(callArgs);
-          if (deny) return deny;
-          continue;
-        }
-        const isSimpleAssignRhs =
-          /(?:^|[\n;])\s*[A-Za-z_][A-Za-z0-9_]*\s*=$/.test(beforeTrimmed) &&
-          /^\s*(?:$|[\n;])/.test(afterAlias);
-        const isSimpleAssignLhs =
-          /(?:^|[\n;])$/.test(beforeTrimmed) && /^\s*=(?!=)/.test(afterAlias);
-        if (isSimpleAssignRhs || isSimpleAssignLhs) continue;
-        return `Aliased filesystem mutation API in inline Python script is blocked for ${roleLabel}.`;
-      }
-      return null;
-    };
-
-    for (const [alias, entry] of pySymbols.fsFuncAliases.entries()) {
-      const deny = checkAliasUsages(
-        alias,
-        (callArgs) => validateOsShutilCall(entry.fnName, entry.mod, callArgs),
-        entry.fnName,
-      );
-      if (deny) return deny;
-    }
-    for (const alias of pySymbols.openAliases) {
-      const deny = checkAliasUsages(alias, validatePyOpenArgs, "open");
-      if (deny) return deny;
-    }
-    for (const alias of pySymbols.fsOpenAliases) {
-      const deny = checkAliasUsages(
-        alias,
-        (callArgs) => {
-          const { positionals, kwargs } = splitPythonCallArgs(callArgs);
-          const pathExpr = positionals[0] ?? kwargs.path ?? "";
-          if (!pathExpr || !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: true })) {
-            return `Inline Python os.open() outside allowed roots is blocked for ${roleLabel}.`;
-          }
-          return null;
-        },
-        "open",
-      );
-      if (deny) return deny;
-    }
-  }
-
-  const screenshotRe = /\.\s*screenshot\s*\(/g;
-  while ((match = screenshotRe.exec(maskedCode)) !== null) {
-    const openParenIdx = match.index + match[0].length - 1;
-    const callArgs = parseCallArguments(code, openParenIdx);
-    if (!callArgs) {
-      if (!allowDynamicPaths) {
-        return `Unparseable .screenshot() call in inline Python script is blocked for ${roleLabel}.`;
-      }
-      continue;
-    }
-    const { positionals, kwargs } = splitPythonCallArgs(callArgs);
-    const pathExpr = kwargs.path ?? positionals[0] ?? null;
-    if (
-      pathExpr !== null &&
-      pathExpr !== "None" &&
-      !checkPyPathArg(pathExpr, { allowRootEqual: false, allowDevNull: false })
-    ) {
-      return `Inline Python .screenshot() path outside allowed roots is blocked for ${roleLabel}.`;
-    }
-  }
-
-  return null;
+  return { cmd: "", args: [], inlineEnv };
 }
 
 function parseGitCommand(args) {
   const globalDirs = [];
-  let i = 0;
-  while (i < args.length) {
+  const valueFlags = wordSet("-c --namespace --super-prefix --config-env");
+  for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "-C" || arg === "--git-dir" || arg === "--work-tree") {
-      if (i + 1 < args.length) globalDirs.push(args[i + 1]);
-      i += 2;
-      continue;
-    }
-    if (arg.startsWith("-C") && arg.length > 2) {
-      globalDirs.push(arg.slice(2));
+      if (i + 1 < args.length) {
+        globalDirs.push({ flag: arg, dir: args[i + 1] });
+      }
       i += 1;
-      continue;
-    }
-    if (arg.startsWith("--git-dir=")) {
-      globalDirs.push(arg.slice("--git-dir=".length));
+    } else if (arg.startsWith("-C") && arg.length > 2) {
+      globalDirs.push({ flag: "-C", dir: arg.slice(2) });
+    } else if (arg.startsWith("--git-dir=")) {
+      globalDirs.push({ flag: "--git-dir", dir: arg.slice(10) });
+    } else if (arg.startsWith("--work-tree=")) {
+      globalDirs.push({ flag: "--work-tree", dir: arg.slice(12) });
+    } else if (valueFlags.has(arg)) {
       i += 1;
-      continue;
+    } else if (!arg.startsWith("-")) {
+      return { subcmd: arg, subArgs: args.slice(i + 1), globalDirs };
     }
-    if (arg.startsWith("--work-tree=")) {
-      globalDirs.push(arg.slice("--work-tree=".length));
-      i += 1;
-      continue;
-    }
-    if (GIT_GLOBAL_VALUE_FLAGS.has(arg)) {
-      i += 2;
-      continue;
-    }
-    if (
-      arg.startsWith("-c") ||
-      arg.startsWith("--namespace=") ||
-      arg.startsWith("--config-env=")
-    ) {
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("-")) {
-      i += 1;
-      continue;
-    }
-    return { subcmd: arg, subArgs: args.slice(i + 1), globalDirs };
   }
   return { subcmd: "", subArgs: [], globalDirs };
 }
 
-function isReadOnlyGitTagArgs(subArgs) {
-  if (subArgs.length === 0) return true;
-  let hasReadOnlyFlag = false;
+function resolveCheckedOutBranch(globalDirs, fallbackDir) {
+  let curBase = fallbackDir || process.cwd();
+  let explicitGitDir = null;
+  for (const entry of globalDirs) {
+    const resolved = resolveRealTargetPath(entry.dir, curBase);
+    if (entry.flag === "-C") {
+      curBase = resolved || resolve(curBase, entry.dir);
+    } else if (entry.flag === "--git-dir") {
+      explicitGitDir = resolved || resolve(curBase, entry.dir);
+    }
+  }
+  const gitArgs = explicitGitDir
+    ? ["--git-dir", explicitGitDir, "symbolic-ref", "--short", "-q", "HEAD"]
+    : ["-C", curBase, "symbolic-ref", "--short", "-q", "HEAD"];
+  try {
+    return execFileSync("git", gitArgs, {
+      encoding: "utf8",
+      timeout: 1500,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function isForcePushToProtectedBranch(subArgs, globalDirs, fallbackDir) {
+  let hasForce = false;
+  let afterDash = false;
+  const pos = [];
+  const valFlags = wordSet("-o --push-option --repo --receive-pack --exec");
   for (let i = 0; i < subArgs.length; i += 1) {
     const arg = subArgs[i];
-    if (arg === "--") break;
-    if (
-      ["-d", "--delete", "-a", "--annotate", "-s", "--sign", "-f", "--force", "-m", "--message", "-F", "--file", "-u", "--local-user", "--create-reflog"].includes(
-        arg,
-      ) ||
-      arg.startsWith("--message=") ||
-      arg.startsWith("--file=") ||
-      arg.startsWith("--local-user=") ||
-      (!arg.startsWith("--") && /^-[a-zA-Z]*[dasfmuF]/.test(arg))
-    ) {
-      return false;
+    if (!afterDash && arg === "--") {
+      afterDash = true;
+      continue;
     }
-    if (
-      arg === "-l" ||
-      arg === "--list" ||
-      arg === "-v" ||
-      arg === "--verify" ||
-      arg === "--contains" ||
-      arg.startsWith("--contains=") ||
-      arg === "--points-at" ||
-      arg.startsWith("--points-at=")
-    ) {
-      hasReadOnlyFlag = true;
-      if (arg === "--contains" || arg === "--points-at") {
+    if (!afterDash && arg.startsWith("-")) {
+      if (arg === "--force-with-lease" || arg.startsWith("--force-with-lease=") || arg === "--force-if-includes") {
+        continue;
+      }
+      if (arg === "--force" || arg.startsWith("--force=") || (!arg.startsWith("--") && arg.includes("f"))) {
+        hasForce = true;
+      }
+      if (valFlags.has(arg)) {
         i += 1;
       }
+      continue;
+    }
+    pos.push(arg);
+  }
+
+  let checkCheckedOutHead = hasForce && pos.length <= 1;
+  const refSpecs = pos.length >= 2 ? pos.slice(1) : pos;
+  for (const spec of refSpecs) {
+    const plusForced = spec.startsWith("+");
+    const clean = plusForced ? spec.slice(1) : spec;
+    const dst = clean.includes(":") ? clean.slice(clean.lastIndexOf(":") + 1) : clean;
+    const branch = dst.startsWith("refs/heads/") ? dst.slice(11) : dst;
+    if ((branch === "main" || branch === "master") && (hasForce || plusForced)) {
+      return true;
+    }
+    if ((branch === "HEAD" || clean === "HEAD") && (hasForce || plusForced)) {
+      checkCheckedOutHead = true;
     }
   }
-  return hasReadOnlyFlag;
-}
 
-function isReadOnlyGitStashArgs(subArgs) {
-  return subArgs.length > 0 && (subArgs[0] === "list" || subArgs[0] === "show");
-}
-
-function isMutatingGitAction(subcmd, subArgs) {
-  if (MUTATING_GIT_SUBCOMMANDS.has(subcmd)) return true;
-  if (subcmd === "tag") return !isReadOnlyGitTagArgs(subArgs);
-  if (subcmd === "stash") return !isReadOnlyGitStashArgs(subArgs);
-  if (subcmd === "branch") {
-    return subArgs.some((a) => ["-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"].includes(a));
-  }
-  if (subcmd === "worktree") {
-    const action = subArgs.find((a) => !a.startsWith("-")) || "";
-    return Boolean(action && action !== "list");
-  }
-  if (subcmd === "notes") {
-    const action = subArgs.find((a) => !a.startsWith("-")) || "";
-    return Boolean(action && action !== "list" && action !== "show");
-  }
-  if (subcmd === "replace") {
-    return subArgs.length > 0 && !subArgs.some((a) => a === "-l" || a === "--list");
-  }
-  if (subcmd === "submodule") {
-    const action = subArgs.find((a) => !a.startsWith("-")) || "";
-    return Boolean(action && action !== "status" && action !== "summary");
-  }
-  if (subcmd === "symbolic-ref") {
-    if (subArgs.some((a) => a === "-d" || a === "--delete")) return true;
-    const positionals = extractPositionalPaths(subArgs);
-    return positionals.length >= 2;
+  if (checkCheckedOutHead) {
+    const headBranch = resolveCheckedOutBranch(globalDirs, fallbackDir);
+    if (headBranch === "main" || headBranch === "master") {
+      return true;
+    }
   }
   return false;
 }
 
-function isMutatingGitFetchForReadOnly(subArgs) {
-  const positionals = [];
-  let afterDoubleDash = false;
+function hasMutatingGitListArgs(subArgs, cfg) {
+  let hasQuery = false;
+  let afterDash = false;
+  const pos = [];
   for (let i = 0; i < subArgs.length; i += 1) {
     const arg = subArgs[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
+    if (!afterDash && arg === "--") {
+      afterDash = true;
       continue;
     }
-    if (!afterDoubleDash && arg.startsWith("-")) {
-      if (
-        ["-p", "--prune", "-f", "--force", "-u", "--update-head-ok"].includes(arg) ||
-        (!arg.startsWith("--") && /^-[a-zA-Z]*[pfu]/.test(arg))
-      ) {
+    if (!afterDash && arg.startsWith("-")) {
+      const hasShort =
+        !arg.startsWith("--") &&
+        !(cfg.allowNSkip && arg.startsWith("-n")) &&
+        [...arg.slice(1)].some((ch) => cfg.mutShort.has(ch));
+      if (cfg.mutExact.has(arg) || cfg.mutPfx.some((p) => arg.startsWith(p)) || hasShort) {
         return true;
       }
-      if (["--depth", "--deepen", "--shallow-since", "--shallow-exclude", "--negotiation-tip", "-o", "--server-option", "--upload-pack", "--refmap", "-j", "--jobs"].includes(arg)) {
+      if (cfg.qExact.has(arg) || cfg.qPfx.some((p) => arg.startsWith(p))) {
+        hasQuery = true;
+      }
+      if (cfg.allowNSkip && arg === "-n" && i + 1 < subArgs.length && isAllDigits(subArgs[i + 1])) {
+        i += 1;
+      } else if (cfg.valFlags.has(arg)) {
         i += 1;
       }
       continue;
     }
-    positionals.push(arg);
+    pos.push(arg);
   }
-  return positionals.slice(1).some((refspec) => refspec.includes(":"));
+  return pos.length > 0 && !hasQuery;
 }
 
-function isForcePushToProtectedBranch(subArgs) {
-  let hasForceOrDeleteFlag = false;
-  const positionals = [];
-  let afterDoubleDash = false;
+const LIST_VAL_FLAGS = wordSet(
+  "--sort --format --color --column --contains --no-contains --merged --no-merged --points-at",
+);
+const QUERY_PFX = ["--contains=", "--no-contains=", "--merged=", "--no-merged=", "--points-at="];
+const TAG_CFG = {
+  mutExact: wordSet("-d --delete -a --annotate -s --sign -f --force -m --message -F --file -u --local-user --create-reflog"),
+  mutShort: wordSet("d a s f m F u"),
+  mutPfx: ["--message=", "--file=", "--local-user="],
+  qExact: wordSet("-l --list -v --verify --contains --no-contains --merged --no-merged --points-at"),
+  qPfx: QUERY_PFX,
+  valFlags: LIST_VAL_FLAGS,
+  allowNSkip: true,
+};
+const BRANCH_CFG = {
+  mutExact: wordSet("-d -D --delete -m -M --move -c -C --copy -u --set-upstream-to --unset-upstream --edit-description --create-reflog"),
+  mutShort: wordSet("d D m M c C u"),
+  mutPfx: ["--set-upstream-to="],
+  qExact: wordSet("-l --list -a --all -r --remotes --contains --no-contains --merged --no-merged --points-at --show-current"),
+  qPfx: QUERY_PFX,
+  valFlags: LIST_VAL_FLAGS,
+  allowNSkip: false,
+};
 
+function isMutatingGitActionForReadOnly(subcmd, subArgs) {
+  if (RO_BLOCKED_GIT_SUBCOMMANDS.has(subcmd)) {
+    return true;
+  }
+  if (subcmd === "worktree" || subcmd === "stash" || subcmd === "remote") {
+    const first = subArgs.find((x) => !x.startsWith("-")) || "";
+    if (subcmd === "worktree") {
+      return Boolean(first && first !== "list");
+    }
+    if (subcmd === "stash") {
+      return first !== "list" && first !== "show";
+    }
+    return Boolean(first && first !== "show" && first !== "get-url");
+  }
+  if (subcmd === "tag") {
+    return hasMutatingGitListArgs(subArgs, TAG_CFG);
+  }
+  if (subcmd === "branch") {
+    return hasMutatingGitListArgs(subArgs, BRANCH_CFG);
+  }
+  if (subcmd !== "config") {
+    return false;
+  }
+  const writes = wordSet("--unset --unset-all --replace-all --add --remove-section --rename-section --edit -e");
+  const reads = wordSet("--get --get-all --get-regexp --get-urlmatch --list -l");
+  const vals = wordSet("-f --file --blob --type --default");
+  let hasRead = false;
+  let afterDash = false;
+  const pos = [];
   for (let i = 0; i < subArgs.length; i += 1) {
     const arg = subArgs[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
+    if (!afterDash && arg === "--") {
+      afterDash = true;
       continue;
     }
-    if (!afterDoubleDash && arg.startsWith("-")) {
-      if (
-        arg === "--force" ||
-        arg.startsWith("--force=") ||
-        arg === "--force-with-lease" ||
-        arg.startsWith("--force-with-lease=") ||
-        arg === "--force-if-includes" ||
-        arg === "--delete" ||
-        (!arg.startsWith("--") && /^-[a-zA-Z]*[fd]/.test(arg))
-      ) {
-        hasForceOrDeleteFlag = true;
+    if (!afterDash && arg.startsWith("-")) {
+      if (writes.has(arg)) {
+        return true;
       }
-      if (["-o", "--push-option", "--repo", "--receive-pack", "--exec"].includes(arg)) {
+      if (reads.has(arg)) {
+        hasRead = true;
+      }
+      if (vals.has(arg)) {
         i += 1;
       }
       continue;
     }
-    positionals.push(arg);
+    pos.push(arg);
   }
+  return !hasRead && pos.length >= 2;
+}
 
-  const refspecs = positionals.length >= 2 ? positionals.slice(1) : positionals;
-  for (const spec of refspecs) {
-    const plusForced = spec.startsWith("+");
-    const colonDelete = spec.startsWith(":");
-    const clean = plusForced ? spec.slice(1) : spec;
-    const dst = clean.includes(":") ? clean.split(":").pop() : clean;
-    const branch = dst.replace(/^refs\/heads\//, "");
-    if ((branch === "main" || branch === "master") && (hasForceOrDeleteFlag || plusForced || colonDelete)) {
+function isEffectiveGitDirInsideTemp(globalDirs, fallbackBaseDir, tempRoots, realCwd) {
+  const check = (dir) => isInsideCanonicalTempRoots(dir, tempRoots, realCwd);
+  if (globalDirs.length === 0) {
+    return check(realCwd || resolveRealTargetPath(fallbackBaseDir, process.cwd()));
+  }
+  let curBase = fallbackBaseDir;
+  let sawC = false;
+  for (const entry of globalDirs) {
+    const resolved = resolveRealTargetPath(entry.dir, curBase);
+    if (!resolved) {
+      return false;
+    }
+    if (entry.flag === "-C") {
+      curBase = resolved;
+      sawC = true;
+    } else if (!check(resolved)) {
+      return false;
+    }
+  }
+  return sawC ? check(curBase) : true;
+}
+
+function isMutatingGhCommand(args) {
+  let idx = 0;
+  while (idx < args.length) {
+    const arg = args[idx];
+    if (arg === "-R" || arg === "--repo" || arg === "--hostname") {
+      idx += 2;
+    } else if (arg.startsWith("-")) {
+      idx += 1;
+    } else {
+      break;
+    }
+  }
+  if (idx >= args.length) {
+    return false;
+  }
+  const group = args[idx].toLowerCase();
+  const rest = args.slice(idx + 1);
+  if (group in GH_MUTATING_ACTIONS) {
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "-R" || rest[i] === "--repo") {
+        i += 1;
+        continue;
+      }
+      if (!rest[i].startsWith("-")) {
+        return GH_MUTATING_ACTIONS[group].has(rest[i].toLowerCase());
+      }
+    }
+    return false;
+  }
+  if (group !== "api") {
+    return false;
+  }
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (arg === "-X" || arg === "--method") {
+      if (String(rest[i + 1] || "").toUpperCase() !== "GET") {
+        return true;
+      }
+      i += 1;
+    } else if (arg.startsWith("-X") && arg.length > 2 && arg.slice(2).toUpperCase() !== "GET") {
+      return true;
+    } else if (arg.startsWith("--method=") && arg.slice(9).toUpperCase() !== "GET") {
+      return true;
+    } else if (
+      ["-f", "-F", "--raw-field", "--field", "--input"].includes(arg) ||
+      ["-f", "-F", "--raw-field=", "--field=", "--input="].some((p) => arg.startsWith(p))
+    ) {
       return true;
     }
   }
   return false;
 }
 
-function extractPathsSkippingValueFlags(args, valueFlags) {
-  const paths = [];
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (valueFlags.has(arg)) {
-        i += 1;
-      }
-      continue;
-    }
-    paths.push(arg);
-  }
-  return paths;
-}
-
-function extractInstallTargets(args) {
-  let dirMode = false;
-  let targetDir = null;
-  const positionals = [];
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (arg === "-d" || arg === "--directory" || (!arg.startsWith("--") && /^-[a-zA-Z]*d/.test(arg))) {
-        dirMode = true;
-      }
-      if (arg === "-t" || arg === "--target-directory") {
-        if (i + 1 >= args.length) return { valid: false, targets: [] };
-        targetDir = args[i + 1];
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--target-directory=")) {
-        targetDir = arg.slice("--target-directory=".length);
-        continue;
-      }
-      if (["-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"].includes(arg)) {
-        i += 1;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-  if (dirMode) {
-    return positionals.length > 0 ? { valid: true, targets: positionals } : { valid: false, targets: [] };
-  }
-  if (targetDir !== null) {
-    return positionals.length > 0 ? { valid: true, targets: [targetDir] } : { valid: false, targets: [] };
-  }
-  if (positionals.length < 2) return { valid: false, targets: [] };
-  return { valid: true, targets: [positionals[positionals.length - 1]] };
-}
-
-function extractCurlWriteTargets(args) {
-  const fileTargets = [];
-  let usesRemoteName = false;
-  let outputDir = ".";
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (arg === "-o" || arg === "--output") {
-      if (i + 1 < args.length) {
-        if (args[i + 1] !== "-") fileTargets.push(args[i + 1]);
-        i += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith("--output=")) {
-      const v = arg.slice("--output=".length);
-      if (v !== "-") fileTargets.push(v);
-      continue;
-    }
-    if (arg.startsWith("-o") && arg.length > 2) {
-      const v = arg.slice(2);
-      if (v !== "-") fileTargets.push(v);
-      continue;
-    }
-    if (arg === "--output-dir" && i + 1 < args.length) {
-      outputDir = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("--output-dir=")) {
-      outputDir = arg.slice("--output-dir=".length);
-      continue;
-    }
-    if (arg === "-O" || arg === "--remote-name" || arg === "--remote-name-all" || (!arg.startsWith("--") && /^-[a-zA-Z]*O/.test(arg))) {
-      usesRemoteName = true;
-    }
-  }
-  return { fileTargets, dirTargets: usesRemoteName ? [outputDir] : [] };
-}
-
-function extractWgetWriteTargets(args) {
-  let isSpider = false;
-  let outputDoc = null;
-  let dirPrefix = null;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (arg === "--spider") {
-      isSpider = true;
-      continue;
-    }
-    if (arg === "-O" || arg === "--output-document") {
-      if (i + 1 < args.length) {
-        outputDoc = args[i + 1];
-        i += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith("--output-document=")) {
-      outputDoc = arg.slice("--output-document=".length);
-      continue;
-    }
-    if (arg.startsWith("-O") && arg.length > 2) {
-      outputDoc = arg.slice(2);
-      continue;
-    }
-    if (arg === "-P" || arg === "--directory-prefix") {
-      if (i + 1 < args.length) {
-        dirPrefix = args[i + 1];
-        i += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith("--directory-prefix=")) {
-      dirPrefix = arg.slice("--directory-prefix=".length);
-      continue;
-    }
-    if (arg.startsWith("-P") && arg.length > 2) {
-      dirPrefix = arg.slice(2);
-      continue;
-    }
-  }
-  if (isSpider) return { fileTargets: [], dirTargets: [] };
-  if (outputDoc !== null) {
-    return outputDoc === "-" ? { fileTargets: [], dirTargets: [] } : { fileTargets: [outputDoc], dirTargets: [] };
-  }
-  return { fileTargets: [], dirTargets: [dirPrefix || "."] };
-}
-
-function extractTarWriteTargets(args) {
-  let isExtract = false;
-  let isCreateOrUpdate = false;
-  let toStdout = false;
-  let targetDir = ".";
-  let archiveFile = null;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (arg === "-O" || arg === "--to-stdout") toStdout = true;
-    if (arg === "-x" || arg === "--extract" || arg === "--get") isExtract = true;
-    if (arg === "-c" || arg === "--create" || arg === "-r" || arg === "--append" || arg === "-u" || arg === "--update") {
-      isCreateOrUpdate = true;
-    }
-    if (!arg.startsWith("--") && (arg.startsWith("-") || i === 0)) {
-      const flags = arg.startsWith("-") ? arg.slice(1) : arg;
-      if (flags.includes("x")) isExtract = true;
-      if (/[cru]/.test(flags)) isCreateOrUpdate = true;
-      if (flags.includes("O")) toStdout = true;
-      if (flags.endsWith("f") && i + 1 < args.length) {
-        archiveFile = args[i + 1];
-        i += 1;
-        continue;
-      }
-      if (flags.endsWith("C") && i + 1 < args.length) {
-        targetDir = args[i + 1];
-        i += 1;
-        continue;
-      }
-    }
-    if (arg === "-C" || arg === "--directory") {
-      if (i + 1 < args.length) {
-        targetDir = args[i + 1];
-        i += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith("--directory=")) {
-      targetDir = arg.slice("--directory=".length);
-      continue;
-    }
-    if (arg === "-f" || arg === "--file") {
-      if (i + 1 < args.length) {
-        archiveFile = args[i + 1];
-        i += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith("--file=")) {
-      archiveFile = arg.slice("--file=".length);
-    }
-  }
-  const fileTargets = [];
-  const dirTargets = [];
-  if (isExtract && !toStdout) dirTargets.push(targetDir);
-  if (isCreateOrUpdate && archiveFile && archiveFile !== "-" && archiveFile !== "/dev/null") {
-    fileTargets.push(archiveFile);
-  }
-  return { fileTargets, dirTargets };
-}
-
-function extractUnzipWriteTargets(args) {
-  let readOnly = false;
-  let targetDir = ".";
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (["-l", "-v", "-t", "-p", "-c", "-Z"].includes(arg) || (!arg.startsWith("--") && /^-[a-zA-Z]*[lvtpcZ]/.test(arg))) {
-      readOnly = true;
-    }
-    if (arg === "-d" && i + 1 < args.length) {
-      targetDir = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("-d") && arg.length > 2) {
-      targetDir = arg.slice(2);
-    }
-  }
-  return readOnly ? [] : [targetDir];
-}
-
-function extractRsyncWriteSpec(args) {
-  let dryRun = false;
-  let hasDelete = false;
-  let removeSourceFiles = false;
-  const positionals = [];
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-") && arg.length > 1) {
-      if (arg === "-n" || arg === "--dry-run" || arg === "--list-only" || (!arg.startsWith("--") && /^-[a-zA-Z]*n/.test(arg))) {
-        dryRun = true;
-      }
-      if (arg.startsWith("--del")) {
-        hasDelete = true;
-      }
-      if (arg === "--remove-source-files") {
-        removeSourceFiles = true;
-      }
-      if (["-e", "--rsh", "--exclude", "--include", "--filter", "--files-from", "--log-file", "--out-format", "--compare-dest", "--copy-dest", "--link-dest"].includes(arg)) {
-        i += 1;
-      }
-      continue;
-    }
-    positionals.push(arg);
-  }
-  if (dryRun || positionals.length < 2) {
-    return { dryRun: true, destination: null, sources: [], hasDelete: false, removeSourceFiles: false };
-  }
-  return {
-    dryRun: false,
-    destination: positionals[positionals.length - 1],
-    sources: positionals.slice(0, -1),
-    hasDelete,
-    removeSourceFiles,
-  };
-}
-
-function extractFindEffects(args) {
-  const roots = [];
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
-    if (arg === "-H" || arg === "-L" || arg === "-P" || arg === "-O" || arg === "-D") {
-      if (arg === "-D") i += 1;
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ",") break;
-    roots.push(arg);
-    i += 1;
-  }
-  const searchRoots = roots.length > 0 ? roots : ["."];
-  let hasDelete = false;
-  const fprintTargets = [];
-  const execCommands = [];
-
-  for (; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "-delete") {
-      hasDelete = true;
-      continue;
-    }
-    if (arg === "-fprint" || arg === "-fprint0" || arg === "-fls" || arg === "-fprintf") {
-      if (i + 1 < args.length) {
-        fprintTargets.push(args[i + 1]);
-        i += arg === "-fprintf" ? 2 : 1;
-      }
-      continue;
-    }
-    if (arg === "-exec" || arg === "-execdir" || arg === "-ok" || arg === "-okdir") {
-      const innerTokens = [];
-      let j = i + 1;
-      while (j < args.length && args[j] !== ";" && args[j] !== "+") {
-        innerTokens.push(args[j]);
-        j += 1;
-      }
-      if (innerTokens.length > 0) {
-        execCommands.push(innerTokens);
-      }
-      i = j;
-    }
-  }
-  return { searchRoots, hasDelete, fprintTargets, execCommands };
-}
-
-function checkSharedTargetConfinement(inv, allowPath, roleLabel, validateInnerTokens) {
-  const { cmd, args } = inv;
-  if (cmd === "mkdir") {
-    const paths = extractPathsSkippingValueFlags(args, new Set(["-m", "--mode"]));
-    if (
-      paths.length === 0 ||
-      paths.some(
-        (p) =>
-          !allowPath(p, {
-            allowRootEqual: true,
-            allowDevNull: false,
-            allowArtifactDir: true,
-            requireArtifactDir: true,
-            allowArtifactRoot: true,
-          }),
-      )
-    ) {
-      return `Command 'mkdir' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "touch") {
-    const paths = extractPathsSkippingValueFlags(args, new Set(["-d", "--date", "-r", "--reference", "-t"]));
-    if (
-      paths.length === 0 ||
-      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'touch' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "chmod") {
-    const paths = extractChmodTargets(args);
-    if (
-      paths.length === 0 ||
-      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'chmod' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "truncate") {
-    const paths = extractPathsSkippingValueFlags(args, new Set(["-s", "--size", "-r", "--reference"]));
-    if (
-      paths.length === 0 ||
-      paths.some((p) => !allowPath(p, { allowRootEqual: false, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'truncate' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "dd") {
-    const ofArg = args.find((a) => a.startsWith("of="));
-    if (ofArg) {
-      const target = ofArg.slice(3);
-      if (!allowPath(target, { allowRootEqual: false, allowDevNull: true })) {
-        return `Command 'dd' output target outside allowed paths is blocked for ${roleLabel}.`;
-      }
-    }
-    return null;
-  }
-  if (cmd === "install") {
-    const spec = extractInstallTargets(args);
-    if (
-      !spec.valid ||
-      spec.targets.some((t) => !allowPath(t, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'install' targeting outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "curl") {
-    const { fileTargets, dirTargets } = extractCurlWriteTargets(args);
-    if (
-      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'curl' writing outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "wget") {
-    const { fileTargets, dirTargets } = extractWgetWriteTargets(args);
-    if (
-      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'wget' writing outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "tar") {
-    const { fileTargets, dirTargets } = extractTarWriteTargets(args);
-    if (
-      fileTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true, forbidReadOnlyArtifact: true })) ||
-      dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))
-    ) {
-      return `Command 'tar' writing outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "unzip") {
-    const dirTargets = extractUnzipWriteTargets(args);
-    if (dirTargets.some((d) => !allowPath(d, { allowRootEqual: true, allowDevNull: false, forbidReadOnlyArtifact: true }))) {
-      return `Command 'unzip' extracting outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (cmd === "rsync") {
-    const spec = extractRsyncWriteSpec(args);
-    if (!spec.dryRun && spec.destination) {
-      if (/^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:/.test(spec.destination) || spec.destination.startsWith("rsync://")) {
-        return `Command 'rsync' to remote destination is blocked for ${roleLabel}.`;
-      }
-      if (
-        !allowPath(spec.destination, {
-          allowRootEqual: true,
-          allowDevNull: false,
-          forbidReadOnlyArtifact: true,
-          isRecursiveDelete: spec.hasDelete,
-          disallowArtifactRoot: spec.hasDelete,
-        }) ||
-        (spec.removeSourceFiles &&
-          spec.sources.some(
-            (s) =>
-              !allowPath(s, {
-                allowRootEqual: false,
-                allowDevNull: false,
-                forbidReadOnlyArtifact: true,
-                isRecursiveDelete: true,
-              }),
-          ))
-      ) {
-        return `Command 'rsync' targeting outside allowed paths is blocked for ${roleLabel}.`;
-      }
-    }
-    return null;
-  }
-  if (cmd === "find") {
-    const { searchRoots, hasDelete, fprintTargets, execCommands } = extractFindEffects(args);
-    if (
-      hasDelete &&
-      searchRoots.some(
-        (r) =>
-          !allowPath(r, {
-            allowRootEqual: true,
-            allowDevNull: false,
-            forbidReadOnlyArtifact: true,
-            isRecursiveDelete: true,
-          }),
-      )
-    ) {
-      return `Command 'find -delete' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    if (fprintTargets.some((f) => !allowPath(f, { allowRootEqual: false, allowDevNull: true, forbidReadOnlyArtifact: true }))) {
-      return `Command 'find -fprint/-fls' outside allowed paths is blocked for ${roleLabel}.`;
-    }
-    for (const innerTokens of execCommands) {
-      const innerDeny = validateInnerTokens(innerTokens, searchRoots);
-      if (innerDeny) return innerDeny;
-    }
-    return null;
-  }
-  return undefined;
-}
-
-function extractNodePreloadTargets(args, mergedEnv) {
-  const targets = [];
-  const scanArgs = (list) => {
-    for (let i = 0; i < list.length; i += 1) {
-      const arg = list[i];
-      if (arg === "--") break;
-      if (
-        (arg === "-r" || arg === "--require" || arg === "--import" || arg === "--loader" || arg === "--experimental-loader") &&
-        i + 1 < list.length
-      ) {
-        targets.push(list[i + 1]);
-        i += 1;
-        continue;
-      }
-      for (const prefix of ["--require=", "--import=", "--loader=", "--experimental-loader="]) {
-        if (arg.startsWith(prefix)) {
-          targets.push(arg.slice(prefix.length));
-          break;
+function checkRunCommand(commandLine, session, roots, env) {
+  const { kind, memberName } = session;
+  const { realCwd, fallbackBaseDir, canonicalTempRoots } = roots;
+  for (const tokens of parseCommandSegments(commandLine)) {
+    const { cmd, args, inlineEnv } = unwrapCommandSegment(tokens);
+    if (cmd === "git") {
+      const { subcmd, subArgs, globalDirs } = parseGitCommand(args);
+      if (subcmd === "push") {
+        if (isForcePushToProtectedBranch(subArgs, globalDirs, realCwd || fallbackBaseDir)) {
+          return "Force-pushing to main or master is blocked across all swarm roles.";
+        }
+        if (kind === "readonly" || kind === "adversary" || kind === "sicko") {
+          return `Role '${kind}' (${memberName || kind}) is never permitted to run git push.`;
+        }
+        if (kind === "author" && inlineEnv.PSTACK_ALLOW_PUSH !== "1" && env.PSTACK_ALLOW_PUSH !== "1") {
+          return "Author workers cannot run git push without explicit PSTACK_ALLOW_PUSH=1 authorization.";
         }
       }
+      if (
+        kind === "readonly" &&
+        !isEffectiveGitDirInsideTemp(globalDirs, fallbackBaseDir, canonicalTempRoots, realCwd) &&
+        isMutatingGitActionForReadOnly(subcmd, subArgs)
+      ) {
+        return `Mutating git command 'git ${subcmd}' outside canonical temp roots is blocked for read-only workers.`;
+      }
+      if (kind === "sicko") {
+        let curBase = realCwd || fallbackBaseDir;
+        for (const entry of globalDirs) {
+          const resolved = resolveRealTargetPath(entry.dir, curBase);
+          if (!resolved || !realCwd || !isInsideOrEqual(resolved, realCwd)) {
+            return "Git command targeting a directory outside the confined worktree is blocked for comment-sicko workers.";
+          }
+          if (entry.flag === "-C") {
+            curBase = resolved;
+          }
+        }
+        if (SICKO_BLOCKED_GIT_SUBCOMMANDS.has(subcmd)) {
+          return `Git subcommand 'git ${subcmd}' is blocked for comment-sicko workers.`;
+        }
+      }
+    } else if (cmd === "gh" && (kind === "readonly" || kind === "adversary" || kind === "sicko") && isMutatingGhCommand(args)) {
+      return `Mutating gh command is blocked for '${kind}' workers.`;
     }
-  };
-  scanArgs(args);
-  if (typeof mergedEnv.NODE_OPTIONS === "string" && mergedEnv.NODE_OPTIONS.trim().length > 0) {
-    scanArgs(tokenizeSingleSegment(mergedEnv.NODE_OPTIONS));
-  }
-  return targets;
-}
-
-function findInterpreterScriptArg(cmd, args) {
-  const isNode = cmd === "node" || cmd === "nodejs" || cmd === "bun";
-  const isPy = /^python(?:\d+(?:\.\d+)?)?$/.test(cmd);
-  const isShell = ["sh", "bash", "zsh", "dash", "ksh"].includes(cmd);
-  const isPerlRuby = cmd === "perl" || cmd === "ruby";
-  if (!isNode && !isPy && !isShell && !isPerlRuby) return null;
-
-  const valueFlags = isNode
-    ? new Set(["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader", "--conditions", "-C"])
-    : isPy
-      ? new Set(["-c", "-m", "-W", "-X", "-Q"])
-      : isShell
-        ? new Set(["-c", "-o"])
-        : new Set(["-e", "-E", "-I", "-M", "-m", "-C"]);
-
-  let hasTestFlag = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") {
-      return i + 1 < args.length ? { scriptToken: args[i + 1], hasTestFlag } : null;
-    }
-    if (isNode && arg === "--test") {
-      hasTestFlag = true;
-      continue;
-    }
-    if (isNode && (arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print" || arg.startsWith("--eval=") || arg.startsWith("--print="))) {
-      return null;
-    }
-    if (isPy && (arg === "-c" || /^-[A-Za-z]+c$/.test(arg) || arg === "-m")) {
-      return null;
-    }
-    if (isShell && /^-[a-zA-Z]*c$/.test(arg)) {
-      return null;
-    }
-    if (isPerlRuby && (arg === "-e" || arg === "-E" || /^-[a-zA-Z.]*[eE]$/.test(arg))) {
-      return null;
-    }
-    if (arg.startsWith("-") && arg.length > 1) {
-      if (valueFlags.has(arg)) i += 1;
-      continue;
-    }
-    return { scriptToken: arg, hasTestFlag };
   }
   return null;
 }
 
-function inspectSingleTempFile(scriptToken, modeHint, context) {
-  const {
-    allowPath,
-    nodePyOptions,
-    canonicalTempRoots,
-    realCwd,
-    fallbackBaseDir,
-    mergedEnv,
-    outerEnv,
-    roleLabel,
-    kind,
-    validateShellCode,
-  } = context;
-
-  const resolved = resolveShellTargetPath(scriptToken, fallbackBaseDir, mergedEnv);
-  if (!resolved) return null;
-
-  const inTemp = isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
-    allowRootEqual: false,
-    excludeRealCwd: false,
-  });
-  if (!inTemp) return null;
-
-  if (kind === "sicko") {
-    return `Executing temporary script '${scriptToken}' is blocked for comment-sicko workers.`;
-  }
-
-  if (!existsSync(resolved)) {
-    return `Temporary script '${scriptToken}' must exist on disk before execution for ${roleLabel}.`;
-  }
-
-  let rawBuf;
+function readGitStatusPorcelain(dir) {
   try {
-    if (!statSync(resolved).isFile()) {
-      return `Temporary script '${scriptToken}' is not a readable file for ${roleLabel}.`;
-    }
-    rawBuf = readFileSync(resolved);
+    const stdout = execFileSync("git", ["-C", dir, "status", "--porcelain"], {
+      encoding: "utf8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const lines = String(stdout || "")
+      .split("\n")
+      .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+      .filter(Boolean);
+    return { ok: true, lines };
   } catch {
-    return `Temporary script '${scriptToken}' could not be read for ${roleLabel}.`;
+    return { ok: false, lines: [] };
   }
-
-  if (rawBuf.includes(0)) {
-    if (kind === "readonly" || kind === "sicko") {
-      return `Executing binary file '${scriptToken}' in canonical temp roots is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-
-  const code = rawBuf.toString("utf8");
-  const ext = extname(resolved).toLowerCase();
-  const firstLine = code.split(/\r?\n/, 1)[0] || "";
-  const isNode =
-    modeHint === "node" ||
-    [".js", ".mjs", ".cjs"].includes(ext) ||
-    /#!\s*\/.*\bnode\b/.test(firstLine);
-  const isPy =
-    modeHint === "python" ||
-    ext === ".py" ||
-    /#!\s*\/.*\bpython/.test(firstLine);
-  const isPerlRuby =
-    modeHint === "perl" ||
-    modeHint === "ruby" ||
-    ext === ".pl" ||
-    ext === ".rb" ||
-    /#!\s*\/.*\b(?:perl|ruby)\b/.test(firstLine);
-  const isShell =
-    modeHint === "shell" ||
-    [".sh", ".bash", ".zsh"].includes(ext) ||
-    /#!\s*\/.*\b(?:sh|bash|zsh|dash|ksh)\b/.test(firstLine);
-
-  if (isPerlRuby) {
-    if (kind === "readonly" || kind === "sicko") {
-      return `Executing temporary ${modeHint || "perl/ruby"} script '${scriptToken}' is blocked for ${roleLabel}.`;
-    }
-    return null;
-  }
-  if (isNode) {
-    return checkInlineNodeFs(code, allowPath, nodePyOptions);
-  }
-  if (isPy) {
-    return checkInlinePythonFs(code, allowPath, nodePyOptions);
-  }
-  if (isShell) {
-    return validateShellCode(code, mergedEnv, outerEnv);
-  }
-  return validateShellCode(code, mergedEnv, outerEnv);
-}
-
-function inspectTempScriptFile(inv, context) {
-  const { canonicalTempRoots, realCwd, fallbackBaseDir, mergedEnv, roleLabel, kind } = context;
-
-  if (inv.cmd === "node" || inv.cmd === "nodejs" || inv.cmd === "bun") {
-    for (const preloadTarget of extractNodePreloadTargets(inv.args, mergedEnv)) {
-      const preloadDeny = inspectSingleTempFile(preloadTarget, "node", context);
-      if (preloadDeny) return preloadDeny;
-    }
-  }
-
-  if (/^python(?:\d+(?:\.\d+)?)?$/.test(inv.cmd)) {
-    const mIdx = inv.args.indexOf("-m");
-    if (mIdx >= 0 && mIdx + 1 < inv.args.length && typeof mergedEnv.PYTHONPATH === "string") {
-      const modName = inv.args[mIdx + 1];
-      const modRel = modName.replace(/\./g, "/");
-      for (const pyRoot of mergedEnv.PYTHONPATH.split(/[:;]/).filter(Boolean)) {
-        const resolvedRoot = resolveShellTargetPath(pyRoot, fallbackBaseDir, mergedEnv);
-        if (
-          resolvedRoot &&
-          isInsideCanonicalTempRoots(resolvedRoot, canonicalTempRoots, realCwd, {
-            allowRootEqual: true,
-            excludeRealCwd: false,
-          })
-        ) {
-          if (kind === "sicko") {
-            return `Executing Python module '${modName}' from PYTHONPATH in canonical temp roots is blocked for ${roleLabel}.`;
-          }
-          const modFile = join(resolvedRoot, `${modRel}.py`);
-          const modInit = join(resolvedRoot, modRel, "__init__.py");
-          const candidate = existsSync(modFile) ? modFile : existsSync(modInit) ? modInit : null;
-          if (candidate) {
-            const modDeny = inspectSingleTempFile(candidate, "python", context);
-            if (modDeny) return modDeny;
-          } else if (kind === "readonly") {
-            return `Unresolvable Python module '${modName}' with PYTHONPATH in canonical temp roots is blocked for ${roleLabel}.`;
-          }
-        }
-      }
-    }
-  }
-
-  if (inv.cmd === "source" || inv.cmd === ".") {
-    const sourced = inv.args[0];
-    if (sourced) {
-      return inspectSingleTempFile(sourced, "shell", context);
-    }
-    return null;
-  }
-
-  let scriptToken = null;
-  let modeHint = "";
-  const interp = findInterpreterScriptArg(inv.cmd, inv.args);
-  if (interp) {
-    scriptToken = interp.scriptToken;
-    if (inv.cmd === "node" || inv.cmd === "nodejs" || inv.cmd === "bun") modeHint = "node";
-    else if (/^python/.test(inv.cmd)) modeHint = "python";
-    else if (inv.cmd === "perl" || inv.cmd === "ruby") modeHint = inv.cmd;
-    else modeHint = "shell";
-  } else if (inv.rawCmd && (inv.rawCmd.includes("/") || inv.rawCmd.startsWith(".") || inv.rawCmd.startsWith("~"))) {
-    scriptToken = inv.rawCmd;
-  }
-
-  if (!scriptToken) return null;
-  return inspectSingleTempFile(scriptToken, modeHint, context);
-}
-
-function extractInlineCodeCheck(inv, allowPath, nodePyOptions) {
-  const { cmd, args } = inv;
-  if (cmd === "node" || cmd === "nodejs" || cmd === "bun") {
-    for (let i = 0; i < args.length; i += 1) {
-      const arg = args[i];
-      if (arg === "--") break;
-      if ((arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") && i + 1 < args.length) {
-        const deny = checkInlineNodeFs(args[i + 1], allowPath, nodePyOptions);
-        if (deny) return deny;
-        i += 1;
-        continue;
-      }
-      if (arg.startsWith("--eval=")) {
-        const deny = checkInlineNodeFs(arg.slice("--eval=".length), allowPath, nodePyOptions);
-        if (deny) return deny;
-      } else if (arg.startsWith("--print=")) {
-        const deny = checkInlineNodeFs(arg.slice("--print=".length), allowPath, nodePyOptions);
-        if (deny) return deny;
-      }
-    }
-  }
-  if (/^python(?:\d+(?:\.\d+)?)?$/.test(cmd)) {
-    for (let i = 0; i < args.length; i += 1) {
-      const arg = args[i];
-      if (arg === "--" || arg === "-m") break;
-      if ((arg === "-c" || /^-[A-Za-z]+c$/.test(arg)) && i + 1 < args.length) {
-        const deny = checkInlinePythonFs(args[i + 1], allowPath, nodePyOptions);
-        if (deny) return deny;
-        break;
-      }
-      if (!arg.startsWith("-")) break;
-    }
-  }
-  return null;
-}
-
-function hasCpRecursiveOrArchiveFlag(args) {
-  for (const arg of args) {
-    if (arg === "--") break;
-    if (arg === "--recursive" || arg === "--archive" || arg.startsWith("--archive=")) {
-      return true;
-    }
-    if (!arg.startsWith("--") && /^-[A-Za-z]*[rRa]/.test(arg)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isMutatingReadOnlyInvocation(
-  inv,
-  allowReadOnlyTempPath,
-  validateInnerTokens,
-  checkReadOnlyCopySource = null,
-  registerReadOnlyMkdir = null,
-) {
-  const { cmd, args } = inv;
-  if (!cmd) return null;
-
-  if (HARD_BLOCKED_RO_FS_COMMANDS.has(cmd)) {
-    return `Filesystem mutation command '${cmd}' is blocked for read-only ro-* workers.`;
-  }
-
-  const sharedDeny = checkSharedTargetConfinement(inv, allowReadOnlyTempPath, "read-only ro-* workers", validateInnerTokens);
-  if (sharedDeny !== undefined) return sharedDeny;
-
-  if (cmd === "rm" || cmd === "unlink") {
-    const paths = extractPositionalPaths(args);
-    if (
-      paths.length === 0 ||
-      paths.some((p) => !allowReadOnlyTempPath(p, { allowRootEqual: false, allowDevNull: false }))
-    ) {
-      return `Filesystem command '${cmd}' outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.`;
-    }
-    return null;
-  }
-
-  if (cmd === "cp") {
-    const cpSpec = extractCpOrMvSpec(args);
-    const hasRecOrArchive = hasCpRecursiveOrArchiveFlag(args);
-    const validArtifactImageCopy =
-      !hasRecOrArchive &&
-      cpSpec.sources.length > 0 &&
-      cpSpec.sources.every((s) =>
-        checkReadOnlyCopySource ? checkReadOnlyCopySource(s) : /\.(?:png|jpe?g|webp)$/i.test(s),
-      );
-    if (
-      !cpSpec.valid ||
-      cpSpec.destinations.some(
-        (d) =>
-          !allowReadOnlyTempPath(d, {
-            allowRootEqual: true,
-            allowDevNull: true,
-            allowArtifactDir: validArtifactImageCopy,
-            allowArtifactRoot: validArtifactImageCopy,
-            forbidReadOnlyArtifact: !validArtifactImageCopy,
-          }),
-      )
-    ) {
-      return "Filesystem command 'cp' targeting paths outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
-    }
-    return null;
-  }
-
-  if (cmd === "mv") {
-    const mvSpec = extractCpOrMvSpec(args);
-    const validArtifactImageMove =
-      mvSpec.sources.length > 0 &&
-      mvSpec.sources.every((s) =>
-        checkReadOnlyCopySource ? checkReadOnlyCopySource(s) : /\.(?:png|jpe?g|webp)$/i.test(s),
-      );
-    if (
-      !mvSpec.valid ||
-      mvSpec.sources.some((s) => !allowReadOnlyTempPath(s, { allowRootEqual: false, allowDevNull: false })) ||
-      mvSpec.destinations.some(
-        (d) =>
-          !allowReadOnlyTempPath(d, {
-            allowRootEqual: true,
-            allowDevNull: false,
-            allowArtifactDir: validArtifactImageMove,
-            allowArtifactRoot: validArtifactImageMove,
-            forbidReadOnlyArtifact: !validArtifactImageMove,
-          }),
-      )
-    ) {
-      return "Filesystem command 'mv' outside canonical temp roots or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
-    }
-    return null;
-  }
-
-  if (cmd === "tee") {
-    const files = extractPositionalPaths(args);
-    if (files.some((f) => !allowReadOnlyTempPath(f, { allowRootEqual: false, allowDevNull: true }))) {
-      return "Command 'tee' targeting paths outside /dev/null, canonical temp roots, or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
-    }
-    return null;
-  }
-
-  if (cmd === "sed" && extractSedInPlaceTargets(args) !== null) {
-    return "In-place 'sed -i' is blocked for read-only ro-* workers.";
-  }
-
-  if ((cmd === "perl" || cmd === "ruby") && extractPerlRubyInPlaceTargets(args) !== null) {
-    return `In-place '${cmd} -i' is blocked for read-only ro-* workers.`;
-  }
-
-  const inlineDeny = extractInlineCodeCheck(inv, allowReadOnlyTempPath, {
-    allowDynamicPaths: false,
-    roleLabel: "read-only ro-* workers",
-    allowReadOnlyArtifactCopySource: checkReadOnlyCopySource,
-    registerReadOnlyMkdir,
-  });
-  if (inlineDeny) return inlineDeny;
-
-  if (cmd === "git") {
-    const { subcmd, subArgs } = parseGitCommand(args);
-    if (subcmd === "fetch" && isMutatingGitFetchForReadOnly(subArgs)) {
-      return "Mutating 'git fetch' with colon refspec or prune/force/update flags is blocked for read-only ro-* workers.";
-    }
-    if (isMutatingGitAction(subcmd, subArgs)) {
-      return `Mutating git command 'git ${subcmd}' is blocked for read-only ro-* workers.`;
-    }
-  }
-
-  if (cmd === "npm" || cmd === "pnpm" || cmd === "bun") {
-    const sub = args.find((a) => !a.startsWith("-")) || "";
-    if (NPM_INSTALL_SUBCOMMANDS.has(sub)) {
-      return `Package manager command '${cmd} ${sub}' is blocked for read-only ro-* workers.`;
-    }
-  }
-
-  if (cmd === "yarn") {
-    const sub = args.find((a) => !a.startsWith("-")) || "";
-    if (!sub || NPM_INSTALL_SUBCOMMANDS.has(sub) || sub === "upgrade") {
-      return `Package manager command 'yarn ${sub || "install"}' is blocked for read-only ro-* workers.`;
-    }
-  }
-
-  if (cmd === "pip" || cmd === "pip3") {
-    const sub = args.find((a) => !a.startsWith("-")) || "";
-    if (PIP_INSTALL_SUBCOMMANDS.has(sub)) {
-      return `Package install command '${cmd} ${sub}' is blocked for read-only ro-* workers.`;
-    }
-  }
-
-  if (cmd === "uv") {
-    const nonFlags = args.filter((a) => !a.startsWith("-"));
-    if (
-      ["add", "remove", "sync", "lock"].includes(nonFlags[0] || "") ||
-      (nonFlags[0] === "pip" && PIP_INSTALL_SUBCOMMANDS.has(nonFlags[1] || ""))
-    ) {
-      return "Package mutation via 'uv' is blocked for read-only ro-* workers.";
-    }
-  }
-
-  if ((cmd === "python" || cmd === "python3") && args[0] === "-m" && args[1] === "pip") {
-    const sub = args.slice(2).find((a) => !a.startsWith("-")) || "";
-    if (PIP_INSTALL_SUBCOMMANDS.has(sub)) {
-      return "Package install via 'python -m pip' is blocked for read-only ro-* workers.";
-    }
-  }
-
-  if (cmd === "cargo" || cmd === "go" || cmd === "brew" || cmd === "gem" || cmd === "poetry") {
-    const sub = args.find((a) => !a.startsWith("-")) || "";
-    if (["install", "uninstall", "add", "remove", "upgrade", "update", "get"].includes(sub)) {
-      return `Package command '${cmd} ${sub}' is blocked for read-only ro-* workers.`;
-    }
-  }
-
-  if (cmd === "apt" || cmd === "apt-get" || cmd === "apk") {
-    return `System package command '${cmd}' is blocked for read-only ro-* workers.`;
-  }
-
-  return null;
-}
-
-function checkAuthorShellConfinement(inv, allowAuthorShellPath, resolveForBase, validateInnerTokens) {
-  const { cmd, args } = inv;
-  if (!cmd) return null;
-
-  const sharedDeny = checkSharedTargetConfinement(
-    inv,
-    allowAuthorShellPath,
-    "confined worker worktree, artifact directory, or canonical temp roots",
-    validateInnerTokens,
-  );
-  if (sharedDeny !== undefined) return sharedDeny;
-
-  if (cmd === "cp") {
-    const cpSpec = extractCpOrMvSpec(args);
-    if (
-      !cpSpec.valid ||
-      cpSpec.destinations.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: true }))
-    ) {
-      return "Command 'cp' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-    }
-  }
-
-  if (cmd === "mv") {
-    const mvSpec = extractCpOrMvSpec(args);
-    if (
-      !mvSpec.valid ||
-      mvSpec.sources.some((s) => !allowAuthorShellPath(s, { allowRootEqual: false, allowDevNull: false })) ||
-      mvSpec.destinations.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: true }))
-    ) {
-      return "Command 'mv' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-    }
-  }
-
-  if (cmd === "ln") {
-    const lnSpec = extractLnSpec(args);
-    if (
-      !lnSpec.valid ||
-      lnSpec.linkPaths.some(
-        (l) => !allowAuthorShellPath(l, { allowRootEqual: true, allowDevNull: false, disallowArtifactRoot: true }),
-      )
-    ) {
-      return "Command 'ln' creating a link outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-    }
-    const resolvedLink = resolveForBase(lnSpec.linkPaths[0]);
-    const linkBaseDir = resolvedLink ? (lnSpec.linkIsDir ? resolvedLink : dirname(resolvedLink)) : null;
-    for (const src of lnSpec.sources) {
-      if (!lnSpec.isSymbolic) {
-        if (!allowAuthorShellPath(src, { allowRootEqual: false, allowDevNull: false, disallowArtifactRoot: true })) {
-          return "Command 'ln' hardlinking a source outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-        }
-      } else if (
-        linkBaseDir &&
-        !allowAuthorShellPath(src, {
-          allowRootEqual: true,
-          allowDevNull: false,
-          customBaseDir: linkBaseDir,
-          disallowArtifactRoot: true,
-        })
-      ) {
-        return "Command 'ln -s' pointing outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-      }
-    }
-  }
-
-  if (cmd === "rm" || cmd === "unlink" || cmd === "rmdir") {
-    const paths = extractPositionalPaths(args);
-    const hasRecursiveFlag =
-      cmd === "rm" &&
-      args.some((a) => a === "--recursive" || (/^-[A-Za-z]+$/.test(a) && /[rR]/.test(a)));
-    if (
-      paths.length === 0 ||
-      paths.some(
-        (p) =>
-          !allowAuthorShellPath(p, {
-            allowRootEqual: false,
-            allowDevNull: false,
-            isRecursiveDelete: hasRecursiveFlag,
-          }),
-      )
-    ) {
-      return `Command '${cmd}' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.`;
-    }
-  }
-
-  if (cmd === "patch") {
-    const patchSpec = extractPatchTargets(args);
-    if (
-      !patchSpec.valid ||
-      patchSpec.dirTargets.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: false })) ||
-      patchSpec.fileTargets.some((f) => !allowAuthorShellPath(f, { allowRootEqual: false, allowDevNull: true }))
-    ) {
-      return "Command 'patch' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-    }
-  }
-
-  if (cmd === "sed") {
-    const sedTargets = extractSedInPlaceTargets(args);
-    if (
-      sedTargets !== null &&
-      (sedTargets.length === 0 ||
-        sedTargets.some((t) => !allowAuthorShellPath(t, { allowRootEqual: false, allowDevNull: false })))
-    ) {
-      return "Command 'sed -i' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.";
-    }
-  }
-
-  if (cmd === "perl" || cmd === "ruby") {
-    const editTargets = extractPerlRubyInPlaceTargets(args);
-    if (
-      editTargets !== null &&
-      (editTargets.length === 0 ||
-        editTargets.some((t) => !allowAuthorShellPath(t, { allowRootEqual: false, allowDevNull: false })))
-    ) {
-      return `Command '${cmd} -i' targeting a path outside confined worker worktree, artifact directory, or canonical temp roots is blocked.`;
-    }
-  }
-
-  if (cmd === "tee") {
-    const files = extractPositionalPaths(args);
-    if (files.some((f) => !allowAuthorShellPath(f, { allowRootEqual: false, allowDevNull: true }))) {
-      return "Command 'tee' targeting a path outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.";
-    }
-  }
-
-  const inlineDeny = extractInlineCodeCheck(inv, allowAuthorShellPath, {
-    allowDynamicPaths: true,
-    roleLabel: "author/adversary workers",
-  });
-  if (inlineDeny) return inlineDeny;
-
-  if (cmd === "git") {
-    const { subcmd, subArgs, globalDirs } = parseGitCommand(args);
-    if (isMutatingGitAction(subcmd, subArgs) && globalDirs.some((d) => !allowAuthorShellPath(d, { allowRootEqual: true, allowDevNull: false }))) {
-      return `Mutating git command 'git ${subcmd}' targeting a repository outside confined worktree or canonical temp roots is blocked.`;
-    }
-  }
-
-  return null;
-}
-
-function checkSickoShellInvocation(inv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens) {
-  const { cmd, args } = inv;
-  if (!cmd) return null;
-
-  if (SICKO_BLOCKED_FS_COMMANDS.has(cmd)) {
-    return `Filesystem mutation command '${cmd}' is blocked for comment-sicko workers; use edit_file on existing files only.`;
-  }
-
-  if (cmd === "curl" || cmd === "wget" || cmd === "tar" || cmd === "unzip" || cmd === "rsync" || cmd === "find") {
-    const sharedDeny = checkSharedTargetConfinement(inv, allowSickoWritePath, "comment-sicko workers", validateInnerTokens);
-    if (sharedDeny) return sharedDeny;
-  }
-
-  if (cmd === "tee") {
-    const files = extractPositionalPaths(args);
-    if (files.some((f) => f !== "/dev/null")) {
-      return "Command 'tee' writing to files is blocked for comment-sicko workers.";
-    }
-  }
-
-  if (cmd === "sed" && extractSedInPlaceTargets(args) !== null) {
-    return "In-place 'sed -i' is blocked for comment-sicko workers; use edit_file only.";
-  }
-
-  if ((cmd === "perl" || cmd === "ruby") && extractPerlRubyInPlaceTargets(args) !== null) {
-    return `In-place '${cmd} -i' is blocked for comment-sicko workers; use edit_file only.`;
-  }
-
-  const inlineDeny = extractInlineCodeCheck(inv, allowSickoWritePath, {
-    allowDynamicPaths: false,
-    roleLabel: "comment-sicko workers",
-  });
-  if (inlineDeny) return inlineDeny;
-
-  if (cmd === "git") {
-    const { subcmd, subArgs, globalDirs } = parseGitCommand(args);
-    for (const dir of globalDirs) {
-      const resolved = resolveForBase(dir);
-      if (!resolved || !realCwd || !isInsideOrEqual(resolved, realCwd)) {
-        return "Git command targeting a directory outside the confined worktree is blocked for comment-sicko workers.";
-      }
-    }
-    if (subcmd !== "add" && subcmd !== "commit" && isMutatingGitAction(subcmd, subArgs)) {
-      return `Mutating or file-restoring git command 'git ${subcmd}' is blocked for comment-sicko workers.`;
-    }
-  }
-
-  return null;
-}
-
-function extractMcpToolName(toolName, args) {
-  if (toolName === "call_mcp_tool") {
-    return String(args.ToolName || args.toolName || args.name || "");
-  }
-  if (toolName.startsWith("mcp_")) {
-    return toolName.replace(/^mcp_[^_]+_/, "");
-  }
-  return "";
 }
 
 function handleSessionOrInvocation(payload, env) {
   if (isPluginDisabled(env)) {
     return {};
   }
-
-  const session = classifySession(payload, env, "");
-  if (session.sessionKind === "unmanaged" || !session.capsule) {
+  const session = classifySession(payload, env);
+  if (session.sessionKind === "unmanaged") {
     return {};
   }
-
-  const convKey = payload.conversationId || "__unknown__";
-  const injectedPath = join(session.cacheDir, "injected-capsules.json");
-  const injectedMap = session.injectedMap || readJsonObject(injectedPath);
-  const priorCapsule = injectedMap[convKey];
-  if (priorCapsule === session.capsule) {
+  const convKey = typeof payload.conversationId === "string" && payload.conversationId ? payload.conversationId : "__unknown__";
+  const nextState = { ...session.capsuleState };
+  let stateDirty = false;
+  if (
+    (session.kind === "readonly" || session.kind === "sicko") &&
+    nextState.baselineGitStatus === undefined &&
+    typeof payload.cwd === "string" &&
+    payload.cwd &&
+    existsSync(payload.cwd)
+  ) {
+    const gitStatus = readGitStatusPorcelain(realpathSync(payload.cwd));
+    if (gitStatus.ok) {
+      nextState.baselineGitStatus = gitStatus.lines;
+      stateDirty = true;
+    }
+  }
+  const capsuleAbsPath = session.capsule ? join(resolvePluginRoot(env), session.capsule) : "";
+  if (!session.capsule || nextState.capsule === session.capsule || !existsSync(capsuleAbsPath)) {
+    if (stateDirty) {
+      writeJsonAtomically(capsuleStatePath(session.cacheDir, convKey), nextState);
+    }
     return {};
   }
-
-  const pluginRoot = resolvePluginRoot(env);
-  const capsuleAbsPath = join(pluginRoot, session.capsule);
-  if (!existsSync(capsuleAbsPath)) {
-    return {};
-  }
-
-  const rawCapsuleText = readFileSync(capsuleAbsPath, "utf8");
-  const isUpgrade = typeof priorCapsule === "string" && priorCapsule.length > 0;
-  const hasForkCapsule =
-    !isUpgrade && transcriptContainsRoleCapsule(resolveOwnTranscriptPath(payload, session.appDataDir));
-  const capsuleText = isUpgrade || hasForkCapsule ? ROLE_OVERRIDE_NOTICE + rawCapsuleText : rawCapsuleText;
-
-  updateJsonKey(injectedPath, convKey, session.capsule);
-
+  const isUpgrade = typeof nextState.capsule === "string" && nextState.capsule.length > 0;
+  const hasForkCapsule = !isUpgrade && transcriptContainsRoleCapsule(resolveOwnTranscriptPath(payload, session.appDataDir));
+  nextState.capsule = session.capsule;
+  delete nextState.plainSwarm;
+  writeJsonAtomically(capsuleStatePath(session.cacheDir, convKey), nextState);
+  const prefix = isUpgrade || hasForkCapsule ? ROLE_OVERRIDE_NOTICE : "";
   return {
-    injectSteps: [
-      {
-        systemMessage: {
-          systemMessage: capsuleText,
-        },
-      },
-    ],
+    injectSteps: [{ systemMessage: { systemMessage: prefix + readFileSync(capsuleAbsPath, "utf8") } }],
   };
 }
 
-function parseToolArgs(rawArgs) {
-  if (!rawArgs) return {};
-  if (typeof rawArgs === "string") {
-    try {
-      const parsed = JSON.parse(rawArgs);
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof rawArgs === "object" ? rawArgs : {};
+function deny(reason) {
+  return { decision: "deny", reason };
 }
 
-function isSafeConversationId(id) {
-  return (
-    typeof id === "string" &&
-    id.length > 0 &&
-    !/[/\\]/.test(id) &&
-    id !== "." &&
-    id !== ".."
-  );
-}
-
-function resolveWorkerConfinementRoots(payload, env, appDataDir) {
-  const hasValidCwd =
-    typeof payload.cwd === "string" && payload.cwd.length > 0 && existsSync(payload.cwd);
-  const realCwd = hasValidCwd ? realpathSync(payload.cwd) : null;
-  const fallbackBaseDir = realCwd || process.cwd();
-  const rawArtifactDir =
-    typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath.length > 0
-      ? payload.artifactDirectoryPath
-      : typeof appDataDir === "string" && appDataDir.length > 0 && isSafeConversationId(payload.conversationId)
-        ? join(appDataDir, "brain", payload.conversationId)
-        : "";
-  const realArtifact =
-    rawArtifactDir.length > 0
-      ? existsSync(rawArtifactDir)
-        ? realpathSync(rawArtifactDir)
-        : resolveRealTargetPath(rawArtifactDir, fallbackBaseDir)
-      : null;
-  const canonicalTempRoots = getCanonicalTempRoots(env);
-  return { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots };
-}
-
-function hasUnsafeArtifactRelativePath(resolvedPath, realArtifact) {
-  if (!resolvedPath || !realArtifact || !isStrictlyInside(resolvedPath, realArtifact)) {
-    return false;
-  }
-  const rel = relative(realArtifact, resolvedPath);
-  if (rel.includes(".system_generated")) return true;
-  if ((rel.includes("{") || rel.includes("}")) && rel.includes("..")) return true;
-  const firstSeg = rel.split(/[\\/]/)[0] || "";
-  if (!firstSeg) return false;
-  if (/^[*?[{^]/.test(firstSeg)) return true;
-  if (/^[!+@]\(/.test(firstSeg)) return true;
-  if (firstSeg.includes("{") || firstSeg.includes("}")) return true;
-  if (firstSeg.startsWith(".") && /[*?[\]()]/.test(firstSeg)) return true;
-  return false;
-}
-
-function isSystemGeneratedArtifactPath(resolvedPath, realArtifact) {
-  if (!resolvedPath || !realArtifact) return false;
-  if (isInsideOrEqual(resolvedPath, join(realArtifact, ".system_generated"))) return true;
-  return hasUnsafeArtifactRelativePath(resolvedPath, realArtifact);
-}
-
-function isValidReadOnlyImageSourcePath(resolvedSrc, pendingMkdirs = null) {
-  if (!resolvedSrc) return false;
-  if (/[*?[\]{}]/.test(resolvedSrc)) return false;
-  if (pendingMkdirs && pendingMkdirs.has(resolvedSrc)) return false;
-  const leaf = basename(resolvedSrc);
-  if (!leaf || leaf.startsWith(".") || !/\.(?:png|jpe?g|webp)$/i.test(leaf)) {
-    return false;
-  }
-  try {
-    const st = lstatSync(resolvedSrc);
-    if (st.isDirectory() || st.isSymbolicLink()) return false;
-  } catch {}
-  return true;
-}
-
-function isCleanArtifactDirSegment(seg) {
-  return (
-    Boolean(seg) &&
-    !seg.startsWith(".") &&
-    extname(seg) === "" &&
-    !/[*?[\]{}()]/.test(seg)
-  );
-}
-
-function isAllowedReadOnlyArtifactPath(
-  resolvedPath,
-  realArtifact,
-  realCwd,
-  { allowDirectory = false, requireDirectory = false } = {},
-) {
-  if (!resolvedPath || !realArtifact) return false;
-  if (!isStrictlyInside(resolvedPath, realArtifact)) return false;
-  if (isSystemGeneratedArtifactPath(resolvedPath, realArtifact)) return false;
-  if (realCwd && isInsideOrEqual(resolvedPath, realCwd)) return false;
-
-  const rel = relative(realArtifact, resolvedPath);
-  const segments = rel.split(/[\\/]/).filter(Boolean);
-  if (segments.length === 0) return false;
-
-  if (requireDirectory) {
-    let cur = realArtifact;
-    for (const seg of segments) {
-      if (!isCleanArtifactDirSegment(seg)) return false;
-      cur = join(cur, seg);
-      try {
-        if (!lstatSync(cur).isDirectory()) return false;
-      } catch {}
-    }
-    return true;
-  }
-
-  let cur = realArtifact;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const seg = segments[i];
-    if (!isCleanArtifactDirSegment(seg)) return false;
-    cur = join(cur, seg);
-    try {
-      if (!lstatSync(cur).isDirectory()) return false;
-    } catch {}
-  }
-
-  const leaf = segments[segments.length - 1];
-  if (!leaf || leaf.startsWith(".") || leaf.includes("{") || leaf.includes("}")) {
-    return false;
-  }
-  let leafStat = null;
-  try {
-    leafStat = lstatSync(resolvedPath);
-  } catch {}
-  if (leafStat && leafStat.isSymbolicLink()) return false;
-  if (/\.(?:png|jpe?g|webp)$/i.test(leaf)) {
-    return !(leafStat && leafStat.isDirectory());
-  }
-  if (allowDirectory === true && isCleanArtifactDirSegment(leaf)) {
-    return !(leafStat && !leafStat.isDirectory());
-  }
-  return false;
-}
+const ALLOW = { decision: "allow" };
 
 function handlePreToolUse(payload, env) {
   if (isPluginDisabled(env)) {
-    return { decision: "allow" };
+    return ALLOW;
   }
-
-  const toolCall = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall : {};
-  const toolName = normalizeToolName(toolCall.name);
-  const args = parseToolArgs(toolCall.args);
-
-  const session = classifySession(payload, env, toolName);
+  const tc = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall : {};
+  const rawName = typeof tc.name === "string" ? tc.name : String(tc.name || "");
+  const toolName = rawName.startsWith("default_api:") ? rawName.slice(12) : rawName;
+  const args = (typeof tc.args === "string" ? parseJsonObjectSafe(tc.args) : tc.args) || {};
+  const session = classifySession(payload, env);
   if (session.sessionKind === "unmanaged") {
-    return { decision: "allow" };
+    return ALLOW;
   }
 
   if (LEGACY_SUBAGENT_TOOLS.has(toolName)) {
-    return {
-      decision: "deny",
-      reason: "Legacy subagent tools are disabled in Swarm-Centric Pstack v2. Use native swarm.",
-    };
+    const subType = String(args.TypeName ?? args.SubagentName ?? args.typeName ?? args.subagentName ?? "").trim().toLowerCase();
+    if (toolName === "invoke_subagent" && subType === "image-generator") {
+      return ALLOW;
+    }
+    return deny("Legacy subagent tools are disabled in Swarm-Centric Pstack v2. Use native swarm.");
   }
 
   const { kind, memberName } = session;
-  const { hasValidCwd, realCwd, fallbackBaseDir, realArtifact, canonicalTempRoots } =
-    resolveWorkerConfinementRoots(payload, env, session.appDataDir);
+  const hasValidCwd = typeof payload.cwd === "string" && payload.cwd.length > 0 && existsSync(payload.cwd);
+  const realCwd = hasValidCwd ? realpathSync(payload.cwd) : null;
+  const fallbackBaseDir = realCwd || process.cwd();
+  let rawArt = "";
+  if (typeof payload.artifactDirectoryPath === "string" && payload.artifactDirectoryPath) {
+    rawArt = payload.artifactDirectoryPath;
+  } else if (typeof session.appDataDir === "string" && session.appDataDir && isSafeConvId(payload.conversationId)) {
+    rawArt = join(session.appDataDir, "brain", payload.conversationId);
+  }
+  const realArtifact = rawArt
+    ? existsSync(rawArt)
+      ? realpathSync(rawArt)
+      : resolveRealTargetPath(rawArt, fallbackBaseDir)
+    : null;
+  const canonicalTempRoots = getCanonicalTempRoots(env);
 
-  if (kind === "readonly") {
-    if (toolName === "edit_file" || toolName === "write_file") {
-      const rawTarget = args.Path ?? args.path ?? args.TargetFile ?? args.targetFile ?? args.file_path ?? "";
-      if (typeof rawTarget !== "string" || rawTarget.length === 0) {
-        return {
-          decision: "deny",
-          reason: `Read-only worker (${memberName || "ro-*"}) cannot call ${toolName} without a valid temp path.`,
-        };
+  if (kind === "readonly" && (toolName === "call_mcp_tool" || toolName.startsWith("mcp_"))) {
+    let mcpName = "";
+    if (toolName === "call_mcp_tool") {
+      mcpName = String(args.ToolName || args.toolName || args.name || "");
+    } else {
+      const secondUnderscore = toolName.indexOf("_", 4);
+      mcpName = secondUnderscore > 4 ? toolName.slice(secondUnderscore + 1) : toolName.slice(4);
+    }
+    const segments = mcpName.toLowerCase().replaceAll("-", "_").split("_");
+    if (!SWARM_BOARD_TOOLS.has(mcpName) && segments.some((seg) => MUTATING_MCP_VERBS.has(seg))) {
+      return deny(`Mutating MCP tool '${mcpName}' is blocked for read-only workers.`);
+    }
+  }
+
+  if (toolName === "edit_file" || toolName === "write_file") {
+    const rawTarget = args.Path ?? args.path ?? args.TargetFile ?? args.targetFile ?? args.file_path ?? "";
+    if (kind === "readonly") {
+      if (toolName === "edit_file") {
+        return deny(`Read-only worker (${memberName || "ro-*"}) cannot call edit_file.`);
+      }
+      if (typeof rawTarget !== "string" || !rawTarget) {
+        return deny(`Read-only worker (${memberName || "ro-*"}) cannot call write_file without a valid path.`);
       }
       const realTarget = resolveRealTargetPath(rawTarget, fallbackBaseDir);
       if (!realTarget || isSystemGeneratedArtifactPath(realTarget, realArtifact)) {
-        return {
-          decision: "deny",
-          reason: `Read-only worker (${memberName || "ro-*"}) cannot call ${toolName} on protected or unresolvable path '${rawTarget}'.`,
-        };
+        return deny(`Read-only worker (${memberName || "ro-*"}) cannot write protected or unresolvable path '${rawTarget}'.`);
       }
       if (realArtifact && isInsideOrEqual(realTarget, realArtifact)) {
-        if (toolName === "write_file" && isAllowedReadOnlyArtifactPath(realTarget, realArtifact, realCwd)) {
-          return { decision: "allow" };
+        if (isAllowedReadOnlyArtifactImage(realTarget, realArtifact, realCwd)) {
+          return ALLOW;
         }
-        return {
-          decision: "deny",
-          reason: `Read-only worker (${memberName || "ro-*"}) can only write screenshot image files (.png, .jpg, .jpeg, .webp) via write_file inside its artifact directory.`,
-        };
+        return deny(`Read-only worker (${memberName || "ro-*"}) can only write screenshot images (.png, .jpg, .jpeg, .webp) inside its artifact directory.`);
       }
-      if (
-        !isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, {
-          allowRootEqual: false,
-          excludeRealCwd: true,
-        })
-      ) {
-        return {
-          decision: "deny",
-          reason: `Read-only worker (${memberName || "ro-*"}) can only call ${toolName} inside canonical temp roots.`,
-        };
+      if (isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, { excludeRealCwd: true })) {
+        return ALLOW;
       }
-      return { decision: "allow" };
+      return deny(`Read-only worker (${memberName || "ro-*"}) can only call write_file inside canonical temp roots.`);
     }
-
-    if (toolName === "run_command") {
-      const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-
-      const validateReadOnlyShell = (code, inheritedEnv = {}, outerEnv = env, depth = 0) => {
-        if (depth > 4) return "Nested shell script depth limit exceeded for read-only ro-* workers.";
-        const { invocations, redirectTargets } = collectInvocations(code, 0, inheritedEnv, outerEnv);
-        const pendingMkdirs = new Set();
-
-        const makeAllowInvTempPath = (mergedEnv) => (rawToken, opts = {}) => {
-          const {
-            allowRootEqual = false,
-            allowDevNull = false,
-            allowArtifactDir = false,
-            requireArtifactDir = false,
-            allowArtifactRoot = false,
-            forbidReadOnlyArtifact = false,
-            disallowArtifactRoot = false,
-            customBaseDir = null,
-          } = opts;
-          const resolved = resolveShellTargetPath(rawToken, customBaseDir || fallbackBaseDir, mergedEnv);
-          if (!resolved) return false;
-          if (allowDevNull && resolved === "/dev/null") return true;
-          if (isSystemGeneratedArtifactPath(resolved, realArtifact)) return false;
-          if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
-            if (forbidReadOnlyArtifact) return false;
-            if (resolved === realArtifact) {
-              return (
-                Boolean(allowArtifactRoot) &&
-                !disallowArtifactRoot &&
-                !(realCwd && isInsideOrEqual(resolved, realCwd))
-              );
-            }
-            return isAllowedReadOnlyArtifactPath(resolved, realArtifact, realCwd, {
-              allowDirectory: Boolean(allowArtifactDir),
-              requireDirectory: Boolean(requireArtifactDir),
-            });
-          }
-          return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
-            allowRootEqual,
-            excludeRealCwd: true,
-          });
-        };
-
-        const makeCheckReadOnlyCopySource = (mergedEnv) => (rawToken) => {
-          const resolvedSrc = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
-          return isValidReadOnlyImageSourcePath(resolvedSrc, pendingMkdirs);
-        };
-
-        for (const redirectTarget of redirectTargets) {
-          const mergedEnv = { ...outerEnv, ...redirectTarget.env };
-          if (!makeAllowInvTempPath(mergedEnv)(redirectTarget.target, { allowRootEqual: false, allowDevNull: true })) {
-            return "Output file redirection outside /dev/null, canonical temp roots, or allowed artifact screenshot paths is blocked for read-only ro-* workers.";
-          }
-        }
-
-        for (const inv of invocations) {
-          const mergedEnv = { ...outerEnv, ...inv.env };
-          const allowInvTempPath = makeAllowInvTempPath(mergedEnv);
-          const checkReadOnlyCopySource = makeCheckReadOnlyCopySource(mergedEnv);
-          const registerReadOnlyMkdir = (rawToken) => {
-            const resolvedDir = resolveShellTargetPath(rawToken, fallbackBaseDir, mergedEnv);
-            if (resolvedDir) pendingMkdirs.add(resolvedDir);
-          };
-          const validateInnerTokens = (innerTokens, searchRoots) => {
-            const innerInv = unwrapCommandSegment(innerTokens, inv.env, outerEnv);
-            if (!innerInv.cmd) return null;
-            const innerAllow = (rawToken, opts = {}) => {
-              if (rawToken === "{}" || rawToken.includes("{}")) {
-                return searchRoots.every((r) => allowInvTempPath(r, { allowRootEqual: true, allowDevNull: false }));
-              }
-              return allowInvTempPath(rawToken, opts);
-            };
-            const innerCopySourceCheck = (rawToken) => {
-              if (rawToken === "{}" || rawToken.includes("{}")) return false;
-              return checkReadOnlyCopySource(rawToken);
-            };
-            return isMutatingReadOnlyInvocation(
-              innerInv,
-              innerAllow,
-              validateInnerTokens,
-              innerCopySourceCheck,
-              registerReadOnlyMkdir,
-            );
-          };
-          const denyReason = isMutatingReadOnlyInvocation(
-            inv,
-            allowInvTempPath,
-            validateInnerTokens,
-            checkReadOnlyCopySource,
-            registerReadOnlyMkdir,
-          );
-          if (denyReason) return denyReason;
-
-          if (inv.cmd === "mkdir") {
-            for (const p of extractPathsSkippingValueFlags(inv.args, new Set(["-m", "--mode"]))) {
-              registerReadOnlyMkdir(p);
-            }
-          }
-
-          const scriptDeny = inspectTempScriptFile(inv, {
-            allowPath: allowInvTempPath,
-            nodePyOptions: {
-              allowDynamicPaths: false,
-              roleLabel: "read-only ro-* workers",
-              allowReadOnlyArtifactCopySource: checkReadOnlyCopySource,
-              registerReadOnlyMkdir,
-            },
-            canonicalTempRoots,
-            realCwd,
-            fallbackBaseDir,
-            mergedEnv,
-            outerEnv,
-            roleLabel: "read-only ro-* workers",
-            kind,
-            validateShellCode: (scriptCode, scriptEnv, baseOuterEnv) =>
-              validateReadOnlyShell(scriptCode, scriptEnv, baseOuterEnv, depth + 1),
-          });
-          if (scriptDeny) return scriptDeny;
-        }
-        return null;
-      };
-
-      const roDeny = validateReadOnlyShell(commandLine, {}, env, 0);
-      if (roDeny) {
-        return { decision: "deny", reason: roDeny };
+    if (kind === "sicko" && toolName === "write_file") {
+      return deny(`Comment-sicko worker (${memberName || "sicko-*"}) cannot call write_file; use edit_file on existing files only.`);
+    }
+    if (kind === "author" || kind === "adversary" || kind === "sicko") {
+      if (typeof rawTarget !== "string" || !rawTarget) {
+        return deny("Missing target file path.");
       }
-    }
-
-    if (toolName === "call_mcp_tool" || toolName.startsWith("mcp_")) {
-      const mcpToolName = extractMcpToolName(toolName, args);
-      if (!SWARM_BOARD_TOOLS.has(mcpToolName)) {
-        const normalized = mcpToolName.replace(/-/g, "_");
-        if (MUTATING_MCP_PATTERN.test(normalized)) {
-          return {
-            decision: "deny",
-            reason: `Mutating MCP tool '${mcpToolName}' is blocked for read-only ro-* workers.`,
-          };
-        }
+      if (!hasValidCwd || !realCwd) {
+        return deny("Missing or non-existent worker cwd for path confinement.");
       }
-    }
-  }
-
-  if (kind === "sicko" && toolName === "write_file") {
-    return {
-      decision: "deny",
-      reason: `Comment-sicko worker (${memberName || "sicko-*"}) cannot call write_file; use edit_file on existing files only.`,
-    };
-  }
-
-  if (
-    (kind === "author" || kind === "adversary" || kind === "sicko") &&
-    (toolName === "edit_file" || toolName === "write_file")
-  ) {
-    const rawTarget = args.Path ?? args.path ?? args.TargetFile ?? args.targetFile ?? args.file_path ?? "";
-    if (typeof rawTarget !== "string" || rawTarget.length === 0) {
-      return { decision: "deny", reason: "Missing target file path." };
-    }
-    if (!hasValidCwd || !realCwd) {
-      return { decision: "deny", reason: "Missing or non-existent worker cwd for path confinement." };
-    }
-
-    const realTarget = resolveRealTargetPath(rawTarget, realCwd);
-    if (!realTarget) {
-      return { decision: "deny", reason: "Target file path failed symlink resolution." };
-    }
-
-    if (isSystemGeneratedArtifactPath(realTarget, realArtifact)) {
-      return {
-        decision: "deny",
-        reason: `Path '${rawTarget}' inside protected '.system_generated' artifact metadata is blocked for worker '${memberName || kind}'.`,
-      };
-    }
-
-    const insideCwd = isStrictlyInside(realTarget, realCwd);
-    const insideArtifact = realArtifact ? isStrictlyInside(realTarget, realArtifact) : false;
-    const insideTemp =
-      kind === "author" || kind === "adversary"
-        ? isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd, {
-            allowRootEqual: false,
-            excludeRealCwd: false,
-          })
-        : false;
-
-    if (!insideCwd && !insideArtifact && !insideTemp) {
-      return {
-        decision: "deny",
-        reason: `Path '${rawTarget}' escapes confined worker worktree '${realCwd}'.`,
-      };
+      const realTarget = resolveRealTargetPath(rawTarget, realCwd);
+      if (!realTarget) {
+        return deny("Target file path failed symlink resolution.");
+      }
+      if (isSystemGeneratedArtifactPath(realTarget, realArtifact)) {
+        return deny(`Path '${rawTarget}' inside protected '.system_generated' artifact metadata is blocked.`);
+      }
+      const insideCwd = isStrictlyInside(realTarget, realCwd);
+      const insideArtifact = kind !== "sicko" && realArtifact ? isStrictlyInside(realTarget, realArtifact) : false;
+      const insideTemp = kind !== "sicko" && isInsideCanonicalTempRoots(realTarget, canonicalTempRoots, realCwd);
+      if (!insideCwd && !insideArtifact && !insideTemp) {
+        return deny(`Path '${rawTarget}' escapes confined worker worktree '${realCwd}'.`);
+      }
     }
   }
 
   if (toolName === "run_command") {
     const commandLine = String(args.CommandLine ?? args.command ?? args.commandLine ?? "");
-    const { invocations, redirectTargets } = collectInvocations(commandLine, 0, {}, env);
-
-    if (kind === "sicko") {
-      for (const redirectTarget of redirectTargets) {
-        if (redirectTarget.target !== "/dev/null") {
-          return {
-            decision: "deny",
-            reason:
-              "Shell file redirection outside /dev/null is blocked for comment-sicko workers; use edit_file on existing files only.",
-          };
-        }
-      }
-      const allowSickoWritePath = (_rawToken, opts = {}) => {
-        if (opts.allowDevNull && _rawToken === "/dev/null") return true;
-        return false;
-      };
-      for (const inv of invocations) {
-        const mergedEnv = { ...env, ...inv.env };
-        const resolveForBase = (rawToken) =>
-          resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
-        const validateInnerTokens = (innerTokens) => {
-          const innerInv = unwrapCommandSegment(innerTokens, inv.env, env);
-          if (!innerInv.cmd) return null;
-          return checkSickoShellInvocation(innerInv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens);
-        };
-        const sickoDeny = checkSickoShellInvocation(inv, allowSickoWritePath, resolveForBase, realCwd, validateInnerTokens);
-        if (sickoDeny) {
-          return { decision: "deny", reason: sickoDeny };
-        }
-        const scriptDeny = inspectTempScriptFile(inv, {
-          allowPath: allowSickoWritePath,
-          nodePyOptions: { allowDynamicPaths: false, roleLabel: "comment-sicko workers" },
-          canonicalTempRoots,
-          realCwd,
-          fallbackBaseDir,
-          mergedEnv,
-          outerEnv: env,
-          roleLabel: "comment-sicko workers",
-          kind,
-          validateShellCode: () => "Executing temporary shell script is blocked for comment-sicko workers.",
-        });
-        if (scriptDeny) {
-          return { decision: "deny", reason: scriptDeny };
-        }
-      }
-    }
-
-    if (kind === "author" || kind === "adversary") {
-      const checkConfinedShellPath = (rawToken, mergedEnv, opts = {}) => {
-        const {
-          allowRootEqual = false,
-          allowDevNull = false,
-          customBaseDir = null,
-          isRecursiveDelete = false,
-          disallowArtifactRoot = false,
-        } = opts;
-        const activeBase = customBaseDir || realCwd;
-        if (!activeBase && !isAbsolute(rawToken) && !rawToken.startsWith("~") && !rawToken.startsWith("$")) {
-          return false;
-        }
-        const resolved = resolveShellTargetPath(rawToken, activeBase || fallbackBaseDir, mergedEnv);
-        if (!resolved) return false;
-        if (allowDevNull && resolved === "/dev/null") return true;
-        if (isSystemGeneratedArtifactPath(resolved, realArtifact)) return false;
-        if (
-          isRecursiveDelete &&
-          realArtifact &&
-          isInsideOrEqual(join(realArtifact, ".system_generated"), resolved)
-        ) {
-          return false;
-        }
-        if (realCwd && (allowRootEqual ? isInsideOrEqual(resolved, realCwd) : isStrictlyInside(resolved, realCwd))) {
-          return true;
-        }
-        if (realArtifact && isInsideOrEqual(resolved, realArtifact)) {
-          return allowRootEqual && !disallowArtifactRoot ? true : isStrictlyInside(resolved, realArtifact);
-        }
-        return isInsideCanonicalTempRoots(resolved, canonicalTempRoots, realCwd, {
-          allowRootEqual,
-          excludeRealCwd: false,
-        });
-      };
-
-      const validateAuthorShell = (code, inheritedEnv = {}, outerEnv = env, depth = 0) => {
-        if (depth > 4) return "Nested shell script depth limit exceeded.";
-        const shellData = depth === 0 ? { invocations, redirectTargets } : collectInvocations(code, 0, inheritedEnv, outerEnv);
-
-        for (const redirectTarget of shellData.redirectTargets) {
-          const mergedEnv = { ...outerEnv, ...redirectTarget.env };
-          if (!checkConfinedShellPath(redirectTarget.target, mergedEnv, { allowRootEqual: false, allowDevNull: true })) {
-            return "Shell output redirection outside confined worker worktree, artifact directory, /dev/null, or canonical temp roots is blocked.";
-          }
-        }
-
-        for (const inv of shellData.invocations) {
-          const mergedEnv = { ...outerEnv, ...inv.env };
-          const allowInvPath = (rawToken, opts = {}) => checkConfinedShellPath(rawToken, mergedEnv, opts);
-          const resolveForBase = (rawToken) =>
-            resolveShellTargetPath(rawToken, realCwd || fallbackBaseDir, mergedEnv);
-          const validateInnerTokens = (innerTokens, searchRoots) => {
-            const innerInv = unwrapCommandSegment(innerTokens, inv.env, outerEnv);
-            if (!innerInv.cmd) return null;
-            const innerAllow = (rawToken, opts = {}) => {
-              if (rawToken === "{}" || rawToken.includes("{}")) {
-                return searchRoots.every((r) => allowInvPath(r, { allowRootEqual: true, allowDevNull: false }));
-              }
-              return allowInvPath(rawToken, opts);
-            };
-            return checkAuthorShellConfinement(innerInv, innerAllow, resolveForBase, validateInnerTokens);
-          };
-          const authorDeny = checkAuthorShellConfinement(inv, allowInvPath, resolveForBase, validateInnerTokens);
-          if (authorDeny) return authorDeny;
-
-          const scriptDeny = inspectTempScriptFile(inv, {
-            allowPath: allowInvPath,
-            nodePyOptions: { allowDynamicPaths: true, roleLabel: "author/adversary workers" },
-            canonicalTempRoots,
-            realCwd,
-            fallbackBaseDir,
-            mergedEnv,
-            outerEnv,
-            roleLabel: "author/adversary workers",
-            kind,
-            validateShellCode: (scriptCode, scriptEnv, baseOuterEnv) =>
-              validateAuthorShell(scriptCode, scriptEnv, baseOuterEnv, depth + 1),
-          });
-          if (scriptDeny) return scriptDeny;
-        }
-        return null;
-      };
-
-      const authorDeny = validateAuthorShell(commandLine, {}, env, 0);
-      if (authorDeny) {
-        return { decision: "deny", reason: authorDeny };
-      }
-    }
-
-    for (const inv of invocations) {
-      if (inv.cmd !== "git") continue;
-      const { subcmd, subArgs } = parseGitCommand(inv.args);
-      if (subcmd !== "push") continue;
-
-      if (isForcePushToProtectedBranch(subArgs)) {
-        return {
-          decision: "deny",
-          reason: "Force-pushing to main or master is blocked across all swarm roles.",
-        };
-      }
-
-      if (kind === "adversary" || kind === "sicko") {
-        return {
-          decision: "deny",
-          reason: `Role '${kind}' (${memberName}) is never permitted to run git push.`,
-        };
-      }
-
-      if (kind === "author") {
-        const allowPush =
-          inv.env.PSTACK_ALLOW_PUSH === "1" ||
-          env.PSTACK_ALLOW_PUSH === "1";
-        if (!allowPush) {
-          return {
-            decision: "deny",
-            reason:
-              "Author workers cannot run git push without explicit PSTACK_ALLOW_PUSH=1 authorization.",
-          };
-        }
-      }
+    const reason = checkRunCommand(commandLine, session, { realCwd, fallbackBaseDir, canonicalTempRoots }, env);
+    if (reason) {
+      return deny(reason);
     }
   }
-
-  return { decision: "allow" };
+  return ALLOW;
 }
 
-function main() {
-  let rawInput = "";
-  try {
-    rawInput = readFileSync(0, "utf8");
-  } catch {
-    rawInput = "";
+function handleStop(payload, env) {
+  if (isPluginDisabled(env) || payload.continuationActive) {
+    return {};
   }
+  if (payload.terminationReason && payload.terminationReason !== "NO_TOOL_CALL") {
+    return {};
+  }
+  const session = classifySession(payload, env);
+  if (session.sessionKind === "unmanaged" || (session.kind !== "readonly" && session.kind !== "sicko")) {
+    return {};
+  }
+  if (typeof payload.cwd !== "string" || !payload.cwd || !existsSync(payload.cwd)) {
+    return {};
+  }
+  const realCwd = realpathSync(payload.cwd);
+  if (session.kind === "readonly" && isInsideCanonicalTempRoots(realCwd, getCanonicalTempRoots(env), realCwd, { allowRootEqual: true })) {
+    return {};
+  }
+  const gitStatus = readGitStatusPorcelain(realCwd);
+  if (!gitStatus.ok) {
+    return {};
+  }
+  const baseline = new Set(Array.isArray(session.capsuleState?.baselineGitStatus) ? session.capsuleState.baselineGitStatus : []);
+  const unexpected = gitStatus.lines.filter((line) => {
+    if (baseline.has(line)) {
+      return false;
+    }
+    if (session.kind === "readonly") {
+      return true;
+    }
+    return line.startsWith("?? ") || (line.length >= 2 && (line[0] === "D" || line[1] === "D"));
+  });
+  if (unexpected.length === 0) {
+    return {};
+  }
+  const paths = unexpected.map((l) => (l.length > 3 ? l.slice(3) : l)).join(", ");
+  return {
+    decision: "continue",
+    reason:
+      session.kind === "readonly"
+        ? `Read-only worker left unexpected git changes or untracked files: ${paths}. Clean them up before stopping.`
+        : `Comment-sicko worker left unexpected untracked or deleted git entries: ${paths}. Clean them up before stopping.`,
+  };
+}
 
-  if (
-    typeof process.env.PSTACK_PLUGIN_ROOT === "string" &&
-    process.env.PSTACK_PLUGIN_ROOT.length > 0 &&
-    process.env.PSTACK_GUARD_DELEGATED !== "1"
-  ) {
-    const targetGuard = join(process.env.PSTACK_PLUGIN_ROOT, "hooks", "guard.mjs");
+export function runGuard(payload, env = process.env) {
+  const safePayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const eventName = String(safePayload.hookEventName || "");
+  if (eventName === "SessionStart" || eventName === "PreInvocation") {
+    return handleSessionOrInvocation(safePayload, env);
+  }
+  if (eventName === "Stop") {
+    return handleStop(safePayload, env);
+  }
+  if (eventName === "PreToolUse" || safePayload.toolCall) {
+    return handlePreToolUse(safePayload, env);
+  }
+  return {};
+}
+
+export async function handleRawStdin(rawInput, env = process.env) {
+  if (typeof env.PSTACK_PLUGIN_ROOT === "string" && env.PSTACK_PLUGIN_ROOT && env.PSTACK_GUARD_DELEGATED !== "1") {
+    const targetGuard = join(env.PSTACK_PLUGIN_ROOT, "hooks", "guard.mjs");
     if (existsSync(targetGuard)) {
       let selfReal = null;
       let targetReal = null;
@@ -7068,39 +1801,31 @@ function main() {
         targetReal = realpathSync(targetGuard);
       } catch {}
       if (selfReal && targetReal && selfReal !== targetReal) {
-        const delegatedOut = execFileSync(process.execPath, [targetReal], {
-          input: rawInput,
-          env: { ...process.env, PSTACK_GUARD_DELEGATED: "1" },
-          encoding: "utf8",
-        });
-        process.stdout.write(delegatedOut);
-        return;
+        const delegatedEnv = { ...env, PSTACK_GUARD_DELEGATED: "1" };
+        const mod = await import(pathToFileURL(targetReal).href);
+        if (typeof mod.handleRawStdin === "function") {
+          return await mod.handleRawStdin(rawInput, delegatedEnv);
+        }
+        if (typeof mod.runGuard === "function") {
+          return `${JSON.stringify(await mod.runGuard(parseJsonObjectSafe(rawInput) || {}, delegatedEnv))}\n`;
+        }
       }
     }
   }
-
-  let payload = {};
-  if (rawInput.trim().length > 0) {
-    try {
-      const parsed = JSON.parse(rawInput);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        payload = parsed;
-      }
-    } catch {
-      payload = {};
-    }
-  }
-
-  const eventName = String(payload.hookEventName || "");
-  let output = {};
-
-  if (eventName === "SessionStart" || eventName === "PreInvocation") {
-    output = handleSessionOrInvocation(payload, process.env);
-  } else if (eventName === "PreToolUse" || payload.toolCall) {
-    output = handlePreToolUse(payload, process.env);
-  }
-
-  process.stdout.write(JSON.stringify(output) + "\n");
+  return `${JSON.stringify(runGuard(parseJsonObjectSafe(rawInput) || {}, env))}\n`;
 }
 
-main();
+let isMain = false;
+try {
+  isMain = Boolean(
+    process.argv[1] &&
+      realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url)),
+  );
+} catch {}
+if (isMain) {
+  let rawInput = "";
+  try {
+    rawInput = readFileSync(0, "utf8");
+  } catch {}
+  process.stdout.write(await handleRawStdin(rawInput, process.env));
+}

@@ -35,6 +35,13 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./hooks/guard.mjs",
+        "timeout": 10
+      }
     ]
   }
 }
