@@ -54,7 +54,11 @@ When returning to a long-running swarm or resuming work from earlier in the week
 
 Parallel `ro-*` gatherers inspect `board.jsonl` `#seq` deltas, `members.json` roster state (plus `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` is active in Antigravity 2.0), prior `<appDataDir>/brain/*/.system_generated/swarm/` boards, `git log`, and open `gh pr` status without mutating anything. Every item waiting on your decision comes back with options, `#seq` evidence, and risk so you can decide from the briefing alone.
 
-Pass `--plain` when you want a zero-jargon human summary of a dense technical thread, or `--video` when you want a short subtitled slide walkthrough of what changed:
+Run [`/bro`](../../skills/bro/SKILL.md) (`/agy-pstack-next:bro`) to restate the previous message in plain everyday words, pass `--plain` to `/ketchup` for a zero-jargon catch-up summary, or pass `--video` for a short subtitled slide walkthrough of what changed:
+
+```text
+/agy-pstack-next:bro
+```
 
 ```text
 /agy-pstack-next:ketchup --plain

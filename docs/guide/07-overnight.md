@@ -57,7 +57,7 @@ When you return in the morning, run [`/ketchup`](../../skills/ketchup/SKILL.md) 
 /agy-pstack-next:ketchup
 ```
 
-`/ketchup` inspects `board.jsonl` `#seq` checkpoints, `members.json` (plus optional `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` runs), `git log`, and any open PRs in parallel across `ro-*` workers. It summarizes what landed, shows captured screenshots or metrics, and lists any decisions or blockers waiting on your call with `#seq` evidence pointers. Add `--plain` for a quick zero-jargon read on your phone, or `--video` for a short subtitled slide recap.
+`/ketchup` inspects `board.jsonl` `#seq` checkpoints, `members.json` (plus optional `<appDataDir>/brain/<narrator-conversation-id>/swarm_view/view.json` when `narrator` runs), `git log`, and any open PRs in parallel across `ro-*` workers. It summarizes what landed, shows captured screenshots or metrics, and lists any decisions or blockers waiting on your call with `#seq` evidence pointers. Add `--plain` for a quick zero-jargon read on your phone, or `--video` for a short subtitled slide recap. To restate any dense reply in plain everyday words, run [`/bro`](../../skills/bro/SKILL.md) (`/agy-pstack-next:bro`).
 
 ## Scale across multi-area programs
 

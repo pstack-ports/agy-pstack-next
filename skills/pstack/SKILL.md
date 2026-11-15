@@ -96,6 +96,7 @@ Route specialized sub-workflows directly to their sibling skills:
 | `/interrogate` | [../interrogate/SKILL.md](../interrogate/SKILL.md) | Adversarial `adv-*` exploit reproduction and `ro-blast` transitive caller, schema, and rollout blast-radius mapping |
 | `/reflect` | [../reflect/SKILL.md](../reflect/SKILL.md) | Post-mortems, mid-session correction capture, and mining `transcript.jsonl` + `board.jsonl` to encode lessons in hooks, capsules, or tests |
 | `/ketchup` | [../ketchup/SKILL.md](../ketchup/SKILL.md) | Live swarm board, transcript, git, and PR catch-up briefings in standard, `--plain`, or `--video` formats |
+| `/bro` | [../bro/SKILL.md](../bro/SKILL.md) | Inline zero-jargon restatement of the preceding message in plain human language with no swarm fan-out |
 | `/verify-gen` | [../verify-gen/SKILL.md](../verify-gen/SKILL.md) | Author and maintain (`--maintain`) behavioral E2E verification skills and formal property/state-machine (`--formal`) suites |
 | `/control-ui` | [../control-ui/SKILL.md](../control-ui/SKILL.md) | Drive and inspect web, IDE, and Electron UIs with isolated ephemeral ports and per-worker browser `--user-data-dir` profiles |
 | `/control-cli` | [../control-cli/SKILL.md](../control-cli/SKILL.md) | Drive interactive CLIs and TUIs with isolated PTY sessions, temp state directories, and clean environment overrides |

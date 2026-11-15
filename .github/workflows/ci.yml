@@ -152,8 +152,8 @@ jobs:
               .map((d) => d.name)
               .sort();
 
-            if (expectedSkills.length !== 13) {
-              fail(`Expected 13 skills, found ${expectedSkills.length}: ${expectedSkills.join(", ")}`);
+            if (expectedSkills.length !== 14) {
+              fail(`Expected 14 skills, found ${expectedSkills.length}: ${expectedSkills.join(", ")}`);
             }
 
             for (const dir of expectedSkills) {
