@@ -175,7 +175,7 @@ Inspect the workspace for an existing `verify-*` skill or automated E2E harness.
 
 Answer help questions concisely. Recommend the single best v2 skill or `/pstack` topology, explain why in two sentences, and include one copyable prompt in a code block adapted from [`references/recipes.md`](references/recipes.md) and [`references/prompting.md`](references/prompting.md). Prefix plugin slash commands in CLI prompts with `/agy-pstack-next:<skill>` (for example `/agy-pstack-next:pstack`), while leaving built-in Antigravity commands such as `/goal` and `/schedule` unprefixed. Provide a link to [`../../README.md`](../../README.md) or the matching chapter in `docs/guide/`.
 
-### The 13 pstack v2 skills
+### The 14 pstack v2 skills
 
 In the `agy` CLI (`1.5.8+`), invoke any plugin skill as `/agy-pstack-next:<skill>` (shown concisely as `/<skill>` in the table below).
 
@@ -188,6 +188,7 @@ In the `agy` CLI (`1.5.8+`), invoke any plugin skill as `/agy-pstack-next:<skill
 | Break a diff or design with executable exploits (`adv-*`) and prove transitive caller, schema, and rollout safety (`ro-blast`) | [`/interrogate`](../interrogate/SKILL.md) |
 | Mine transcripts and swarm boards for post-mortems, eliminate repeated repo mistakes structurally, or sharpen a draft prompt | [`/reflect`](../reflect/SKILL.md) |
 | Catch up since your last message (`standard`), in zero-jargon speech (`--plain`), as a subtitled slide video (`--video`), or across recent sessions (`--recall`) | [`/ketchup`](../ketchup/SKILL.md) |
+| Restate the last message directly in plain human language with zero jargon | [`/bro`](../bro/SKILL.md) |
 | Create or `--maintain` behavioral E2E verification skills and `--formal` property or TLA+ verification skills | [`/verify-gen`](../verify-gen/SKILL.md) |
 | Drive and inspect web, IDE, or Electron UIs with worker-isolated ports and browser profiles | [`/control-ui`](../control-ui/SKILL.md) |
 | Drive, inspect, and profile interactive CLIs and TUIs in isolated PTY harnesses | [`/control-cli`](../control-cli/SKILL.md) |

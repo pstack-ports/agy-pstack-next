@@ -62,7 +62,7 @@ Write in plain spoken English like one teammate catching up another. Say "the te
 
 ### 2. Zero-jargon restatement (`/ketchup --plain`)
 
-Restate the preceding message (or active catch-up) in clear, everyday human language with zero engineering jargon:
+Restate the active catch-up or preceding message in clear, everyday human language with zero engineering jargon. Use [`/bro`](../bro/SKILL.md) (`/agy-pstack-next:bro`) as the standalone direct shortcut when you only want to restate the preceding message:
 
 - Replace internal mechanics, type names, protocol acronyms, and tool names with what actually happens and why it matters.
 - Keep sentences short, direct, and concrete. If a technical detail needs two paragraphs of backstory and changes no human decision, drop it.

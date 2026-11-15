@@ -91,7 +91,7 @@ Author pushes use `PSTACK_ALLOW_PUSH=1` only because you asked to open and updat
 /goal keep going until done or genuinely blocked.
 ```
 
-## Catch up in seconds (`ketchup`)
+## Catch up in seconds (`ketchup` and `bro`)
 
 ```text
 /agy-pstack-next:ketchup
@@ -102,10 +102,14 @@ Author pushes use `PSTACK_ALLOW_PUSH=1` only because you asked to open and updat
 ```
 
 ```text
+/agy-pstack-next:bro
+```
+
+```text
 /agy-pstack-next:ketchup --video
 ```
 
-Get a structured `#seq` delta briefing, a zero-jargon plain-language summary, or a subtitled slide walkthrough without interrupting running workers.
+Get a structured `#seq` delta briefing, a zero-jargon catch-up or plain-language restatement of the last message, or a subtitled slide walkthrough without interrupting running workers.
 
 ## Encode repeated corrections into structure (`reflect`)
 

@@ -70,9 +70,9 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 - **Board `#seq` citations and doorbell `@mentions`.** Workers cite earlier findings by `#seq` number instead of re-quoting logs and `@mention` only the specific peer who acts next.
 - **Live quota hot-swap.** If a worker hits rate limits or low quota, `swarm{action: "model"}` switches its model in place while preserving its conversation history and worktree.
 
-## The 13 Skills
+## The 14 Skills
 
-`/pstack` orchestrates most end-to-end tasks automatically and composes with the other 12 skills whenever you want a focused workflow directly.
+`/pstack` orchestrates most end-to-end tasks automatically and composes with the other 13 skills whenever you want a focused workflow directly.
 
 | Skill | Purpose |
 |---|---|
@@ -83,6 +83,7 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 | [`/interrogate`](./skills/interrogate/SKILL.md) | Adversarial bug hunting (`adv-*` executable repros) combined with transitive caller, schema, and rollout blast-radius mapping (`ro-blast`), gated by `ro-verify`. |
 | [`/reflect`](./skills/reflect/SKILL.md) | Post-mortem, user-correction mining, and structural tightening across transcripts and `board.jsonl`, encoding fixes into hooks, capsules, types, lints, tests, or skills. |
 | [`/ketchup`](./skills/ketchup/SKILL.md) | Catch-up briefings across `board.jsonl` `#seq` deltas, `members.json`, Swarm UI Overview `plan.json`, optional narrator `view.json`, prior sessions, `git log`, and PR status in standard, `--plain`, and `--video` formats. |
+| [`/bro`](./skills/bro/SKILL.md) | Inline zero-jargon restatement of the preceding message in plain human language with no acronyms, file paths, or commit hashes. |
 | [`/verify-gen`](./skills/verify-gen/SKILL.md) | Create and `--maintain` project-local behavioral E2E verification skills (`features/` maps) and `--formal` invariant or TLA+ verification skills, proven live by `ro-verify`. |
 | [`/control-ui`](./skills/control-ui/SKILL.md) | Local Playwright, browser, and CDP harness craft with per-worker ephemeral ports and isolated `--user-data-dir` profiles so parallel swarm workers never collide. |
 | [`/control-cli`](./skills/control-cli/SKILL.md) | Local `tmux`, PTY, and runtime-inspector harness craft with isolated sockets, temp home directories, and deterministic terminal dimensions per worker. |

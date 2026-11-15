@@ -10,7 +10,7 @@ Install the plugin from the terminal with the `agy` CLI (`1.5.8+`):
 agy plugin install https://github.com/pstack-ports/agy-pstack-next
 ```
 
-Installing registers root [`hooks.json`](../../hooks.json), [`hooks/guard.mjs`](../../hooks/guard.mjs), the four role capsules under `roles/`, and all 13 skills automatically.
+Installing registers root [`hooks.json`](../../hooks.json), [`hooks/guard.mjs`](../../hooks/guard.mjs), the four role capsules under `roles/`, and all 14 skills automatically.
 
 In the `agy` CLI (`1.5.8+`), installed plugin slash commands use the `/agy-pstack-next:<skill>` namespace (for example `/agy-pstack-next:setup-pstack` and `/agy-pstack-next:pstack`). Drop the `agy-pstack-next:` prefix only when a skill is installed standalone under `.agents/skills/` or `~/.gemini/config/skills/`. Built-in Antigravity commands such as `/goal` and `/schedule` always stay unprefixed. Throughout this guide, prose refers to skills concisely as `/<skill>`, while copy-ready prompt blocks include `/agy-pstack-next:<skill>` so they paste cleanly into `agy`.
 

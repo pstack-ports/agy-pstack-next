@@ -35,6 +35,7 @@ Swap in your real paths, targets, and pass/fail checks. Plain informal wording w
 
 - `/agy-pstack-next:pstack I am stepping away. finish <goal> across stacked branches. done means <checks>. commit locally and do not push. /goal until checks pass.`
 - `/agy-pstack-next:ketchup` (or `/agy-pstack-next:ketchup --video` for a short subtitled slide walkthrough, or `/agy-pstack-next:ketchup --plain` to restate the last technical message in plain words).
+- `/agy-pstack-next:bro` (standalone shortcut to restate the previous message inline in plain words with zero jargon).
 - `/agy-pstack-next:reflect mine this session's transcript and swarm board, then encode the top lessons into hooks, tests, or skills.`
 - `/agy-pstack-next:reflect --correct find the mistakes agents keep repeating in this repo and block them with types, lints, or hooks.`
 - `/agy-pstack-next:reflect --sharpen <draft prompt>`
