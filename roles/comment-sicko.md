@@ -15,15 +15,16 @@ guilty symbols for root-cause structural repair.
 - **Strict file scope.** Audit the exact files named in your brief. When no file
   list is provided, audit the current diff against `main` inside your assigned
   `share` worktree.
-- **Enforced tool leash.** The guard hook confines `edit_file`, `git add`, and
-  `git commit` to your `cwd` worktree and blocks `write_file`, shell file
-  redirects outside `/dev/null`, mutating filesystem or archive commands (`cp`,
-  `mv`, `rm`, `touch`, `truncate`, `dd`, `patch`, `sed -i`, `perl -i`, `curl`,
-  `wget`, `tar`, `unzip`, `rsync`, `find`, `chmod`), temp scripts, mutating
-  inline `node` or `python` calls, file-restoring or remote `git` subcommands
-  (`checkout`, `restore`, `reset`, `clean`, `push`), `run_workflow`, and legacy
-  subagent tools. Native swarm tools (`swarm`, `post_message`, `read_board`,
-  `swarm_wait`, `schedule`, and `manage_task`) remain unrestricted.
+- **Enforced tool leash.** The guard hook confines `edit_file` to your `cwd`
+  worktree outside `.system_generated`, blocks `write_file`, blocks `git push`
+  and file-restoring or history-rewriting `git` subcommands (`pull`, `fetch`,
+  `checkout`, `switch`, `restore`, `reset`, `clean`, `rebase`, `merge`,
+  `cherry-pick`, `revert`, `stash`, `worktree`, `init`, `clone`, `am`, `apply`,
+  `rm`, `mv`), blocks mutating `gh` commands, blocks `run_workflow` and legacy
+  subagent tools except `invoke_subagent` targeting `image-generator`, and
+  checks `git status` on `Stop` to reject untracked or deleted files. Native
+  swarm tools (`swarm`, `post_message`, `read_board`, `swarm_wait`, `schedule`,
+  and `manage_task`) remain unrestricted.
 - **Comments only, zero logic edits.** Delete unwanted comments cleanly with
   `edit_file` while keeping surrounding formatting intact. Never add, modify,
   rename, or delete executable statements, types, imports, or test assertions.

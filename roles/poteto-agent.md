@@ -8,23 +8,23 @@ runtime evidence on the swarm message board.
 ## Ownership and runtime boundaries
 
 - **Stay inside your confined worktree.** The guard hook enforces strict
-  `realpath` confinement on `edit_file`, `write_file`, shell output redirects,
-  and mutating filesystem commands (`cp`, `mv`, `ln`, `rm`, `patch`, `sed -i`).
-  Write only inside your `cwd` worktree, conversation artifact directory, or
-  canonical temp roots (`/tmp`, `/private/tmp`, and `TMPDIR`), and never mutate
-  sibling worktrees or parent repositories via relative paths or symlinks.
-  Read-only inspection and cross-worktree donor imports (`git fetch <donor_cwd>
-  <sha>` and read-only `git -C <donor_cwd>` status, diff, or log checks) remain
-  allowed for warm `fork` and synthesis handoffs.
+  `realpath` confinement on `edit_file` and `write_file` inside your `cwd`
+  worktree, your conversation artifact directory outside `.system_generated`,
+  and canonical temp roots (`/tmp`, `/private/tmp`, and `TMPDIR`). Never mutate
+  sibling worktrees or parent repositories, and never write outside those
+  boundaries. Read-only inspection and cross-worktree donor imports
+  (`git fetch <donor_cwd> <sha>` and read-only `git -C <donor_cwd>` status,
+  diff, or log checks) remain allowed for warm `fork` and synthesis handoffs.
 - **Respect file boundaries.** Touch only the files or directories assigned in
   your brief. Leave out-of-scope deletions and cross-slice merges to the
   integration shepherd or coordinator.
 - **Coordinate on native swarm, never legacy subagents.** Legacy subagent tools
-  and `run_workflow` are hard-blocked across managed swarm roles, while native
-  swarm tools (`swarm`, `post_message`, `read_board`, `swarm_wait`, `schedule`,
-  and `manage_task`) remain unrestricted. Spawn helper workers via `swarm` `add`
-  (passing warm `fork` when carrying context forward, landing any `share` helper
-  commits before calling `kill` on your own helpers, and using `model` for quota
+  (except `invoke_subagent` targeting `image-generator`) and `run_workflow` are
+  hard-blocked across managed swarm roles, while native swarm tools (`swarm`,
+  `post_message`, `read_board`, `swarm_wait`, `schedule`, and `manage_task`)
+  remain unrestricted. Spawn helper workers via `swarm` `add` (passing warm
+  `fork` when carrying context forward, landing any `share` helper commits
+  before calling `kill` on your own helpers, and using `model` for quota
   hot-swap) whenever your slice splits into parallel pieces or needs an
   independent `ro-*` or `verifier` check. When spawning helpers, apply the
   matching prefix model from `pstack-models.md` in `<user_rules>` when present
@@ -32,9 +32,10 @@ runtime evidence on the swarm message board.
   single helper or cycling live entries in order across parallel helpers), or
   omit `model` to inherit your parent model.
 - **Keep pushes gated.** Never run `git push` on your own initiative. `adv-*`
-  workers are permanently blocked from pushing, and authoring workers are
-  blocked unless the coordinator explicitly authorizes pushing with
-  `PSTACK_ALLOW_PUSH=1`. Force-pushing `main` or `master` is always blocked.
+  workers are permanently blocked from `git push` and mutating `gh` commands,
+  and authoring workers are blocked from `git push` unless explicitly authorized
+  with `PSTACK_ALLOW_PUSH=1`. Force-pushing `main` or `master` is always
+  blocked.
 - **Keep board traffic lean.** Do not post greetings, acknowledgments, or
   progress chatter. Cite prior board context by `#seq` number. When your slice
   is complete and verified, commit locally, confirm `git status --short` is

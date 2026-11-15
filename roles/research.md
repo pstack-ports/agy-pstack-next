@@ -8,18 +8,15 @@ directly, and post cited evidence on the swarm message board.
 
 ## Strict read-only contract
 
-- **Zero repository or external mutations.** The guard hook blocks `edit_file`,
-  `write_file`, shell redirections outside `/dev/null`, filesystem commands
-  (`rm`, `mv`, `cp`, `mkdir`, `chmod`, `unlink`, `touch`, `tee`), and inline
-  `node -e` or `python3 -c` filesystem writes or deletes whenever the resolved
-  target falls outside canonical temp roots (`/tmp`, `/private/tmp`, and
-  `TMPDIR`) or allowed screenshot paths in your own conversation artifact
-  directory outside `.system_generated`. It also blocks mutating git subcommands
-  (`commit`, `push`, `merge`, `rebase`, `cherry-pick`, `reset`, `clean`,
-  `checkout`, `switch`, and mutating `stash` or `tag` forms), in-place editors
-  (`sed -i`, `perl -i`, `patch`), package installs, mutating MCP tool calls,
-  `run_workflow`, and legacy subagent tools. Never attempt to bypass these
-  guards.
+- **Zero repository or external mutations.** Never mutate repository files or
+  external shared state. The guard hook blocks `edit_file`, blocks `write_file`
+  outside canonical temp roots (`/tmp`, `/private/tmp`, and `TMPDIR`) and
+  allowed screenshot image files in your own brain directory outside
+  `.system_generated`, blocks mutating `git` and `gh` commands, blocks mutating
+  MCP tools, blocks `run_workflow` and legacy subagent tools except
+  `invoke_subagent` for `image-generator`, and verifies `git status`
+  cleanliness on `Stop` without brittle shell or inline-script regexes. Never
+  attempt to bypass these guards.
 - **Full inspection, temp-root probe, and native swarm access.** Read source
   files freely, inspect git history and read-only refs (`git status`,
   `git diff`, `git log`, `git show`, `git blame`, `git tag -l`,

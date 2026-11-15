@@ -49,7 +49,7 @@ When `impl-*`, `adv-*`, and `ro-verify` exercise apps concurrently on one machin
 
 ## TypeScript and test-first discipline in the capsule
 
-Every `impl-*`, `cand-*`, and `lead-*` worker receives [`roles/poteto-agent.md`](../../roles/poteto-agent.md) automatically via `hooks/guard.mjs`, backed by [`ts-patterns.md`](../../skills/pstack/references/ts-patterns.md).
+Every `impl-*`, `cand-*`, and `lead-*` worker receives [`roles/poteto-agent.md`](../../roles/poteto-agent.md) automatically via `hooks/guard.mjs` (tracked per conversation under `capsules/`), backed by [`ts-patterns.md`](../../skills/pstack/references/ts-patterns.md).
 
 - **Behavioral tests first.** Write the smallest test that fails for the intended user-observable reason before changing production code. Skip brittle mock-heavy unit scaffolding when running the real CLI or HTTP boundary proves more.
 - **Illegal states unrepresentable.** Parse external data as `unknown` at boundaries, model state transitions with discriminated unions, enforce exhaustiveness with `never`, and derive types from authoritative schemas.
@@ -58,9 +58,9 @@ Every `impl-*`, `cand-*`, and `lead-*` worker receives [`roles/poteto-agent.md`]
 
 Authors defend their own narrating comments and defensive boilerplate. Before `ro-verify` signs off on a non-trivial diff in `build` or `ship`, `/pstack` spawns `sicko-clean` (`workspace: "share"`), which receives [`roles/comment-sicko.md`](../../roles/comment-sicko.md).
 
-`hooks/guard.mjs` enforces `sicko-*` boundaries mechanically. It permits `edit_file` inside the worker's worktree while blocking `write_file` and `git push`, ensuring cleanup never invents new wrapper files or pushes unverified commits. `sicko-*` keeps only license headers, public API docstrings, external bug links, and genuine third-party quirk explanations. Every comment that apologizes for confusing internal code becomes either a root-cause simplification or a structural type, lint, or test check, and the comment comes out.
+`hooks/guard.mjs` enforces `sicko-*` boundaries structurally with zero regexes or OS sandboxing. It confines `edit_file` to the worker's worktree, blocks `write_file`, `git push`, file-restoring or history-rewriting `git` subcommands, and mutating `gh` commands, and checks `git status` on `Stop` to reject untracked or deleted files. `sicko-*` keeps only license headers, public API docstrings, external bug links, and genuine third-party quirk explanations. Every comment that apologizes for confusing internal code becomes either a root-cause simplification or a structural type, lint, or test check, and the comment comes out.
 
-For standalone documentation, READMEs, RFCs, and PR bodies, invoke [`/technical-writing`](../../skills/technical-writing/SKILL.md) to enforce Diataxis mode discipline, crisp Global English syntax, zero AI filler, and `ro-*` technical accuracy checks.
+For standalone documentation, READMEs, RFCs, and PR bodies, invoke [`/technical-writing`](../../skills/technical-writing/SKILL.md) (which passes through `hooks/guard.mjs` unmanaged as a standalone inline skill) to enforce Diataxis mode discipline, crisp Global English syntax, zero AI filler, and `ro-*` technical accuracy checks.
 
 **Pitfall.** Never treat diff cleanup as optional polish after review. Redundant guards, narrating comments, and dead compatibility branches hide bugs and slow down every reviewer who reads the PR.
 

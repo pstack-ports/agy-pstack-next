@@ -106,7 +106,7 @@ quota hotswap: auto (fallback: gemini-4-argon-medium, gemini-3.8-flash-high, gpt
 
 ### Step 4b. Register `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`
 
-In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `hooks.json` bundles, whereas global `~/.gemini/config/hooks.json` runs across both root sessions and every swarm worker. Register `pstack-swarm-guard` globally so worker role capsules and tool confinement execute on every worker turn. Because `hooks/guard.mjs` stores `injected-capsules.json` and `member-map.json` in `<appDataDir>/plugin_data/agy-pstack-next` whether invoked from the plugin hook or `~/.gemini/config/hooks.json`, both registrations share deduplication state and never double-inject the coordinator.
+In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `hooks.json` bundles, whereas global `~/.gemini/config/hooks.json` runs across both root sessions and every swarm worker. Register `pstack-swarm-guard` globally so worker role capsules, structural tool boundaries, and `Stop` cleanliness checks execute on every worker turn. Because `hooks/guard.mjs` stores per-conversation state under `<appDataDir>/plugin_data/agy-pstack-next/capsules/` alongside `member-map.json` whether invoked from the plugin hook or `~/.gemini/config/hooks.json`, both registrations share deduplication state and never double-inject the coordinator.
 
 1. Read `~/.gemini/config/hooks.json` first if it exists and parse its top-level JSON object, preserving every existing hook entry (such as `herdr`). Start from `{}` only when `~/.gemini/config/hooks.json` does not exist.
 2. Resolve `<abs_guard_path>` to the canonical absolute filesystem path of `hooks/guard.mjs` (expand `$HOME` into a full path rather than writing `~` inside single quotes). Prefer `~/.gemini/config/plugins/agy-pstack-next/hooks/guard.mjs` when installed, and otherwise resolve `../../hooks/guard.mjs` relative to this `SKILL.md` file. Verify `<abs_guard_path>` exists on disk.
@@ -150,6 +150,13 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
+        "timeout": 10
+      }
     ]
   }
 }
@@ -160,8 +167,8 @@ In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `ho
 Global registration stays inert outside active pstack swarms:
 
 - **Safe uninstall.** Guarding each command with `test ! -f '<abs_guard_path>' ||` keeps global `~/.gemini/config/hooks.json` a clean exit-0 no-op if `agy plugin uninstall agy-pstack-next` removes the plugin directory.
-- **Disable parity.** `hooks/guard.mjs` inspects `~/.gemini/config/config.json` (`plugins["agy-pstack-next"].enabled`), so running `agy plugin disable agy-pstack-next` suspends capsule injection and `PreToolUse` gating across global hooks too.
-- **Plain `/swarm` pass-through.** Plain built-in `/swarm` sessions that do not invoke a pstack skill or pstack worker prefixes (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`) pass through `hooks/guard.mjs` unmanaged.
+- **Disable parity.** `hooks/guard.mjs` inspects `~/.gemini/config/config.json` (`plugins["agy-pstack-next"].enabled`), so running `agy plugin disable agy-pstack-next` suspends capsule injection, `PreToolUse` gating, and `Stop` cleanliness checks across global hooks too.
+- **Plain `/swarm` and inline skill pass-through.** Plain built-in `/swarm` sessions without pstack worker prefixes (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`), mid-sentence `/pstack` prose mentions, `/ketchup --plain`, and standalone inline non-swarm skills (`/bro`, `/technical-writing`, `/setup-pstack`, `/statechart`, `/control-ui`, `/control-cli`, `/make-bot-ui`) pass through `hooks/guard.mjs` unmanaged.
 
 Tell the user that `~/.gemini/config/rules/pstack-models.md` and `~/.gemini/config/hooks.json` were saved and take effect on new conversations and newly spawned workers, while `swarm{action: "model"}` can hot-swap waiting workers immediately in the active swarm.
 
