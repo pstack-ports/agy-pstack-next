@@ -3265,4 +3265,97 @@ if (process.env.MOCK_CLI_MODE === "hang") { setTimeout(() => {}, 10000); } else 
       sb.cleanup();
     }
   });
+
+  test("blocks f-string and t-string interpolation escapes and container, conditional, boolean, or lambda wrapped Path and FS receivers across worker roles", () => {
+    const sb = makeSandbox();
+    try {
+      writeSwarmMembers(sb.appDataDir, "coord-py-fstr", {
+        coordinator: { conversation_id: "coord-py-fstr", role: "coordinator" },
+        "ro-f": { conversation_id: "ro-f-id", role: "worker" },
+        "impl-f": { conversation_id: "impl-f-id", role: "worker" },
+        "adv-f": { conversation_id: "adv-f-id", role: "worker" },
+        "sicko-f": { conversation_id: "sicko-f-id", role: "worker" },
+      });
+
+      const runRolePy = (convId, CommandLine) =>
+        runGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            rootConversationId: "coord-py-fstr",
+            cwd: sb.worktree,
+            toolCall: { id: "py-fstr", name: "run_command", args: { CommandLine } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir },
+        );
+
+      const outsideDst = join(sb.outsideDir, "dst");
+      const outsideFile = join(sb.outsideDir, "f");
+      const worktreeFile = join(sb.worktree, "ok.txt");
+
+      const deniedForAllRoles = [
+        `python3 -c 'from pathlib import Path; f"{Path.replace(Path("/tmp/src"), "${outsideDst}")}"'`,
+        `python3 -c 'from pathlib import Path; t"{Path.replace(Path("/tmp/src"), "${outsideDst}")}"'`,
+        `python3 -c 'from pathlib import Path; f"{(Path.#c\nreplace)(Path("/tmp/src"), "${outsideDst}")}"'`,
+        `python3 -c 'from pathlib import Path; f"""{(Path.#c\nreplace)(Path("/tmp/src"), "${outsideDst}")}"""'`,
+        `python3 -c 'from pathlib import Path; f"""{Path("${outsideFile}").write_text("x")}"""'`,
+        `python3 -c 'from pathlib import Path; f"{Path("${outsideFile}").write_text("x")}"'`,
+        `python3 -c 'from pathlib import Path; f"outer {f"{Path.replace(Path("/tmp/src"), "${outsideDst}")}"} end"'`,
+        `python3 -c 'from pathlib import Path; f"outer {f"{Path("${outsideFile}").write_text("x")}"} end"'`,
+        `python3 -c 'import os; f"{[os][0].replace("/tmp/src", "${outsideDst}")}"'`,
+        `python3 -c 'import os; f"{[os][0].remove("${outsideFile}")}"'`,
+        `python3 -c "from pathlib import Path; [Path][0].write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path; [Path][0].replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; [os][0].replace('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; [os][0].remove('${outsideFile}')"`,
+        `python3 -c "import shutil; [shutil][0].rmtree('${sb.outsideDir}')"`,
+        `python3 -c "from pathlib import Path; (Path if 1 else Path).write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path; (Path if 1 else Path).replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "from pathlib import Path; (None or Path).write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "import os; (None or os).replace('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; (None or os).remove('${outsideFile}')"`,
+        `python3 -c "from pathlib import Path; (lambda: Path)().write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path; (lambda: Path)().replace(Path('/tmp/src'), '${outsideDst}')"`,
+        `python3 -c "import os; (lambda: os)().replace('/tmp/src', '${outsideDst}')"`,
+        `python3 -c "import os; (lambda: os)().remove('${outsideFile}')"`,
+        `python3 -c "from pathlib import Path\ndef g():\n return Path\ng().write_text(Path('${outsideFile}'), 'x')"`,
+        `python3 -c "from pathlib import Path\ndef g():\n return Path\np = Path('${outsideFile}')\ng().write_text(p, 'x')"`,
+      ];
+
+      for (const convId of ["ro-f-id", "impl-f-id", "adv-f-id", "sicko-f-id"]) {
+        for (const cmd of deniedForAllRoles) {
+          assert.equal(runRolePy(convId, cmd).decision, "deny", `expected ${convId} deny for ${cmd}`);
+        }
+      }
+
+      const legitFStringSnippets = [
+        `python3 -c "name = 'world'; print(f'hi {name}'.replace('hi', 'hello'))"`,
+        `python3 -c "s = 'alpha'; print(f'{s.replace(\"a\", \"b\")}')"`,
+        `python3 -c 's = "alpha"; print(f"outer {f"{s.replace("a", "b")}"} end")'`,
+        `python3 -c "items = ['a', 'b']; print(','.join(items).replace(',', ';'))"`,
+      ];
+
+      for (const convId of ["ro-f-id", "impl-f-id", "adv-f-id", "sicko-f-id"]) {
+        for (const cmd of legitFStringSnippets) {
+          assert.equal(runRolePy(convId, cmd).decision, "allow", `expected ${convId} allow for ${cmd}`);
+        }
+      }
+
+      for (const convId of ["impl-f-id", "adv-f-id"]) {
+        assert.equal(
+          runRolePy(
+            convId,
+            `python3 -c "import os; from pathlib import Path; Path(os.path.join('${sb.worktree}', 'ok.txt')).write_text('ok')"`,
+          ).decision,
+          "allow",
+        );
+        assert.equal(
+          runRolePy(convId, `python3 -c "from pathlib import Path; p = Path('${worktreeFile}'); p.write_text('ok')"`).decision,
+          "allow",
+        );
+      }
+    } finally {
+      sb.cleanup();
+    }
+  });
 });
