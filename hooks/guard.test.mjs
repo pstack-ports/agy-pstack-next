@@ -79,9 +79,6 @@ function runGuardCli(payload, envOverrides = {}, guardScriptPath = GUARD_PATH) {
   return JSON.parse(res.stdout);
 }
 
-/**
- * Tokenize JS source to detect regex literals (/.../) and RegExp identifier references.
- */
 function scanJsForRegexAndSandbox(source) {
   const regexLiterals = [];
   const regExpRefs = [];
@@ -193,7 +190,6 @@ describe("Static zero-regex, zero-sandbox, packaging, and capsule prose checks",
     assert.equal(scan.hasBwrap, false);
     assert.equal(scan.hasUnshare, false);
 
-    // Self-check that the scanner catches regexes and RegExp while allowing division
     const probe = scanJsForRegexAndSandbox("const x = a / b; const y = /abc/i; const z = new RegExp('a');");
     assert.equal(probe.regexLiterals.length, 1);
     assert.equal(probe.regExpRefs.length, 1);
@@ -242,7 +238,6 @@ describe("Static zero-regex, zero-sandbox, packaging, and capsule prose checks",
       assert.equal(injected.includes("–"), false);
       assert.equal(injected.includes(":"), false);
 
-      // Warm fork detected solely via fork-memory line also receives ROLE_OVERRIDE_NOTICE
       const forkMemTranscript = join(sb.appDataDir, "brain", "forked-ro-mem", ".system_generated", "logs", "transcript.jsonl");
       mkdirSync(dirname(forkMemTranscript), { recursive: true });
       writeFileSync(
@@ -332,7 +327,6 @@ describe("Session classification, non-hijacking activation, disablement, and del
           { PSTACK_APPDATA_DIR: sb.appDataDir },
         );
         assert.ok(out.injectSteps?.[0]?.systemMessage?.systemMessage?.includes("Coordinator role capsule"), `expected coordinator capsule for ${coordInputs[i]}`);
-        // Subsequent PreToolUse without lastUserInput remembers roles/coordinator.md from capsules/<convId>.json
         const subDeny = invokeGuard(
           {
             hookEventName: "PreToolUse",
@@ -345,7 +339,6 @@ describe("Session classification, non-hijacking activation, disablement, and del
         assert.equal(subDeny.decision, "deny");
       }
 
-      // PSTACK_FORCE_COORDINATOR=1 activates coordinator
       const forced = invokeGuard(
         { hookEventName: "SessionStart", conversationId: "forced-coord", lastUserInput: "hello" },
         { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_FORCE_COORDINATOR: "1" },
@@ -383,14 +376,12 @@ echo '{"swarm_id":"remote_swarm.1","members":{"coordinator":{"conversation_id":"
       const mapDoc = JSON.parse(readFileSync(join(sb.appDataDir, "plugin_data", "agy-pstack-next", "member-map.json"), "utf8"));
       assert.equal(mapDoc["rworker-1"], "ro-1");
 
-      // Second lookup for a missing worker hits 5s miss backoff (CLI call count stays 1)
       invokeGuard(
         { hookEventName: "SessionStart", conversationId: "missing-worker", rootConversationId: "rcoord" },
         { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_REMOTE_SWARM_CLI: mockCli },
       );
       assert.equal(readFileSync(countFile, "utf8").trim().split("\n").length, 1);
 
-      // Invalid remote swarm IDs (too short, bad chars, leading dash) never invoke CLI
       for (const badId of ["abc", "-bad", "bad/id", "a".repeat(129)]) {
         const badDir = join(sb.appDataDir, "brain", "bad-coord", ".system_generated", "swarm");
         mkdirSync(badDir, { recursive: true });
@@ -448,7 +439,6 @@ echo '{"swarm_id":"remote_swarm.1","members":{"coordinator":{"conversation_id":"
         );
       }
 
-      // Disabled plugin via PSTACK_CONFIG_DIR
       const cfgDir = join(sb.root, "cfg");
       mkdirSync(cfgDir, { recursive: true });
       writeFileSync(join(cfgDir, "config.json"), JSON.stringify({ plugins: { "agy-pstack-next": { enabled: false } } }), "utf8");
@@ -498,14 +488,12 @@ echo '{"swarm_id":"remote_swarm.1","members":{"coordinator":{"conversation_id":"
         const capFile = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "capsules", `ro-race-${i}.json`);
         assert.equal(existsSync(capFile), true);
         assert.equal(JSON.parse(readFileSync(capFile, "utf8")).capsule, "roles/research.md");
-        // Follow-up PreInvocation produces zero duplicate injection
         assert.deepEqual(
           invokeGuard({ hookEventName: "PreInvocation", conversationId: `ro-race-${i}`, rootConversationId: "coord-race" }, { PSTACK_APPDATA_DIR: sb.appDataDir }),
           {},
         );
       }
 
-      // Negative-cache poisoning check: early SessionStart before members.json exists
       assert.deepEqual(
         invokeGuard({ hookEventName: "SessionStart", conversationId: "late-ro" }, { PSTACK_APPDATA_DIR: sb.appDataDir }),
         {},
@@ -559,7 +547,6 @@ echo '{"swarm_id":"remote_swarm.1","members":{"coordinator":{"conversation_id":"
       assert.equal(cliOut.delegated, true);
       assert.equal(cliOut.flag, "1");
 
-      // Also supports target guard.mjs exporting only runGuard
       const runOnlyRoot = join(sb.root, "run-only-plugin");
       mkdirSync(join(runOnlyRoot, "hooks"), { recursive: true });
       writeFileSync(
@@ -646,13 +633,11 @@ describe("PreToolUse structural gates, path confinement, MCP, and git/gh checks"
         assert.equal(callPath(convId, "write_file", join(sb.worktree, "dangling-link.txt")).decision, "deny");
       }
 
-      // sicko: no write_file; edit_file strictly inside cwd
       assert.equal(callPath("sicko-p", "write_file", join(sb.worktree, "new.js")).decision, "deny");
       assert.equal(callPath("sicko-p", "edit_file", join(sb.worktree, "existing.js")).decision, "allow");
       assert.equal(callPath("sicko-p", "edit_file", join(sb.customTmpDir, "scratch.txt")).decision, "deny");
       assert.equal(callPath("sicko-p", "edit_file", join(sb.siblingWorktree, "existing.js")).decision, "deny");
 
-      // readonly: no edit_file; write_file only in temp roots or screenshot images in own artifact dir
       assert.equal(callPath("ro-p", "edit_file", join(sb.customTmpDir, "scratch.txt")).decision, "deny");
       assert.equal(callPath("ro-p", "write_file", join(sb.customTmpDir, "notes.md")).decision, "allow");
       assert.equal(callPath("ro-p", "write_file", "/tmp/ro-probe-file.json").decision, "allow");
@@ -708,7 +693,6 @@ describe("PreToolUse structural gates, path confinement, MCP, and git/gh checks"
           { PSTACK_APPDATA_DIR: sb.appDataDir, TMPDIR: sb.customTmpDir, ...extraEnv },
         );
 
-      // All 9 run_command prior false positives (plus mid-sentence /pstack above = 10 total)
       const allowedRoCommands = [
         `python3 -c "print('a:b'.split(':')[0].replace('a', 'c'))"`,
         `python3 -c "d = {'a': 1}; print(d.copy())"`,
@@ -766,7 +750,6 @@ describe("PreToolUse structural gates, path confinement, MCP, and git/gh checks"
         assert.equal(runCmd("ro-cmd", cmd).decision, "deny", `expected ro deny: ${cmd}`);
       }
 
-      // Universal force-push main/master ban + lease allowance
       for (const convId of ["coord-cmd", "impl-cmd", "ro-cmd", "adv-cmd", "sicko-cmd"]) {
         for (const cmd of [
           "git push --force origin main",
@@ -782,7 +765,6 @@ describe("PreToolUse structural gates, path confinement, MCP, and git/gh checks"
       assert.equal(runCmd("coord-cmd", "git push --force-if-includes origin main").decision, "allow");
       assert.equal(runCmd("impl-cmd", "git push --force-with-lease origin main", { PSTACK_ALLOW_PUSH: "1" }).decision, "allow");
 
-      // Implicit-branch force-push detection (git push --force / git push -f origin / +HEAD)
       const gitInWt = (args) => spawnSync("git", ["-C", sb.worktree, ...args], { encoding: "utf8" });
       gitInWt(["init", "-b", "main"]);
       gitInWt(["config", "user.email", "test@example.com"]);
@@ -800,26 +782,22 @@ describe("PreToolUse structural gates, path confinement, MCP, and git/gh checks"
         assert.equal(runCmd("impl-cmd", cmd, { PSTACK_ALLOW_PUSH: "1" }).decision, "allow", `expected feature-branch allow for impl: ${cmd}`);
       }
       assert.equal(runCmd("impl-cmd", "git push --force origin main", { PSTACK_ALLOW_PUSH: "1" }).decision, "deny");
-      // Target repo via -C takes precedence over cwd branch
       const mainRepo = join(sb.root, "other-main-repo");
       mkdirSync(mainRepo, { recursive: true });
       spawnSync("git", ["-C", mainRepo, "init", "-b", "main"], { encoding: "utf8" });
       assert.equal(runCmd("coord-cmd", `git -C ${mainRepo} push -f origin`).decision, "deny");
 
-      // Author push gating (env or inline on that segment only)
       assert.equal(runCmd("impl-cmd", "git push origin feat").decision, "deny");
       assert.equal(runCmd("impl-cmd", "PSTACK_ALLOW_PUSH=1 git push origin feat").decision, "allow");
       assert.equal(runCmd("impl-cmd", "env PSTACK_ALLOW_PUSH=1 git push origin feat").decision, "allow");
       assert.equal(runCmd("impl-cmd", "PSTACK_ALLOW_PUSH=1 echo hi && git push origin feat").decision, "deny");
       assert.equal(runCmd("impl-cmd", "git push origin feat", { PSTACK_ALLOW_PUSH: "1" }).decision, "allow");
 
-      // Adversary & sicko push + gh bans
       for (const convId of ["adv-cmd", "sicko-cmd"]) {
         assert.equal(runCmd(convId, "PSTACK_ALLOW_PUSH=1 git push origin feat", { PSTACK_ALLOW_PUSH: "1" }).decision, "deny");
         assert.equal(runCmd(convId, "gh pr close 1").decision, "deny");
       }
 
-      // Sicko git rules
       for (const cmd of ["git status", "git diff", "git log -n 2", "git add src/a.js", "git commit -m 'clean'"]) {
         assert.equal(runCmd("sicko-cmd", cmd).decision, "allow", `expected sicko allow: ${cmd}`);
       }
@@ -856,17 +834,14 @@ describe("Stop hook git cleanliness check and loop guards", () => {
         "impl-1": { conversation_id: "impl-stop", role: "worker" },
       });
 
-      // SessionStart records baseline (including baseline-dirty.txt)
       invokeGuard({ hookEventName: "SessionStart", conversationId: "ro-stop", rootConversationId: "coord-stop", cwd: sb.worktree }, { PSTACK_APPDATA_DIR: sb.appDataDir });
       invokeGuard({ hookEventName: "SessionStart", conversationId: "sicko-stop", rootConversationId: "coord-stop", cwd: sb.worktree }, { PSTACK_APPDATA_DIR: sb.appDataDir });
 
-      // Baseline dirty file alone does not trigger Stop
       assert.deepEqual(
         invokeGuard({ hookEventName: "Stop", conversationId: "ro-stop", rootConversationId: "coord-stop", cwd: sb.worktree, terminationReason: "NO_TOOL_CALL" }, { PSTACK_APPDATA_DIR: sb.appDataDir }),
         {},
       );
 
-      // New modification / untracked triggers Stop continue for readonly
       writeFileSync(join(sb.worktree, "tracked.txt"), "mutated\n", "utf8");
       const roStop = invokeGuard(
         { hookEventName: "Stop", conversationId: "ro-stop", rootConversationId: "coord-stop", cwd: sb.worktree, terminationReason: "NO_TOOL_CALL" },
@@ -875,7 +850,6 @@ describe("Stop hook git cleanliness check and loop guards", () => {
       assert.equal(roStop.decision, "continue");
       assert.ok(roStop.reason.includes("tracked.txt"));
 
-      // Loop guards: continuationActive or non-NO_TOOL_CALL terminationReason return {}
       assert.deepEqual(
         invokeGuard(
           { hookEventName: "Stop", conversationId: "ro-stop", rootConversationId: "coord-stop", cwd: sb.worktree, continuationActive: true },
@@ -891,7 +865,6 @@ describe("Stop hook git cleanliness check and loop guards", () => {
         {},
       );
 
-      // sicko allows modifying existing tracked files, blocks untracked or deleted files
       assert.deepEqual(
         invokeGuard(
           { hookEventName: "Stop", conversationId: "sicko-stop", rootConversationId: "coord-stop", cwd: sb.worktree, terminationReason: "NO_TOOL_CALL" },
@@ -915,7 +888,6 @@ describe("Stop hook git cleanliness check and loop guards", () => {
       assert.equal(sickoDeleted.decision, "continue");
       assert.ok(sickoDeleted.reason.includes("tracked.txt"));
 
-      // Author role is unaffected by Stop cleanliness check
       assert.deepEqual(
         invokeGuard(
           { hookEventName: "Stop", conversationId: "impl-stop", rootConversationId: "coord-stop", cwd: sb.worktree },
@@ -924,7 +896,6 @@ describe("Stop hook git cleanliness check and loop guards", () => {
         {},
       );
 
-      // Baseline recorded on PreInvocation when SessionStart had no cwd
       writeSwarmMembers(sb.appDataDir, "coord-stop", {
         coordinator: { conversation_id: "coord-stop", role: "coordinator" },
         "ro-1": { conversation_id: "ro-stop", role: "worker" },
@@ -939,7 +910,6 @@ describe("Stop hook git cleanliness check and loop guards", () => {
         {},
       );
 
-      // Readonly inside /tmp scratch git repo or non-git dir returns {}
       const scratchRepo = join(sb.customTmpDir, "scratch-stop");
       mkdirSync(scratchRepo, { recursive: true });
       initGitRepo(scratchRepo);
