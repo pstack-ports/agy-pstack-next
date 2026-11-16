@@ -16,17 +16,11 @@ if [ -n "$logdir" ] && [ "$logdir" != "." ] && [ ! -d "$logdir" ]; then
 	mkdir -p "$logdir"
 fi
 
-# Use `>>` here, never `>`. A network mount can fail this test for a log
-# that exists. Then the cost is one stray header line, not the rows.
 if [ ! -s "$logfile" ]; then
 	printf 'ts\tphase\tdecision\twhy\tevidence\tresult\n' >> "$logfile"
 fi
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# Strip tabs/newlines/CR so cells stay on one line, and prefix any cell
-# whose first char a spreadsheet would parse as a formula (=, +, -, @)
-# with a single quote. The log may be opened in spreadsheets, so untrusted
-# evidence (PR titles, filenames, generated text) must not execute formulas.
 clean() {
 	local v
 	v=$(printf '%s' "$1" | tr '\t\n\r' '   ')
