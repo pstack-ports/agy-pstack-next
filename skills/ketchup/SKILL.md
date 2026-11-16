@@ -6,9 +6,9 @@ description: >-
   (--video), and cross-session transcript and swarm recall (--recall). Parallel
   read-only ro-* gatherers inspect board.jsonl #seq deltas, members.json,
   Swarm UI Overview plan.json, optional narrator view.json, prior swarm boards,
-  git log, and gh pr state. Use for /agy-pstack-next:ketchup, /ketchup, "catch me up",
-  "ketchup --plain", "explain that in plain words", "ketchup --video", "recall
-  my work on X", or "where did I leave off".
+  git log, and gh pr state. Use for /agy-pstack-next:ketchup, /ketchup,
+  "catch me up", "ketchup --plain", "ketchup --video", "recall my work on X",
+  or "where did I leave off".
 ---
 
 # Ketchup
@@ -51,7 +51,7 @@ Write in plain spoken English like one teammate catching up another. Say "the te
 1. **Opening line.** One short sentence naming what waits on the human right now, or stating that nothing waits on them. If nothing changed and nothing waits, say so in one sentence and stop.
 2. **Visuals first, then tight summary (under 100 words excluding visuals and action items).**
    - Embed real screenshots and recordings captured during the work inline. Mark any visible UI change lacking a capture with `No screenshot yet` and state plainly what changed on screen.
-   - Draw a small Mermaid diagram (`<=6` boxes, `<=8` words per box, conversational labels rather than `Status: pass` tags) or `xychart-beta` chart when connections, PR stacks, or measured numbers read faster visually than in prose. Markdown tables are not visuals. Never draw an uncaptured screen, invent a number, or repeat a fact across visuals and bullets.
+   - Generate an architecture or flow visual via `invoke_subagent` targeting `image-generator` (permitted by `hooks/guard.mjs`), or render an interactive visual via `generative_ui` when `generative_ui` is mounted in `<skills>`, whenever a visual communicates the change faster than prose. Use a small Mermaid diagram (`<=6` boxes, `<=8` words per box, conversational labels rather than `Status: pass` tags) or `xychart-beta` chart for lightweight PR stacks or measured numbers. Markdown tables are not visuals. Never draw an uncaptured screen, invent a number, or repeat a fact across visuals and bullets.
    - Give one short spoken-style bullet per thing the human asked for ("Checkout was timing out from an unindexed lookup and is fixed now"), naming whether it is done, running, failed, or unchecked, plus any bug caught and fixed along the way. Never mark an item done while a human decision still blocks it.
    - Add one line naming any remaining work the coordinator or swarm can finish autonomously without human input.
 3. **Action items (~30 words per item, never truncate or replace items with a count).**
@@ -73,7 +73,7 @@ Follow all gathering and action-item rules of Standard catch-up, replacing the s
 
 1. **Progressive slide design.** Plan one core takeaway and one visual point per slide from real screenshots, diffs, and verified numbers. Mutate one visual canvas progressively across slides using consistent colors, arrows, and highlights rather than cutting between unrelated layouts. Never render bullet lists, status tables, or disconnected boxes as slides.
 2. **Dedicated subtitle strip.** Place one conversational subtitle (`~10` words) in a fixed-height empty strip below the slide frame so subtitles never cover visual content. State what the picture means rather than reading out box labels.
-3. **Hold timing and verification.** Burn subtitles directly into slide frames (never screen-record). Hold each slide fully visible (excluding transition motion) for at least **1 second per 3 newly added words** (counting the subtitle plus new or changed slide labels, while words inside embedded screenshots do not count). Before embedding, inspect one rendered frame per slide at chat size to verify subtitle legibility and measure frame holds directly, re-rendering any slide that clips or flashes too fast.
+3. **Hold timing and verification.** Burn subtitles directly into slide frames (never screen-record). Hold each slide fully visible (excluding transition motion) for at least **1 second per 3 newly added words** (counting the subtitle plus new or changed slide labels, while words inside embedded screenshots do not count). Automated still-frame detectors miscount fade-in and fade-out transitions, so measure frame holds directly from your rendered timeline timestamps instead of relying on still-frame detectors. Before embedding, inspect one rendered frame per slide at chat size to verify subtitle legibility, re-rendering any slide that clips or flashes too fast.
 4. **Reply layout.** Output the one-sentence opening line, the inline MP4 artifact, one line of remaining autonomous work, and the text **Action items** (matching option names shown in the video). If rendering fails, state that in one line and deliver the text Action items cleanly.
 
 ### 4. Cross-session recall (`/ketchup --recall`)

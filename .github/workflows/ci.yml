@@ -95,6 +95,10 @@ jobs:
             };
             checkExecutable("hooks/guard.mjs");
             checkExecutable("skills/pstack/scripts/watch-pr");
+            checkExecutable("skills/pstack/scripts/check-plan.mjs");
+            checkExecutable("skills/pstack/scripts/worktree-audit.sh");
+            checkExecutable("skills/pstack/scripts/decision-log.sh");
+            checkExecutable("skills/setup-pstack/scripts/sync-hooks.mjs");
 
             for (const capsule of ["coordinator", "poteto-agent", "research", "comment-sicko"]) {
               const p = join("roles", `${capsule}.md`);
@@ -209,11 +213,82 @@ jobs:
       - name: Run swarm guard unit tests
         run: node --test hooks/guard.test.mjs
 
+      - name: Run pstack script syntax and unit tests
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: commit.gpgsign
+          GIT_CONFIG_VALUE_0: "false"
+        run: |
+          bash -n skills/pstack/scripts/worktree-audit.sh
+          bash -n skills/pstack/scripts/decision-log.sh
+          node --test skills/pstack/scripts/watch-pr.test.mjs skills/pstack/scripts/check-plan.test.mjs
+
       - name: Smoke check watch-pr CLI
         run: ./skills/pstack/scripts/watch-pr --help > /dev/null
+
+      - name: Verify TLA+ tools pin matches statechart runner
+        run: |
+          bun - <<'EOF'
+          import { readFileSync } from "node:fs";
+
+          const runTs = readFileSync("skills/statechart/scripts/run.ts", "utf8");
+          const ciYml = readFileSync(".github/workflows/ci.yml", "utf8");
+
+          const toolMatch = runTs.match(
+            /const TLC_TOOL =\s*"http:tla2tools\[url=(https:\/\/[^,\]]+),checksum=sha256:([0-9a-f]{64})\]@([^"]+)"/,
+          );
+          if (!toolMatch) {
+            throw new Error("Could not parse TLC_TOOL from skills/statechart/scripts/run.ts");
+          }
+          const [, url, sha256, version] = toolMatch;
+
+          const requiredSnippets = [
+            `path: ~/.cache/tla2tools/tla2tools-${version}.jar`,
+            `key: tla2tools-${version}`,
+            url,
+            `${sha256}  $HOME/.cache/tla2tools/tla2tools-${version}.jar`,
+            `TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-${version}.jar"`,
+          ];
+          for (const snippet of requiredSnippets) {
+            if (!ciYml.includes(snippet)) {
+              throw new Error(`ci.yml missing pinned TLC_TOOL snippet: ${snippet}`);
+            }
+          }
+
+          for (const m of ciYml.matchAll(/https:\/\/github\.com\/tlaplus\/tlaplus\/releases\/download\/[^/\s"']+\/tla2tools\.jar/g)) {
+            if (m[0] !== url) {
+              throw new Error(`ci.yml tla2tools URL "${m[0]}" does not match run.ts "${url}"`);
+            }
+          }
+          for (const m of ciYml.matchAll(/tla2tools-([0-9]+\.[0-9]+\.[0-9]+)(?:\.jar)?/g)) {
+            if (m[1] !== version) {
+              throw new Error(`ci.yml tla2tools version "${m[1]}" does not match run.ts "${version}"`);
+            }
+          }
+          EOF
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Cache TLA+ tools
+        id: cache-tla2tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tla2tools/tla2tools-1.7.4.jar
+          key: tla2tools-1.7.4
+
+      - name: Download TLA+ tools
+        if: steps.cache-tla2tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.cache/tla2tools"
+          curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$HOME/.cache/tla2tools/tla2tools-1.7.4.jar"
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.cache/tla2tools/tla2tools-1.7.4.jar" | sha256sum -c -
 
       - name: Test statechart
         working-directory: skills/statechart/scripts
         run: |
-          bun install
-          bun run test
+          bun install --frozen-lockfile
+          TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-1.7.4.jar" bun run test

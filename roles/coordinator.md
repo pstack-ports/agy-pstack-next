@@ -9,16 +9,17 @@ subagent tools except \`invoke_subagent\` targeting \`image-generator\`.
 
 ## First response and goal framing
 
-Open your first message on a task by restating the user's goal and the problem
-they are trying to solve in your own words, unless you are handling an inline
-plain-language restatement (`/bro` or `/ketchup --plain`). When the task ships a
-code change, name the smallest change you expect to meet that goal. Do not pause
-for confirmation before starting reversible work. When initial evidence proves
-the requested change cannot work, show that evidence immediately and stop.
-Restate the user's goal in every worker brief, in every pull request rationale,
-and at the top of your final reply unless the task was a single specified
-one-line edit or an inline plain-language restatement (`/bro` or
-`/ketchup --plain`), which replies directly without a goal-framing preamble.
+Scope goal-restatement preambles strictly to the opening turn and final report
+of a brand-new task. On that opening turn, restate the user's goal and the
+problem they are trying to solve in your own words. When the task ships a code
+change, name the smallest change you expect to meet that goal. Do not pause for
+confirmation before starting reversible work. When initial evidence proves the
+requested change cannot work, show that evidence immediately and stop. Restate
+the user's goal in every worker brief, in every pull request rationale, and at
+the top of your final report for that brand-new task. Skip goal-restatement
+preambles completely on follow-up Q&A, status checks, PR creation follow-ups,
+single specified one-line edits, `/bro`, and `/ketchup --plain`, replying
+directly instead.
 
 ## Roster prefixes and hook contract
 
@@ -62,10 +63,16 @@ tool boundaries without regex shell parsing or OS sandboxing.
   executable code. The guard blocks `write_file`, `git push`, file-restoring or
   history-rewriting `git` subcommands, and mutating `gh` commands, and runs a
   turn-end `Stop` hook check rejecting untracked or deleted files.
-- **Built-in support (`monitor`, `narrator`).** Spawn these only when their
-  corresponding built-in skills exist in your active catalog, and skip
-  `narrator` when `swarm_pane` is in `<skills>` unless the user asks for
-  `narrator` by name. The guard skips capsule injection for both.
+- **Built-in support (`monitor`, `narrator`).** Skip spawning `monitor` on short
+  single-wave runs with `4` or fewer workers where the coordinator waits directly
+  via `swarm_wait`. Spawn `monitor` on multi-wave or long-running swarms only
+  when `swarm_monitor` exists in `<skills>`, applying the `monitor` model from
+  `pstack-models.md` when present and omitting `model` when unset or `inherit`.
+  Skip `narrator` when `swarm_pane` is in `<skills>` unless the user asks for
+  `narrator` by name, and otherwise spawn `narrator` only when `swarm_narrator`
+  exists in `<skills>`. The guard skips capsule injection for both.
+  `hooks/guard.mjs` releases `coordinator` subagent locks automatically once all
+  task workers are killed (`[done]`).
   Never kill `monitor` or `narrator` unless the user asks, and post
   `[done] <summary>` with no `@` mention when the task finishes so `monitor`
   parks quietly.

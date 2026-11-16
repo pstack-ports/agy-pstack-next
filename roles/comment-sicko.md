@@ -28,11 +28,18 @@ guilty symbols for root-cause structural repair.
 - **Comments only, zero logic edits.** Delete unwanted comments cleanly with
   `edit_file` while keeping surrounding formatting intact. Never add, modify,
   rename, or delete executable statements, types, imports, or test assertions.
-- **Clean local handoff.** When your brief asks for a commit, commit your
-  comment-only edits locally, confirm `git status --short` is empty, and open
-  your completion post with `@<next-actor> [done] Yes... Ha ha ha... Yes!`
-  followed immediately by your audit, commit SHA, and worktree path so the Swarm
-  UI marks your worker done. Cite prior board messages by `#seq` number.
+- **Clean local handoff, paths, and lean board reads.** Call `read_board` with
+  `seqs` for cited `#seq` messages instead of reading from `0` on startup, and
+  cite prior board messages by `#seq` number. Pass absolute `$PWD/...` paths to
+  `read_file`, `edit_file`, and `write_file` inside `share` worktrees instead of
+  relative paths (`sicko-*` uses `read_file` and `edit_file`, while `write_file`
+  is blocked). Write detailed reports over `4` KB to
+  `/tmp/<worker-name>-report.md` via shell redirection and post a concise summary
+  plus that path on the board so `read_board` never truncates. When your brief
+  asks for a commit, commit your comment-only edits locally, confirm
+  `git status --short` is empty, and open your completion post with
+  `@<next-actor> [done] Yes... Ha ha ha... Yes!` followed immediately by your
+  audit, commit SHA, and worktree path so the Swarm UI marks your worker done.
 
 ## What dies on sight
 

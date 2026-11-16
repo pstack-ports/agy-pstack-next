@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
-  rmSync, statSync, symlinkSync, writeFileSync,
+  realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +13,7 @@ import { handleRawStdin, runGuard } from "./guard.mjs";
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const GUARD_PATH = join(PLUGIN_ROOT, "hooks", "guard.mjs");
 const HOOKS_JSON_PATH = join(PLUGIN_ROOT, "hooks.json");
+const SYNC_HOOKS_PATH = join(PLUGIN_ROOT, "skills", "setup-pstack", "scripts", "sync-hooks.mjs");
 
 function makeSandbox() {
   const root = mkdtempSync(join(tmpdir(), "pstack-guard-test-"));
@@ -181,21 +182,23 @@ function scanJsForRegexAndSandbox(source) {
 }
 
 describe("Static zero-regex, zero-sandbox, packaging, and capsule prose checks", () => {
-  test("hooks/guard.mjs contains 0 regex literals, 0 RegExp references, and 0 OS sandbox calls", () => {
-    const guardSource = readFileSync(GUARD_PATH, "utf8");
-    const scan = scanJsForRegexAndSandbox(guardSource);
-    assert.deepEqual(scan.regexLiterals, [], "guard.mjs must contain zero regex literals");
-    assert.deepEqual(scan.regExpRefs, [], "guard.mjs must contain zero RegExp references");
-    assert.equal(scan.hasSandboxExec, false);
-    assert.equal(scan.hasBwrap, false);
-    assert.equal(scan.hasUnshare, false);
+  test("hooks/guard.mjs and sync-hooks.mjs contain 0 regex literals, 0 RegExp references, and 0 OS sandbox calls", () => {
+    for (const filePath of [GUARD_PATH, SYNC_HOOKS_PATH]) {
+      const source = readFileSync(filePath, "utf8");
+      const scan = scanJsForRegexAndSandbox(source);
+      assert.deepEqual(scan.regexLiterals, [], `${filePath} must contain zero regex literals`);
+      assert.deepEqual(scan.regExpRefs, [], `${filePath} must contain zero RegExp references`);
+      assert.equal(scan.hasSandboxExec, false);
+      assert.equal(scan.hasBwrap, false);
+      assert.equal(scan.hasUnshare, false);
+    }
 
     const probe = scanJsForRegexAndSandbox("const x = a / b; const y = /abc/i; const z = new RegExp('a');");
     assert.equal(probe.regexLiterals.length, 1);
     assert.equal(probe.regExpRefs.length, 1);
   });
 
-  test("hooks.json includes SessionStart, PreInvocation, PreToolUse, and Stop handlers and guard.mjs is executable", () => {
+  test("hooks.json includes SessionStart, PreInvocation, PreToolUse, and Stop handlers and scripts are executable", () => {
     assert.equal(existsSync(HOOKS_JSON_PATH), true);
     const hooksConfig = JSON.parse(readFileSync(HOOKS_JSON_PATH, "utf8"));
     const spec = hooksConfig["pstack-swarm-guard"];
@@ -205,6 +208,7 @@ describe("Static zero-regex, zero-sandbox, packaging, and capsule prose checks",
     assert.deepEqual(spec.Stop, [{ type: "command", command: "./hooks/guard.mjs", timeout: 10 }]);
     assert.equal(spec.PreToolUse.length, 2);
     assert.notEqual(statSync(GUARD_PATH).mode & 0o111, 0, "hooks/guard.mjs must have +x permission");
+    assert.notEqual(statSync(SYNC_HOOKS_PATH).mode & 0o111, 0, "sync-hooks.mjs must have +x permission");
   });
 
   test("all role capsules and Role override notice are free of em-dashes, en-dashes, and colons", () => {
@@ -928,6 +932,438 @@ describe("Stop hook git cleanliness check and loop guards", () => {
         ),
         {},
       );
+    } finally {
+      sb.cleanup();
+    }
+  });
+});
+
+describe("Global hooks sync, drift warning, coordinator release, unforkedRoot cache, dual-hook dedup, and legacy cleanup", () => {
+  test("sync-hooks.mjs supports --check on missing/stale/synced, preserves sibling keys, and writes 2-space JSON", () => {
+    const sb = makeSandbox();
+    try {
+      const cfgDir = join(sb.root, "gemini-cfg");
+      const globalHooksPath = join(cfgDir, "hooks.json");
+      const runSync = (args = [], extraEnv = {}) =>
+        spawnSync(process.execPath, [SYNC_HOOKS_PATH, ...args], {
+          encoding: "utf8",
+          env: buildEnv({ PSTACK_CONFIG_DIR: undefined, ...extraEnv }),
+        });
+
+      const missingCheck = runSync(["--check", "--config-dir", cfgDir]);
+      assert.equal(missingCheck.status, 1);
+
+      mkdirSync(cfgDir, { recursive: true });
+      const siblingHerdr = { SessionStart: [{ type: "command", command: "herdr-hook", timeout: 5 }] };
+      writeFileSync(
+        globalHooksPath,
+        JSON.stringify({
+          herdr: siblingHerdr,
+          "pstack-swarm-guard": {
+            SessionStart: [{ type: "command", command: `node '${GUARD_PATH}'`, timeout: 10 }],
+          },
+        }, null, 2),
+        "utf8",
+      );
+      const staleCheck = runSync(["--check"], { PSTACK_CONFIG_DIR: cfgDir });
+      assert.equal(staleCheck.status, 1);
+
+      const syncRes = runSync(["--config-dir", cfgDir]);
+      assert.equal(syncRes.status, 0, syncRes.stderr);
+
+      const rawSynced = readFileSync(globalHooksPath, "utf8");
+      const parsedSynced = JSON.parse(rawSynced);
+      assert.equal(rawSynced, `${JSON.stringify(parsedSynced, null, 2)}\n`);
+      assert.deepEqual(parsedSynced.herdr, siblingHerdr);
+
+      const absGuard = realpathSync(GUARD_PATH);
+      const expectedCmd = `test ! -f '${absGuard}' || node '${absGuard}'`;
+      const guardSpec = parsedSynced["pstack-swarm-guard"];
+      assert.deepEqual(guardSpec.SessionStart, [{ type: "command", command: expectedCmd, timeout: 10 }]);
+      assert.deepEqual(guardSpec.PreInvocation, [{ type: "command", command: expectedCmd, timeout: 10 }]);
+      assert.deepEqual(guardSpec.Stop, [{ type: "command", command: expectedCmd, timeout: 10 }]);
+      assert.equal(guardSpec.PreToolUse.length, 2);
+      assert.equal(guardSpec.PreToolUse[0].hooks[0].command, expectedCmd);
+      assert.equal(guardSpec.PreToolUse[1].hooks[0].command, expectedCmd);
+
+      const syncedCheck = runSync(["--check"], { PSTACK_CONFIG_DIR: cfgDir });
+      assert.equal(syncedCheck.status, 0, syncedCheck.stderr);
+
+      const wrongTargetDir = join(sb.root, "wrong-cfg");
+      mkdirSync(wrongTargetDir, { recursive: true });
+      writeFileSync(
+        join(wrongTargetDir, "hooks.json"),
+        JSON.stringify({
+          "pstack-swarm-guard": {
+            SessionStart: [{ type: "command", command: "node '/nonexistent/guard.mjs'", timeout: 10 }],
+            PreInvocation: [{ type: "command", command: "node '/nonexistent/guard.mjs'", timeout: 10 }],
+            PreToolUse: guardSpec.PreToolUse,
+            Stop: [{ type: "command", command: "node '/nonexistent/guard.mjs'", timeout: 10 }],
+          },
+        }, null, 2),
+        "utf8",
+      );
+      assert.equal(runSync(["--check", `--config-dir=${wrongTargetDir}`]).status, 1);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("emits colon-free, dash-free drift warning on stale global hooks.json and avoids duplicate warnings", () => {
+    const sb = makeSandbox();
+    try {
+      const cfgDir = join(sb.root, "drift-cfg");
+      mkdirSync(cfgDir, { recursive: true });
+      const absGuard = realpathSync(GUARD_PATH);
+      const cmd = `test ! -f '${absGuard}' || node '${absGuard}'`;
+      writeFileSync(
+        join(cfgDir, "hooks.json"),
+        JSON.stringify({
+          "pstack-swarm-guard": {
+            SessionStart: [{ type: "command", command: cmd, timeout: 10 }],
+            PreInvocation: [{ type: "command", command: cmd, timeout: 10 }],
+            PreToolUse: [
+              {
+                matcher: "(invoke|define)_subagent|manage_subagents|send_message|run_workflow",
+                hooks: [{ type: "command", command: cmd, timeout: 10 }],
+              },
+            ],
+          },
+        }, null, 2),
+        "utf8",
+      );
+
+      const out1 = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: "drift-coord-1", lastUserInput: "/pstack fix bug" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+      );
+      const msg1 = out1.injectSteps?.[0]?.systemMessage?.systemMessage || "";
+      assert.ok(msg1.includes("Coordinator role capsule"));
+      assert.ok(msg1.includes("sync-hooks.mjs"));
+      assert.ok(msg1.includes("/setup-pstack"));
+      assert.equal(msg1.includes(":"), false, "drift warning + capsule must contain zero colons");
+      assert.equal(msg1.includes("—"), false, "drift warning + capsule must contain zero em-dashes");
+      assert.equal(msg1.includes("–"), false, "drift warning + capsule must contain zero en-dashes");
+
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: "drift-coord-1", lastUserInput: "/pstack fix bug" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        {},
+      );
+
+      const capDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "capsules");
+      mkdirSync(capDir, { recursive: true });
+      writeFileSync(
+        join(capDir, "drift-coord-2.json"),
+        JSON.stringify({ capsule: "roles/coordinator.md", activePrompt: "/pstack pre-injected" }, null, 2),
+        "utf8",
+      );
+      const out2 = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: "drift-coord-2", lastUserInput: "/pstack pre-injected" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+      );
+      const msg2 = out2.injectSteps?.[0]?.systemMessage?.systemMessage || "";
+      assert.ok(msg2.includes("sync-hooks.mjs"));
+      assert.equal(msg2.includes("Coordinator role capsule"), false);
+      assert.equal(msg2.includes(":"), false);
+      assert.equal(msg2.includes("—"), false);
+      assert.equal(msg2.includes("–"), false);
+
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: "drift-coord-2", lastUserInput: "/pstack pre-injected" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+        ),
+        {},
+      );
+
+      writeFileSync(
+        join(cfgDir, "hooks.json"),
+        JSON.stringify({
+          "pstack-swarm-guard": {
+            enabled: false,
+            SessionStart: [{ type: "command", command: cmd, timeout: 10 }],
+          },
+        }, null, 2),
+        "utf8",
+      );
+      const disabledDrift = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: "drift-coord-3", lastUserInput: "/pstack quiet" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir },
+      );
+      assert.equal(disabledDrift.injectSteps[0].systemMessage.systemMessage.includes("sync-hooks.mjs"), false);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("releases sticky coordinator lock after all task workers are killed and re-engages without duplicate capsule", () => {
+    const sb = makeSandbox();
+    try {
+      const convId = "coord-release";
+      const capPath = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "capsules", `${convId}.json`);
+
+      const firstStart = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: convId, lastUserInput: "/pstack implement feature" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.ok(firstStart.injectSteps[0].systemMessage.systemMessage.includes("Coordinator role capsule"));
+      assert.equal(JSON.parse(readFileSync(capPath, "utf8")).activePrompt, "/pstack implement feature");
+
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            cwd: sb.worktree,
+            toolCall: { id: "t-turn0", name: "invoke_subagent", args: { TypeName: "research" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "deny",
+      );
+
+      writeSwarmMembers(sb.appDataDir, convId, {
+        coordinator: { conversation_id: convId, role: "coordinator" },
+        monitor: { conversation_id: "mon-1", role: "worker" },
+        "impl-1": { conversation_id: "impl-1-cid", role: "worker" },
+      });
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            lastUserInput: "follow up while worker active",
+            cwd: sb.worktree,
+            toolCall: { id: "t-active", name: "invoke_subagent", args: { TypeName: "research" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "deny",
+      );
+
+      writeSwarmMembers(sb.appDataDir, convId, {
+        coordinator: { conversation_id: convId, role: "coordinator" },
+        monitor: { conversation_id: "mon-1", role: "worker" },
+        "impl-1": { conversation_id: "impl-1-cid", role: "worker", state: "killed" },
+        "ro-1": { conversation_id: "ro-1-cid", role: "worker", killed: true },
+      });
+
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: convId, lastUserInput: "now let us discuss unrelated docs" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      const releasedState = JSON.parse(readFileSync(capPath, "utf8"));
+      assert.equal(releasedState.capsule, "roles/coordinator.md");
+      assert.equal(releasedState.activePrompt, undefined);
+
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            cwd: sb.worktree,
+            toolCall: { id: "t-released", name: "invoke_subagent", args: { TypeName: "research" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "allow",
+      );
+
+      const secondStart = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: convId, lastUserInput: "/pstack second wave" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.deepEqual(secondStart, {});
+      assert.equal(JSON.parse(readFileSync(capPath, "utf8")).activePrompt, "/pstack second wave");
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            lastUserInput: "/pstack second wave",
+            cwd: sb.worktree,
+            toolCall: { id: "t-reengaged", name: "run_workflow", args: {} },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "deny",
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("caches unforkedRoot true after first transcript check without caching missing transcripts or blocking later /pstack", () => {
+    const sb = makeSandbox();
+    try {
+      const capPathMissing = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "capsules", "no-tx-conv.json");
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: "no-tx-conv", lastUserInput: "hello" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      assert.equal(existsSync(capPathMissing), false, "must not cache unforkedRoot when transcript does not exist");
+
+      const convId = "unforked-chat";
+      const txPath = join(sb.appDataDir, "brain", convId, ".system_generated", "logs", "transcript.jsonl");
+      mkdirSync(dirname(txPath), { recursive: true });
+      writeFileSync(txPath, `${JSON.stringify({ type: "USER_INPUT", content: "ordinary question" })}\n`, "utf8");
+
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: convId, lastUserInput: "ordinary question", transcriptPath: txPath },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ),
+        {},
+      );
+      const capPath = join(sb.appDataDir, "plugin_data", "agy-pstack-next", "capsules", `${convId}.json`);
+      assert.equal(JSON.parse(readFileSync(capPath, "utf8")).unforkedRoot, true);
+
+      writeFileSync(txPath, "[swarm] new board message should not be re-read\n", "utf8");
+      writeSwarmMembers(sb.appDataDir, "unrelated-swarm", {
+        coordinator: { conversation_id: "unrelated-swarm", role: "coordinator" },
+        "ro-1": { conversation_id: convId, role: "worker" },
+      });
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: convId,
+            transcriptPath: txPath,
+            cwd: sb.worktree,
+            toolCall: { id: "u-1", name: "invoke_subagent", args: { TypeName: "research" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir },
+        ).decision,
+        "allow",
+      );
+
+      const pstackTurn = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: convId, lastUserInput: "/pstack escalate now", transcriptPath: txPath },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+      assert.ok(pstackTurn.injectSteps[0].systemMessage.systemMessage.includes("Coordinator role capsule"));
+      assert.equal(JSON.parse(readFileSync(capPath, "utf8")).unforkedRoot, true);
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("short-circuits duplicate PLUGIN_ROOT invocations when global hooks.json covers the event and target guard", () => {
+    const sb = makeSandbox();
+    try {
+      const cfgDir = join(sb.root, "dual-cfg");
+      const syncRes = spawnSync(process.execPath, [SYNC_HOOKS_PATH, "--config-dir", cfgDir], {
+        encoding: "utf8",
+        env: buildEnv({ PSTACK_CONFIG_DIR: undefined }),
+      });
+      assert.equal(syncRes.status, 0, syncRes.stderr);
+
+      writeSwarmMembers(sb.appDataDir, "coord-dual", {
+        coordinator: { conversation_id: "coord-dual", role: "coordinator" },
+        "ro-1": { conversation_id: "ro-dual", role: "worker" },
+      });
+
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "SessionStart", conversationId: "ro-dual", rootConversationId: "coord-dual" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+        ),
+        {},
+      );
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "PreInvocation", conversationId: "ro-dual", rootConversationId: "coord-dual" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+        ),
+        {},
+      );
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-dual",
+            rootConversationId: "coord-dual",
+            cwd: sb.worktree,
+            toolCall: { id: "d1", name: "edit_file", args: { Path: join(sb.worktree, "a.js") } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+        ).decision,
+        "allow",
+      );
+      assert.equal(
+        invokeGuard(
+          {
+            hookEventName: "PreToolUse",
+            conversationId: "ro-dual",
+            rootConversationId: "coord-dual",
+            cwd: sb.worktree,
+            toolCall: { id: "d2", name: "invoke_subagent", args: { TypeName: "research" } },
+          },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+        ).decision,
+        "allow",
+      );
+
+      const repoDir = join(sb.root, "dual-repo");
+      mkdirSync(repoDir, { recursive: true });
+      spawnSync("git", ["-C", repoDir, "init"], { encoding: "utf8" });
+      writeFileSync(join(repoDir, "dirty.txt"), "dirty\n", "utf8");
+      assert.deepEqual(
+        invokeGuard(
+          { hookEventName: "Stop", conversationId: "ro-dual", rootConversationId: "coord-dual", cwd: repoDir, terminationReason: "NO_TOOL_CALL" },
+          { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+        ),
+        {},
+      );
+
+      const globalHooksPath = join(cfgDir, "hooks.json");
+      const hooksDoc = JSON.parse(readFileSync(globalHooksPath, "utf8"));
+      delete hooksDoc["pstack-swarm-guard"].Stop;
+      writeFileSync(globalHooksPath, JSON.stringify(hooksDoc, null, 2), "utf8");
+
+      const stopOut = invokeGuard(
+        { hookEventName: "Stop", conversationId: "ro-dual", rootConversationId: "coord-dual", cwd: repoDir, terminationReason: "NO_TOOL_CALL" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT },
+      );
+      assert.equal(stopOut.decision, "continue");
+      assert.ok(stopOut.reason.includes("dirty.txt"));
+
+      const delegatedOut = invokeGuard(
+        { hookEventName: "SessionStart", conversationId: "ro-dual", rootConversationId: "coord-dual" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir, PSTACK_CONFIG_DIR: cfgDir, PLUGIN_ROOT, PSTACK_PLUGIN_ROOT: PLUGIN_ROOT },
+      );
+      assert.ok(delegatedOut.injectSteps[0].systemMessage.systemMessage.includes("Read-only specialist role capsule"));
+    } finally {
+      sb.cleanup();
+    }
+  });
+
+  test("unlinks legacy injected-capsules.json and non-worker-roots.json on SessionStart", () => {
+    const sb = makeSandbox();
+    try {
+      const cacheDir = join(sb.appDataDir, "plugin_data", "agy-pstack-next");
+      mkdirSync(cacheDir, { recursive: true });
+      const legacyCapsules = join(cacheDir, "injected-capsules.json");
+      const legacyRoots = join(cacheDir, "non-worker-roots.json");
+      writeFileSync(legacyCapsules, "{}", "utf8");
+      writeFileSync(legacyRoots, "{}", "utf8");
+
+      invokeGuard(
+        { hookEventName: "SessionStart", conversationId: "legacy-clean-conv", lastUserInput: "hello" },
+        { PSTACK_APPDATA_DIR: sb.appDataDir },
+      );
+
+      assert.equal(existsSync(legacyCapsules), false);
+      assert.equal(existsSync(legacyRoots), false);
     } finally {
       sb.cleanup();
     }

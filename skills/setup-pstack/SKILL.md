@@ -8,6 +8,7 @@ description: >-
   automations or personal -mode convention skills. Use for
   /agy-pstack-next:setup-pstack, /setup-pstack, "configure pstack models",
   "pstack budget", "pstack help", "which skill should I use", or "automate me".
+disable-model-invocation: true
 ---
 
 # Setup pstack
@@ -43,9 +44,9 @@ Antigravity supports `inherit` (omit `model` in `swarm{action: "add"}` so the wo
 
 Validate every model ID written to the rule against `inherit` or the live `models` array returned by `swarm{action: "models", all: true}`. Never hardcode a model ID that the current workspace rejected.
 
-### Step 2. Load current rule state
+### Step 2. Load and validate current rule state
 
-Check whether `~/.gemini/config/rules/pstack-models.md` exists. If present, read its `# budget`, role lines, and gate settings as the current baseline, and note whether `trigger: always_on` YAML frontmatter is missing so Step 4 restores it. Drop any retired v1 role keys (such as `how explorer`, `why investigators`, `arena runners`, or `architect runners`) and list dropped keys so the user sees the cleanup.
+Check whether `~/.gemini/config/rules/pstack-models.md` exists. If present, read its `# budget`, role lines, and gate settings as the current baseline. Validate every configured model ID against `inherit` or the live `models` array returned by `swarm{action: "models", all: true}` in Step 1, and flag any unknown, retired, or zero-quota IDs for replacement. Also check whether `trigger: always_on` YAML frontmatter is missing, whether `monitor` is missing, or whether `impl-*` and `lead-*` share one combined line so Step 4 upgrades the schema cleanly. Drop any retired v1 role keys (such as `how explorer`, `why investigators`, `arena runners`, or `architect runners`) and list dropped keys so the user sees the cleanup.
 
 ### Step 3. Choose budget preset, role prefixes, and autonomy gates
 
@@ -54,24 +55,27 @@ Use `ask_question` rather than free-text prompts.
 **(a) Budget preset.** Offer four presets and note which one is currently active:
 
 - `(Recommended) balanced - frontier coordinator and fast workers`
+- `frugal - flash and oss economy`
+- `max - multi-family high reasoning`
 - `inherit - match session model across workers`
-- `frontier - multi-family high reasoning`
-- `lean - flash and oss economy`
 
 Preset behavior:
 
-- `inherit` sets worker prefixes to `inherit` while keeping a live cross-family `ro-judge pool` from the discovered catalog.
-- `frontier` pins high-reasoning models (`claude-opus-5-5-high`, `gemini-4-hydrogen-high`, or `gemini-pro-orchestrator`) on `coordinator`, `cand-*`, `adv-*`, and `ro-judge pool`, mid-high models (`claude-sonnet-5-5-high` or `gemini-4-carbon-high`) on `impl-*`, `lead-*`, and `ro-*`, and `gemini-3.8-flash-medium` on `sicko-*`.
-- `balanced` pins a high-reasoning model on `coordinator` and `ro-judge pool`, capable mid-tier models (`claude-sonnet-5-5-medium`, `gemini-4-carbon-medium`, or `gemini-4-argon-high`) on `impl-*`, `cand-*`, `lead-*`, and `adv-*`, and fast models (`gemini-3.8-flash-medium` or `gemini-3.8-flash-low`) on `ro-*` and `sicko-*`.
-- `lean` assigns `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`, or `gpt-oss-120b-medium` to high-volume worker prefixes and reserves one stronger tier for `ro-judge pool`.
+- `inherit` sets worker prefixes (`impl-*`, `lead-*`, `cand-*`, `ro-*`, `adv-*`, `sicko-*`, `monitor`) to `inherit` while keeping a live cross-family `ro-judge pool` from the discovered catalog.
+- `max` pins high-reasoning models (`claude-opus-5-5-high`, `gemini-4-hydrogen-high`, or `gemini-pro-orchestrator`) on `coordinator`, `cand-*`, `adv-*`, and `ro-judge pool`, strong models (`claude-sonnet-5-5-high` or `gemini-4-carbon-high`) on `impl-*`, `lead-*`, and `ro-*`, `gemini-3.8-flash-medium` on `sicko-*`, and the fast low-cost tier (`gemini-3.8-flash-low`) on `monitor`.
+- `balanced` pins a high-reasoning model on `coordinator` and `ro-judge pool`, mid-tier models (`claude-sonnet-5-5-medium`, `gemini-4-carbon-medium`, or `gemini-4-argon-high`) on `impl-*`, `lead-*`, `cand-*`, and `adv-*`, fast models (`gemini-3.8-flash-medium` or `gemini-3.8-flash-low`) on `ro-*` and `sicko-*`, and the fast low-cost tier (`gemini-3.8-flash-low`) on `monitor`.
+- `frugal` assigns fast low-cost models (`gemini-3.8-flash-medium`, `gemini-3.8-flash-low`, or `gpt-oss-120b-medium`) to `impl-*`, `lead-*`, `ro-*`, and `sicko-*`, pins `monitor` to `gemini-3.8-flash-low`, and reserves one stronger tier for `ro-judge pool`.
 
-**(b) Per-prefix swarm role models.** Show the resolved table and ask whether to accept or customize individual prefixes:
+**(b) Per-prefix swarm role models.** Show the resolved table with separate rows for every prefix and ask whether to accept or customize individual prefixes:
 
 - `coordinator` runs the root planning and integration loop (`roles/coordinator.md`).
-- `impl-*, cand-*, lead-*` run isolated `workspace: "share"` implementation, candidate prototype, and area-lead branches (`roles/poteto-agent.md`). `cand-*` also accepts a comma-separated multi-family list when `/crucible` explores orthogonal axes across distinct model families.
+- `impl-*` runs isolated `workspace: "share"` implementation and bug-fix slices (`roles/poteto-agent.md`).
+- `lead-*` runs isolated `workspace: "share"` area-lead sub-coordinators in multi-area programs (`roles/poteto-agent.md`).
+- `cand-*` runs isolated `workspace: "share"` candidate prototypes (`roles/poteto-agent.md`) and accepts a comma-separated multi-family list for orthogonal exploration in `/crucible`.
 - `ro-*` runs read-only scouts, trace investigators, blast-radius mappers, and verifiers (`roles/research.md`, `workspace: "inherit"`).
 - `adv-*` runs adversarial repro and exploit authors in `/interrogate` (`roles/poteto-agent.md`, `workspace: "share"`). A comma-separated multi-family list fans out one adversary per entry.
 - `sicko-*` runs surgical comment and slop cleanup passes (`roles/comment-sicko.md`, `workspace: "share"`, `edit_file` only).
+- `monitor` runs the built-in stall monitor (`swarm_monitor`) on multi-wave or long-running swarms, pinned to the fast low-cost tier (such as `gemini-3.8-flash-low`) or `inherit`.
 - `ro-judge pool` lists ordered cross-family models for `/crucible` and `/pstack` `evolve` grading. The coordinator picks the first available model from a family different from the candidate authors and coordinator. `inherit` never judges.
 
 **(c) Autonomy gates and quota hot-swap.** Confirm three operational policies:
@@ -82,7 +86,7 @@ Preset behavior:
 
 ### Step 4. Write `~/.gemini/config/rules/pstack-models.md`
 
-Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` (unlike standalone `AGENTS.md` or `GEMINI.md` files). Without `trigger: always_on`, `agy` logs `CORTEX_MEMORY_TRIGGER_UNSPECIFIED` and drops the rule on every turn. Overwrite `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter and total size well under 24 KB:
+Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` (unlike standalone `AGENTS.md` or `GEMINI.md` files). Without `trigger: always_on`, `agy` logs `CORTEX_MEMORY_TRIGGER_UNSPECIFIED` and drops the rule on every turn. Overwrite `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter, separate `impl-*` and `lead-*` lines, `monitor`, and total size well under 24 KB:
 
 ```markdown
 ---
@@ -93,76 +97,35 @@ trigger: always_on
 # Values must be `inherit` or live model IDs from `swarm{action: "models", all: true}`.
 # budget: balanced
 coordinator: inherit
-impl-*, lead-*: claude-sonnet-5-5-medium
+impl-*: claude-sonnet-5-5-medium
+lead-*: claude-sonnet-5-5-medium
 cand-*: claude-opus-5-5-high, gemini-4-hydrogen-high, gpt-oss-120b-medium
 ro-*: gemini-3.8-flash-high
 adv-*: claude-opus-5-5-high, gemini-4-hydrogen-high
 sicko-*: gemini-3.8-flash-low
+monitor: gemini-3.8-flash-low
 ro-judge pool: gemini-4-hydrogen-high, claude-opus-5-5-high, gpt-oss-120b-medium
 push gate: manual
 crucible checkpoint: none
 quota hotswap: auto (fallback: gemini-4-argon-medium, gemini-3.8-flash-high, gpt-oss-120b-medium)
 ```
 
-### Step 4b. Register `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`
+### Step 4b. Sync `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`
 
-In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `hooks.json` bundles, whereas global `~/.gemini/config/hooks.json` runs across both root sessions and every swarm worker. Register `pstack-swarm-guard` globally so worker role capsules, structural tool boundaries, and `Stop` cleanliness checks execute on every worker turn. Because `hooks/guard.mjs` stores per-conversation state under `<appDataDir>/plugin_data/agy-pstack-next/capsules/` alongside `member-map.json` whether invoked from the plugin hook or `~/.gemini/config/hooks.json`, both registrations share deduplication state and never double-inject the coordinator.
+In `agy`, synthetic `Swarm Worker` subagent specs do not inherit user-plugin `hooks.json` bundles, whereas global `~/.gemini/config/hooks.json` runs across both root sessions and every swarm worker. Sync `pstack-swarm-guard` globally via [`scripts/sync-hooks.mjs`](scripts/sync-hooks.mjs) so worker role capsules, structural tool boundaries, and `Stop` cleanliness checks execute on every worker turn while sharing per-conversation deduplication state under `<appDataDir>/plugin_data/agy-pstack-next/capsules/`.
 
-1. Read `~/.gemini/config/hooks.json` first if it exists and parse its top-level JSON object, preserving every existing hook entry (such as `herdr`). Start from `{}` only when `~/.gemini/config/hooks.json` does not exist.
-2. Resolve `<abs_guard_path>` to the canonical absolute filesystem path of `hooks/guard.mjs` (expand `$HOME` into a full path rather than writing `~` inside single quotes). Prefer `~/.gemini/config/plugins/agy-pstack-next/hooks/guard.mjs` when installed, and otherwise resolve `../../hooks/guard.mjs` relative to this `SKILL.md` file. Verify `<abs_guard_path>` exists on disk.
-3. Set `"pstack-swarm-guard"` on the parsed JSON object using this exact structure while leaving sibling keys untouched:
+1. Resolve `<plugin-root>` from this `SKILL.md` file (`~/.gemini/config/plugins/agy-pstack-next` when installed).
+2. Run the hook sync script to merge `pstack-swarm-guard` into `~/.gemini/config/hooks.json` while preserving sibling entries (such as `herdr`) and guarding each command with `test ! -f '<abs_guard_path>' ||`:
 
-```json
-{
-  "pstack-swarm-guard": {
-    "SessionStart": [
-      {
-        "type": "command",
-        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
-        "timeout": 10
-      }
-    ],
-    "PreInvocation": [
-      {
-        "type": "command",
-        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
-        "timeout": 10
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "(invoke|define)_subagent|manage_subagents|send_message|run_workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "(edit|write)_file|run_command|call_mcp_tool|mcp_.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "type": "command",
-        "command": "test ! -f '<abs_guard_path>' || node '<abs_guard_path>'",
-        "timeout": 10
-      }
-    ]
-  }
-}
+```bash
+node '<plugin-root>/skills/setup-pstack/scripts/sync-hooks.mjs'
 ```
 
-4. Write the merged JSON object back to `~/.gemini/config/hooks.json` with 2-space indentation.
+3. Verify zero configuration drift between `~/.gemini/config/hooks.json` and `<plugin-root>/hooks/guard.mjs`:
+
+```bash
+node '<plugin-root>/skills/setup-pstack/scripts/sync-hooks.mjs' --check
+```
 
 Global registration stays inert outside active pstack swarms:
 

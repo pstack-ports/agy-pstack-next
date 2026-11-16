@@ -29,7 +29,7 @@ Declare the operating mode before spawning workers so every member holds the sam
 
 ### Continuous board checkpoints
 
-Treat the swarm board as the authoritative operational ledger. At the end of every completed unit, post an unaddressed checkpoint message recording:
+Treat the swarm board as the authoritative operational ledger. Validate `plan.json` and multi-phase plan dependencies with [`../scripts/check-plan.mjs`](../scripts/check-plan.mjs), and record durable architectural decisions with [`../scripts/decision-log.sh`](../scripts/decision-log.sh). At the end of every completed unit, post an unaddressed checkpoint message recording:
 
 - Unit identifier and goal slice.
 - Exact commit SHA and `share` worktree path (`pwd`).
@@ -77,7 +77,7 @@ When resuming a paused swarm, prior conversation transcript, or existing branch 
 
 When the user asks to reclaim disk space or prune stale git worktrees:
 
-1. Record baseline disk free space with `df -h /` and enumerate every worktree from `git worktree list --porcelain` (never from guessed directory globs).
+1. Record baseline disk free space with `df -h /` and run [`../scripts/worktree-audit.sh`](../scripts/worktree-audit.sh) alongside `git worktree list --porcelain` (never guessed directory globs) to enumerate every worktree.
 2. Spawn `ro-audit` (`workspace: "inherit"`) to classify each candidate worktree by disk size, age, merge ancestry against base (`git merge-base --is-ancestor`), open/merged PR state (`gh pr list`), tracked uncommitted edits (`wip:N`) vs untracked throwaways (`scratch:N`), and recent references in `<appDataDir>/brain/*/.system_generated/logs/transcript.jsonl`.
 3. Cross-check active or pinned user chats before touching anything. Pause and show the diff for any `wip:N` worktree with uncommitted tracked edits, because deleting uncommitted work is irreversible.
 4. Prune only confirmed merged, clean, inactive worktrees (`git worktree remove --force <path>` followed by `git worktree prune`). When requested on macOS, reclaim simulator clutter with `xcrun simctl --set testing delete all` and `xcrun simctl delete unavailable`.

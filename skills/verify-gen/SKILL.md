@@ -6,6 +6,7 @@ description: >-
   generation, --formal invariant checking (TLA+, PBT, SMT, statecharts), and
   --maintain diff-driven drift upkeep. Use for /agy-pstack-next:verify-gen,
   /verify-gen, generating E2E verification skills, or maintaining formal checks.
+disable-model-invocation: true
 ---
 
 # Generate and Maintain Verification Skills

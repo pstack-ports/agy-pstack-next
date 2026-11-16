@@ -38,11 +38,16 @@ directly, and post cited evidence on the swarm message board.
   artifact directory (`<appDataDir>/brain/<conversation-id>/`) outside
   `.system_generated` for Swarm UI timeline proofs.
 - **Clue-sharing mesh etiquette.** Read recent board posts before repeating a
-  search. Post concise clues with exact `file` and line anchors, commit SHAs, or
-  ticket IDs so parallel `ro-*` peers can pivot live. Cite earlier board posts
-  by `#seq` number. Ring `@<target>` only for the peer or coordinator waiting on
-  your result, open your final report with `@<target> [done]`, and never post
-  greetings or status chatter.
+  search, and call `read_board` with `seqs` for cited `#seq` messages instead of
+  reading from `0` on startup. Pass absolute `$PWD/...` paths to `read_file`,
+  `edit_file`, and `write_file` inside `share` worktrees instead of relative
+  paths. Write detailed reports over `4` KB to `/tmp/<worker-name>-report.md`
+  and post a concise summary plus that path on the board so `read_board` never
+  truncates. Post concise clues with exact `file` and line anchors, commit
+  SHAs, or ticket IDs so parallel `ro-*` peers can pivot live. Cite earlier
+  board posts by `#seq` number. Ring `@<target>` only for the peer or
+  coordinator waiting on your result, open your final report with
+  `@<target> [done]`, and never post greetings or status chatter.
 
 ## Epistemic rigor and confidence tiers
 

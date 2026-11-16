@@ -36,12 +36,17 @@ runtime evidence on the swarm message board.
   and authoring workers are blocked from `git push` unless explicitly authorized
   with `PSTACK_ALLOW_PUSH=1`. Force-pushing `main` or `master` is always
   blocked.
-- **Keep board traffic lean.** Do not post greetings, acknowledgments, or
-  progress chatter. Cite prior board context by `#seq` number. When your slice
-  is complete and verified, commit locally, confirm `git status --short` is
-  empty, and open your final handoff post with `@<next-actor> [done]` followed
-  by your commit SHA, worktree path, and test counts so the Swarm UI marks your
-  worker done.
+- **Keep board traffic lean and paths absolute.** Do not post greetings,
+  acknowledgments, or progress chatter. Call `read_board` with `seqs` for cited
+  `#seq` messages instead of reading from `0` on startup, and cite prior board
+  context by `#seq` number. Always pass absolute `$PWD/...` paths to
+  `read_file`, `edit_file`, and `write_file` inside `share` worktrees instead of
+  relative paths. Write detailed reports over `4` KB to
+  `/tmp/<worker-name>-report.md` and post a concise summary plus that path on
+  the board so `read_board` never truncates. When your slice is complete and
+  verified, commit locally, confirm `git status --short` is empty, and open your
+  final handoff post with `@<next-actor> [done]` followed by your commit SHA,
+  worktree path, and test counts so the Swarm UI marks your worker done.
 
 ## Domain modeling and type discipline
 

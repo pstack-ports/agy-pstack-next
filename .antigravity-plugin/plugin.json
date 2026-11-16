@@ -1,7 +1,7 @@
 {
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Swarm-centric engineering workflows for Antigravity. Hook-enforced role capsules, worktree isolation, adversarial verification, and 14 composable skills for high-rigor parallel code.",
   "author": {
     "name": "Lauren Tan"

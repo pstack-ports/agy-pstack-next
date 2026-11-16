@@ -201,8 +201,23 @@ function readCapsuleState(cacheDir, conversationId) {
 }
 
 function updateCapsuleState(cacheDir, conversationId, patch) {
-  const next = { ...readCapsuleState(cacheDir, conversationId), ...patch };
-  writeJsonAtomically(capsuleStatePath(cacheDir, conversationId), next);
+  const current = readCapsuleState(cacheDir, conversationId);
+  const next = { ...current };
+  let changed = false;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      if (Object.prototype.hasOwnProperty.call(next, key)) {
+        delete next[key];
+        changed = true;
+      }
+    } else if (next[key] !== value) {
+      next[key] = value;
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeJsonAtomically(capsuleStatePath(cacheDir, conversationId), next);
+  }
   return next;
 }
 
@@ -275,20 +290,31 @@ function resolvePluginRoot(env) {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function isPluginDisabled(env) {
-  let configPath = null;
+function resolveConfigDir(env) {
   if (typeof env.PSTACK_CONFIG_DIR === "string" && env.PSTACK_CONFIG_DIR) {
-    configPath = join(env.PSTACK_CONFIG_DIR, "config.json");
-  } else {
-    const pluginRoot = resolvePluginRoot(env);
-    if (pluginRoot && basename(dirname(pluginRoot)) === "plugins") {
-      configPath = join(dirname(dirname(pluginRoot)), "config.json");
-    } else if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT && !env.PLUGIN_ROOT) {
-      const home = typeof env.HOME === "string" && env.HOME ? env.HOME : homedir();
-      configPath = join(home, ".gemini", "config", "config.json");
-    }
+    return env.PSTACK_CONFIG_DIR;
   }
-  if (!configPath || !existsSync(configPath)) {
+  const pluginRoot = resolvePluginRoot(env);
+  if (pluginRoot && basename(dirname(pluginRoot)) === "plugins") {
+    return dirname(dirname(pluginRoot));
+  }
+  if (typeof env.HOME === "string" && env.HOME && env.HOME !== homedir()) {
+    return join(env.HOME, ".gemini", "config");
+  }
+  if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT && !env.PLUGIN_ROOT) {
+    const home = typeof env.HOME === "string" && env.HOME ? env.HOME : homedir();
+    return join(home, ".gemini", "config");
+  }
+  return null;
+}
+
+function isPluginDisabled(env) {
+  const configDir = resolveConfigDir(env);
+  if (!configDir) {
+    return false;
+  }
+  const configPath = join(configDir, "config.json");
+  if (!existsSync(configPath)) {
     return false;
   }
   return readJsonObject(configPath)?.plugins?.["agy-pstack-next"]?.enabled === false;
@@ -641,6 +667,7 @@ function extractMembersFromDoc(doc, targetConvId, fallbackCoordId = null) {
   let coordId = typeof fallbackCoordId === "string" && fallbackCoordId ? fallbackCoordId : null;
   let hasPstackPrefixedWorker = false;
   let hasTaskWorker = false;
+  let hasActiveTaskWorker = false;
   const members = doc && typeof doc === "object" && doc.members && typeof doc.members === "object" ? doc.members : {};
   for (const [name, info] of Object.entries(members)) {
     if (!info || typeof info !== "object") {
@@ -663,12 +690,22 @@ function extractMembersFromDoc(doc, targetConvId, fallbackCoordId = null) {
     const base = stripTrailingNumericSuffix(lower);
     if (base !== "coordinator" && base !== "monitor" && base !== "narrator") {
       hasTaskWorker = true;
+      if (info.killed !== true && info.state !== "killed") {
+        hasActiveTaskWorker = true;
+      }
     }
     if (typeof cid === "string" && cid) {
       workerEntries[cid] = name;
     }
   }
-  return { workerEntries, matchedCoordinator, coordId, hasPstackPrefixedWorker, hasTaskWorker };
+  return {
+    workerEntries,
+    matchedCoordinator,
+    coordId,
+    hasPstackPrefixedWorker,
+    hasTaskWorker,
+    hasActiveTaskWorker,
+  };
 }
 
 function resolveRemoteBoardCli(anchor, appDataDir, env) {
@@ -798,7 +835,14 @@ function inspectSwarmDirectory(swarmDir, ownerDirId, targetConvId, opts) {
       const targetInSwarm = Boolean(targetIsWorker || matchedCoordinator || ext.coordId === targetConvId);
       return { kind: "unmanaged_swarm", targetInSwarm, targetIsWorker };
     }
-    return { kind: "managed_roster", workerEntries: ext.workerEntries, matchedCoordinator };
+    const finishedCoordinator = matchedCoordinator && ext.hasTaskWorker && !ext.hasActiveTaskWorker;
+    const activeCoordinator = matchedCoordinator && !finishedCoordinator;
+    return {
+      kind: "managed_roster",
+      workerEntries: ext.workerEntries,
+      matchedCoordinator: activeCoordinator,
+      finishedCoordinator,
+    };
   }
 
   const membersPath = join(swarmDir, "members.json");
@@ -835,8 +879,13 @@ function inspectSwarmDirectory(swarmDir, ownerDirId, targetConvId, opts) {
   return { kind: "anchor_coordinator" };
 }
 
-function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheDir, hasPriorCapsule, env) {
-  const empty = { workerName: null, isKnownCoordinator: false, isUnmanagedSwarmWorker: false };
+function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheDir, hasPriorCapsule, env, capsuleState = {}) {
+  const empty = {
+    workerName: null,
+    isKnownActiveCoordinator: false,
+    isFinishedCoordinator: false,
+    isUnmanagedSwarmWorker: false,
+  };
   if (typeof convId !== "string" || !convId) {
     return empty;
   }
@@ -853,6 +902,7 @@ function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheD
   function checkDirs(dirs) {
     const discovered = {};
     let matchedCoord = false;
+    let matchedFinishedCoord = false;
     let matchedUnmanaged = false;
     let matchedUnmanagedWorker = false;
     for (const { dirId, isOwnSwarmDir } of dirs) {
@@ -863,6 +913,9 @@ function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheD
         if (res.matchedCoordinator) {
           matchedCoord = true;
         }
+        if (res.finishedCoordinator) {
+          matchedFinishedCoord = true;
+        }
       } else if (res.kind === "anchor_coordinator") {
         matchedCoord = true;
       } else if (res.kind === "unmanaged_swarm" && res.targetInSwarm) {
@@ -871,7 +924,7 @@ function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheD
           matchedUnmanagedWorker = true;
         }
       }
-      if (discovered[convId] || matchedCoord || matchedUnmanaged) {
+      if (discovered[convId] || matchedCoord || matchedFinishedCoord || matchedUnmanaged) {
         break;
       }
     }
@@ -880,7 +933,10 @@ function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheD
       return { ...empty, workerName: discovered[convId] };
     }
     if (matchedCoord) {
-      return { ...empty, isKnownCoordinator: true };
+      return { ...empty, isKnownActiveCoordinator: true };
+    }
+    if (matchedFinishedCoord) {
+      return { ...empty, isFinishedCoordinator: true };
     }
     if (matchedUnmanaged) {
       return { ...empty, isUnmanagedSwarmWorker: matchedUnmanagedWorker };
@@ -900,8 +956,12 @@ function resolveWorkerOrCoordinatorFromSwarm(convId, payload, appDataDir, cacheD
   if (directHit) {
     return directHit;
   }
-  if (transcriptIsUnforkedUserRoot(resolveOwnTranscriptPath(payload, appDataDir), hasPriorCapsule)) {
+  if (capsuleState.unforkedRoot === true) {
     return empty;
+  }
+  if (transcriptIsUnforkedUserRoot(resolveOwnTranscriptPath(payload, appDataDir), hasPriorCapsule)) {
+    updateCapsuleState(cacheDir, convId, { unforkedRoot: true });
+    return { ...empty, unforkedRoot: true };
   }
   try {
     const brainDir = join(appDataDir, "brain");
@@ -956,14 +1016,24 @@ function classifySession(payload, env) {
       capsuleState = updateCapsuleState(cacheDir, convId, { plainSwarm: true });
     }
   }
-  const { workerName, isKnownCoordinator, isUnmanagedSwarmWorker } = resolveWorkerOrCoordinatorFromSwarm(
+  const {
+    workerName,
+    isKnownActiveCoordinator,
+    isFinishedCoordinator,
+    isUnmanagedSwarmWorker,
+    unforkedRoot,
+  } = resolveWorkerOrCoordinatorFromSwarm(
     convId,
     payload,
     appDataDir,
     cacheDir,
     alreadyInjected,
     env,
+    capsuleState,
   );
+  if (unforkedRoot) {
+    capsuleState = { ...capsuleState, unforkedRoot: true };
+  }
   if (workerName) {
     return {
       sessionKind: "worker",
@@ -985,7 +1055,15 @@ function classifySession(payload, env) {
       capsuleState,
     };
   }
-  if (isKnownCoordinator || capsuleState.capsule === "roles/coordinator.md" || isPstackSlash || forcedCoord) {
+  const hasActivePrompt = typeof capsuleState.activePrompt === "string" && capsuleState.activePrompt.length > 0;
+  const matchesActivePromptTurn =
+    hasActivePrompt &&
+    !isFinishedCoordinator &&
+    (!payload.lastUserInput || payload.lastUserInput === capsuleState.activePrompt);
+  if (isPstackSlash || forcedCoord || isKnownActiveCoordinator || matchesActivePromptTurn) {
+    if (convId && isPstackSlash && typeof payload.lastUserInput === "string" && payload.lastUserInput) {
+      capsuleState = updateCapsuleState(cacheDir, convId, { activePrompt: payload.lastUserInput });
+    }
     return {
       sessionKind: "coordinator",
       kind: "coordinator",
@@ -995,6 +1073,9 @@ function classifySession(payload, env) {
       cacheDir,
       capsuleState,
     };
+  }
+  if (convId && hasActivePrompt) {
+    capsuleState = updateCapsuleState(cacheDir, convId, { activePrompt: undefined });
   }
   return {
     sessionKind: "unmanaged",
@@ -1570,11 +1651,288 @@ function readGitStatusPorcelain(dir) {
   }
 }
 
+const DRIFT_WARNING_TEXT =
+  "> **Global hooks drift detected.** Your global hooks configuration is out of date or missing required pstack-swarm-guard handlers. Run `skills/setup-pstack/scripts/sync-hooks.mjs` or `/setup-pstack` to sync it.";
+
+function realpathIfExists(filePath) {
+  if (typeof filePath !== "string" || !filePath || !existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function commandTargetsGuard(command, expectedGuardReal, baseDir) {
+  if (typeof command !== "string" || !command.trim() || !expectedGuardReal) {
+    return false;
+  }
+  const resolveTarget = (p) => realpathIfExists(baseDir ? resolve(baseDir, p) : p);
+  let sawExec = false;
+  for (const tokens of parseCommandSegments(command)) {
+    if (tokens.length === 0) {
+      continue;
+    }
+    const head = basename(tokens[0]);
+    if (head === "test" || head === "[") {
+      const fIdx = tokens.indexOf("-f");
+      if (fIdx >= 0 && fIdx + 1 < tokens.length) {
+        if (resolveTarget(tokens[fIdx + 1]) !== expectedGuardReal) {
+          return false;
+        }
+      }
+      continue;
+    }
+    const { cmd, args } = unwrapCommandSegment(tokens);
+    let scriptPath = null;
+    if (cmd === "node") {
+      for (const arg of args) {
+        if (!arg.startsWith("-")) {
+          scriptPath = arg;
+          break;
+        }
+      }
+    } else {
+      for (const tok of tokens) {
+        if (!tok.includes("=") && !SHELL_KEYWORDS.has(tok)) {
+          scriptPath = tok;
+          break;
+        }
+      }
+    }
+    if (!scriptPath || resolveTarget(scriptPath) !== expectedGuardReal) {
+      return false;
+    }
+    sawExec = true;
+  }
+  return sawExec;
+}
+
+function handlerPointsToGuard(handler, expectedGuardReal, baseDir) {
+  return Boolean(
+    handler &&
+      typeof handler === "object" &&
+      handler.type === "command" &&
+      commandTargetsGuard(handler.command, expectedGuardReal, baseDir),
+  );
+}
+
+function splitTopLevelPipes(expr) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < expr.length; i += 1) {
+    const ch = expr[i];
+    if (ch === "\\" && i + 1 < expr.length) {
+      i += 1;
+      continue;
+    }
+    if (ch === "(") {
+      depth += 1;
+    } else if (ch === ")" && depth > 0) {
+      depth -= 1;
+    } else if (ch === "|" && depth === 0) {
+      parts.push(expr.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(expr.slice(start));
+  return parts;
+}
+
+function expandSimpleGroup(branch) {
+  const open = branch.indexOf("(");
+  if (open === -1) {
+    return [branch];
+  }
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < branch.length; i += 1) {
+    if (branch[i] === "(") {
+      depth += 1;
+    } else if (branch[i] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) {
+    return [branch];
+  }
+  const prefix = branch.slice(0, open);
+  const inner = branch.slice(open + 1, close);
+  const suffix = branch.slice(close + 1);
+  const out = [];
+  for (const alt of splitTopLevelPipes(inner)) {
+    for (const rest of expandSimpleGroup(suffix)) {
+      out.push(prefix + alt + rest);
+    }
+  }
+  return out;
+}
+
+function matcherCoversTool(matcher, toolName) {
+  if (typeof matcher !== "string" || !matcher || matcher === "*" || matcher === ".*") {
+    return true;
+  }
+  for (const branch of splitTopLevelPipes(matcher)) {
+    for (const pattern of expandSimpleGroup(branch)) {
+      if (pattern.endsWith(".*")) {
+        if (toolName.startsWith(pattern.slice(0, -2))) {
+          return true;
+        }
+      } else if (pattern === toolName) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function detectGlobalHooksDriftWarning(env) {
+  const configDir = resolveConfigDir(env);
+  if (!configDir) {
+    return null;
+  }
+  const globalHooksPath = join(configDir, "hooks.json");
+  if (!existsSync(globalHooksPath)) {
+    return null;
+  }
+  const guardSpec = readJsonObject(globalHooksPath)["pstack-swarm-guard"];
+  if (!guardSpec || typeof guardSpec !== "object" || Array.isArray(guardSpec) || guardSpec.enabled === false) {
+    return null;
+  }
+  const pluginRoot = resolvePluginRoot(env);
+  const pluginGuardSpec = readJsonObject(join(pluginRoot, "hooks.json"))["pstack-swarm-guard"];
+  if (!pluginGuardSpec || typeof pluginGuardSpec !== "object") {
+    return null;
+  }
+  const expectedGuardReal = realpathIfExists(join(pluginRoot, "hooks", "guard.mjs"));
+  if (!expectedGuardReal) {
+    return null;
+  }
+  for (const eventName of ["SessionStart", "PreInvocation", "Stop"]) {
+    const handlers = guardSpec[eventName];
+    if (!Array.isArray(handlers) || handlers.length === 0) {
+      return DRIFT_WARNING_TEXT;
+    }
+    if (!handlers.every((h) => handlerPointsToGuard(h, expectedGuardReal, configDir))) {
+      return DRIFT_WARNING_TEXT;
+    }
+  }
+  const actualPreTool = guardSpec.PreToolUse;
+  const expectedPreTool = Array.isArray(pluginGuardSpec.PreToolUse) ? pluginGuardSpec.PreToolUse : [];
+  if (!Array.isArray(actualPreTool) || actualPreTool.length === 0) {
+    return DRIFT_WARNING_TEXT;
+  }
+  for (const expectedBlock of expectedPreTool) {
+    const matcher = String(expectedBlock?.matcher || "");
+    const matchBlock = actualPreTool.find((b) => b && typeof b === "object" && b.matcher === matcher);
+    if (!matchBlock || !Array.isArray(matchBlock.hooks) || matchBlock.hooks.length === 0) {
+      return DRIFT_WARNING_TEXT;
+    }
+    if (!matchBlock.hooks.every((h) => handlerPointsToGuard(h, expectedGuardReal, configDir))) {
+      return DRIFT_WARNING_TEXT;
+    }
+  }
+  return null;
+}
+
+function resolveConfigDirForDualHook(env) {
+  const direct = resolveConfigDir(env);
+  if (direct) {
+    return direct;
+  }
+  if (!env.PSTACK_APPDATA_DIR && !env.PSTACK_PLUGIN_ROOT) {
+    const home = typeof env.HOME === "string" && env.HOME ? env.HOME : homedir();
+    return join(home, ".gemini", "config");
+  }
+  return null;
+}
+
+function shouldShortCircuitDualHook(payload, env, eventName) {
+  if (typeof env.PLUGIN_ROOT !== "string" || !env.PLUGIN_ROOT) {
+    return false;
+  }
+  if (typeof env.PSTACK_PLUGIN_ROOT === "string" && env.PSTACK_PLUGIN_ROOT) {
+    return false;
+  }
+  const configDir = resolveConfigDirForDualHook(env);
+  if (!configDir) {
+    return false;
+  }
+  const globalHooksPath = join(configDir, "hooks.json");
+  if (!existsSync(globalHooksPath)) {
+    return false;
+  }
+  const guardSpec = readJsonObject(globalHooksPath)["pstack-swarm-guard"];
+  if (!guardSpec || typeof guardSpec !== "object" || Array.isArray(guardSpec) || guardSpec.enabled === false) {
+    return false;
+  }
+  const expectedGuardReal = realpathIfExists(join(env.PLUGIN_ROOT, "hooks", "guard.mjs"));
+  if (!expectedGuardReal) {
+    return false;
+  }
+  if (eventName === "SessionStart" || eventName === "PreInvocation" || eventName === "Stop") {
+    const handlers = guardSpec[eventName];
+    return Array.isArray(handlers) && handlers.some((h) => handlerPointsToGuard(h, expectedGuardReal, configDir));
+  }
+  if (eventName === "PreToolUse" || payload.toolCall) {
+    const blocks = guardSpec.PreToolUse;
+    if (!Array.isArray(blocks) || blocks.length === 0) {
+      return false;
+    }
+    const tc = payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall : {};
+    const rawName = typeof tc.name === "string" ? tc.name : String(tc.name || "");
+    const toolName = rawName.startsWith("default_api:") ? rawName.slice(12) : rawName;
+    if (!toolName) {
+      return blocks.some(
+        (b) =>
+          b &&
+          typeof b === "object" &&
+          Array.isArray(b.hooks) &&
+          b.hooks.some((h) => handlerPointsToGuard(h, expectedGuardReal, configDir)),
+      );
+    }
+    return blocks.some(
+      (b) =>
+        b &&
+        typeof b === "object" &&
+        matcherCoversTool(b.matcher, toolName) &&
+        Array.isArray(b.hooks) &&
+        b.hooks.some((h) => handlerPointsToGuard(h, expectedGuardReal, configDir)),
+    );
+  }
+  return false;
+}
+
+function cleanupLegacyCacheFiles(cacheDir) {
+  if (!cacheDir) {
+    return;
+  }
+  for (const name of ["injected-capsules.json", "non-worker-roots.json"]) {
+    const filePath = join(cacheDir, name);
+    if (existsSync(filePath)) {
+      try {
+        unlinkSync(filePath);
+      } catch {}
+    }
+  }
+}
+
 function handleSessionOrInvocation(payload, env) {
   if (isPluginDisabled(env)) {
     return {};
   }
+  const isSessionStart = payload.hookEventName === "SessionStart";
   const session = classifySession(payload, env);
+  if (isSessionStart) {
+    cleanupLegacyCacheFiles(session.cacheDir);
+  }
   if (session.sessionKind === "unmanaged") {
     return {};
   }
@@ -1594,8 +1952,20 @@ function handleSessionOrInvocation(payload, env) {
       stateDirty = true;
     }
   }
+  const driftWarning =
+    isSessionStart && session.sessionKind === "coordinator" && !nextState.driftWarningNotified
+      ? detectGlobalHooksDriftWarning(env)
+      : null;
   const capsuleAbsPath = session.capsule ? join(resolvePluginRoot(env), session.capsule) : "";
-  if (!session.capsule || nextState.capsule === session.capsule || !existsSync(capsuleAbsPath)) {
+  const needsCapsule = Boolean(session.capsule && nextState.capsule !== session.capsule && existsSync(capsuleAbsPath));
+  if (!needsCapsule) {
+    if (driftWarning) {
+      nextState.driftWarningNotified = true;
+      writeJsonAtomically(capsuleStatePath(session.cacheDir, convKey), nextState);
+      return {
+        injectSteps: [{ systemMessage: { systemMessage: driftWarning } }],
+      };
+    }
     if (stateDirty) {
       writeJsonAtomically(capsuleStatePath(session.cacheDir, convKey), nextState);
     }
@@ -1605,10 +1975,14 @@ function handleSessionOrInvocation(payload, env) {
   const hasForkCapsule = !isUpgrade && transcriptContainsRoleCapsule(resolveOwnTranscriptPath(payload, session.appDataDir));
   nextState.capsule = session.capsule;
   delete nextState.plainSwarm;
+  if (driftWarning) {
+    nextState.driftWarningNotified = true;
+  }
   writeJsonAtomically(capsuleStatePath(session.cacheDir, convKey), nextState);
   const prefix = isUpgrade || hasForkCapsule ? ROLE_OVERRIDE_NOTICE : "";
+  const suffix = driftWarning ? `\n\n${driftWarning}` : "";
   return {
-    injectSteps: [{ systemMessage: { systemMessage: prefix + readFileSync(capsuleAbsPath, "utf8") } }],
+    injectSteps: [{ systemMessage: { systemMessage: prefix + readFileSync(capsuleAbsPath, "utf8") + suffix } }],
   };
 }
 
@@ -1778,6 +2152,9 @@ function handleStop(payload, env) {
 export function runGuard(payload, env = process.env) {
   const safePayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const eventName = String(safePayload.hookEventName || "");
+  if (shouldShortCircuitDualHook(safePayload, env, eventName)) {
+    return eventName === "PreToolUse" || safePayload.toolCall ? ALLOW : {};
+  }
   if (eventName === "SessionStart" || eventName === "PreInvocation") {
     return handleSessionOrInvocation(safePayload, env);
   }

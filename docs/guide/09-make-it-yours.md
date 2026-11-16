@@ -10,7 +10,7 @@ Run [`/setup-pstack`](../../skills/setup-pstack/SKILL.md) any time your model ca
 /agy-pstack-next:setup-pstack
 ```
 
-Beyond updating `~/.gemini/config/rules/pstack-models.md` across `coordinator`, `impl-*`, `ro-*`, `adv-*`, `ro-judge`, and `sicko-*` prefixes and keeping `pstack-swarm-guard` registered in `~/.gemini/config/hooks.json`, `/setup-pstack` helps you draft standing `/schedule` automations tailored to your repositories (for example, morning `/ketchup` summaries or scheduled `/verify-gen --maintain` checks) and recommends prompts from [`prompting.md`](../../skills/setup-pstack/references/prompting.md) and [`recipes.md`](../../skills/setup-pstack/references/recipes.md).
+Beyond updating `~/.gemini/config/rules/pstack-models.md` across `coordinator`, `impl-*`, `lead-*`, `cand-*`, `ro-*`, `adv-*`, `sicko-*`, `monitor` (pinned to the fast low-cost tier such as `gemini-3.8-flash-low`), and `ro-judge pool` using the `frugal`, `balanced`, `max`, or `inherit` presets while validating existing IDs against `swarm{action: "models", all: true}`, `/setup-pstack` runs [`sync-hooks.mjs`](../../skills/setup-pstack/scripts/sync-hooks.mjs) (and `--check` for drift verification) to keep `pstack-swarm-guard` registered in `~/.gemini/config/hooks.json`. It also helps you draft standing `/schedule` automations tailored to your repositories (for example, morning `/ketchup` summaries or scheduled `/verify-gen --maintain` checks) and recommends prompts from [`prompting.md`](../../skills/setup-pstack/references/prompting.md) and [`recipes.md`](../../skills/setup-pstack/references/recipes.md).
 
 ## Turn session friction and repeated corrections into structure with `/reflect`
 
