@@ -95,6 +95,10 @@ jobs:
             };
             checkExecutable("hooks/guard.mjs");
             checkExecutable("skills/pstack/scripts/watch-pr");
+            checkExecutable("skills/pstack/scripts/check-plan.mjs");
+            checkExecutable("skills/pstack/scripts/worktree-audit.sh");
+            checkExecutable("skills/pstack/scripts/decision-log.sh");
+            checkExecutable("skills/setup-pstack/scripts/sync-hooks.mjs");
 
             for (const capsule of ["coordinator", "poteto-agent", "research", "comment-sicko"]) {
               const p = join("roles", `${capsule}.md`);
@@ -209,11 +213,34 @@ jobs:
       - name: Run swarm guard unit tests
         run: node --test hooks/guard.test.mjs
 
+      - name: Run pstack script syntax and unit tests
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: commit.gpgsign
+          GIT_CONFIG_VALUE_0: "false"
+        run: |
+          bash -n skills/pstack/scripts/worktree-audit.sh
+          bash -n skills/pstack/scripts/decision-log.sh
+          node --test skills/pstack/scripts/watch-pr.test.mjs skills/pstack/scripts/check-plan.test.mjs
+
       - name: Smoke check watch-pr CLI
         run: ./skills/pstack/scripts/watch-pr --help > /dev/null
+
+      - name: Cache TLA+ tools
+        id: cache-tla2tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tla2tools/tla2tools-1.8.0.jar
+          key: tla2tools-1.8.0
+
+      - name: Download TLA+ tools
+        if: steps.cache-tla2tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.cache/tla2tools"
+          curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o "$HOME/.cache/tla2tools/tla2tools-1.8.0.jar"
 
       - name: Test statechart
         working-directory: skills/statechart/scripts
         run: |
-          bun install
-          bun run test
+          bun install --frozen-lockfile
+          TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-1.8.0.jar" bun run test

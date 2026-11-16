@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
@@ -108,7 +110,7 @@ const AUTOMATION_TOKENS = [
   "review automation",
 ];
 
-class CliUsageError extends Error {
+export class CliUsageError extends Error {
   constructor(message, exitCode = 64) {
     super(message);
     this.name = "CliUsageError";
@@ -116,7 +118,7 @@ class CliUsageError extends Error {
   }
 }
 
-class WatcherQueryError extends Error {
+export class WatcherQueryError extends Error {
   constructor(failure) {
     super(failure.detail);
     this.name = "WatcherQueryError";
@@ -128,7 +130,7 @@ function nonEmpty(items) {
   return items.length === 0 ? null : [items[0], ...items.slice(1)];
 }
 
-function parsePrNumber(value, label = "PR number") {
+export function parsePrNumber(value, label = "PR number") {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer`);
   }
@@ -709,7 +711,7 @@ export class GhGitHubReader {
   }
 }
 
-async function resolveChecks(reader, context) {
+export async function resolveChecks(reader, context) {
   const fast = await reader.checksFastPath(context);
   const direct = fast.kind === "checks" ? nonEmpty(fast.checks) : null;
   if (direct !== null) return { source: "gh-pr-checks", checks: direct };
@@ -733,7 +735,7 @@ async function resolveChecks(reader, context) {
   });
 }
 
-async function resolveReviewThreads(reader, context) {
+export async function resolveReviewThreads(reader, context) {
   const threads = [];
   let after = null;
   do {
@@ -814,7 +816,7 @@ export async function discoverStack(reader, context) {
   return orderStack(context, await reader.openPullRequests(context));
 }
 
-function assessGitHubMerge(args) {
+export function assessGitHubMerge(args) {
   if (args.mergeStateStatus === "BLOCKED") {
     if (args.headRollupState === "ERROR" || args.headRollupState === "FAILURE") {
       return {
@@ -856,7 +858,7 @@ async function mergeAssessment(reader, facts) {
   };
 }
 
-async function readSnapshot(args) {
+export async function readSnapshot(args) {
   const facts = await args.reader.pullRequest(args.context);
   if (facts.state === "MERGED" || facts.mergedAt !== null) {
     return { kind: "merged", context: args.context, facts };
@@ -1009,7 +1011,7 @@ function readyContribution(row, allowDraft) {
   };
 }
 
-function classifyPr(row, allowDraft = false) {
+export function classifyPr(row, allowDraft = false) {
   for (const blocker of [
     conflictBlocker(row),
     threadBlocker(row),
@@ -1028,7 +1030,7 @@ function classifyPr(row, allowDraft = false) {
     : { kind: "ready", pr: ready };
 }
 
-function selectTierMajorStackDecision(rows, allowDraft = false) {
+export function selectTierMajorStackDecision(rows, allowDraft = false) {
   for (const tier of [conflictBlocker, threadBlocker, ciBlocker]) {
     for (const row of rows) {
       const blocker = tier(row);
@@ -1059,7 +1061,7 @@ function selectTierMajorStackDecision(rows, allowDraft = false) {
   return { kind: "clear", prs };
 }
 
-const queryBackoffSeconds = (interval, failures) =>
+export const queryBackoffSeconds = (interval, failures) =>
   Math.min(Math.max(interval, 60) * 2 ** (failures - 1), 300);
 
 function verdictFactory(clock, mode) {
@@ -1161,7 +1163,7 @@ async function pollUntilTerminal(args) {
   }
 }
 
-async function runSimple(args) {
+export async function runSimple(args) {
   const stamp = verdictFactory(args.dependencies.clock, args.mode);
   const step = async () => {
     const rows = [];
@@ -1266,7 +1268,7 @@ async function runSimple(args) {
   });
 }
 
-const createQueueState = (queue, now) => ({
+export const createQueueState = (queue, now) => ({
   queue,
   snapshots: new Map(),
   work: { kind: "whole-stack-sweep", remaining: queue },
@@ -1285,7 +1287,7 @@ const orderedRows = (state) =>
 const activeRows = (state) =>
   orderedRows(state).filter((row) => row.kind !== "merged");
 
-function planQueue(state, now) {
+export function planQueue(state, now) {
   if (state.work !== null) return state;
   if (state.snapshots.size === 0 || now >= state.nextSweepAt) {
     const remaining = nonEmpty(
@@ -1303,7 +1305,7 @@ function planQueue(state, now) {
     : { ...state, work: { kind: "frontier-poll", frontier } };
 }
 
-function applyQueueSnapshot(state, snapshot, now, options) {
+export function applyQueueSnapshot(state, snapshot, now, options) {
   if (state.work === null) throw new Error("queue has no read in flight");
   const snapshots = new Map(state.snapshots);
   snapshots.set(snapshot.context.number, snapshot);
@@ -1337,7 +1339,7 @@ function applyQueueSnapshot(state, snapshot, now, options) {
   };
 }
 
-function evaluateQueue(state, now, options) {
+export function evaluateQueue(state, now, options) {
   const active = activeRows(state);
   if (active.length === 0) {
     const merged = nonEmpty(
@@ -1400,7 +1402,7 @@ function evaluateQueue(state, now, options) {
   };
 }
 
-async function runQueued(args) {
+export async function runQueued(args) {
   let state = createQueueState(args.contexts, args.dependencies.clock.now());
   const stamp = verdictFactory(args.dependencies.clock, "queued-stack");
   args.dependencies.emit(
@@ -1719,7 +1721,8 @@ Options:
 `;
 
 function parsePositiveNumber(flag, value) {
-  const parsed = Number(value);
+  const trimmed = String(value).trim();
+  const parsed = trimmed === "" ? NaN : Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new CliUsageError(`error: option '${flag}' argument '${value}' is invalid. must be greater than zero\n`);
   }
@@ -1727,7 +1730,8 @@ function parsePositiveNumber(flag, value) {
 }
 
 function parseNonNegativeNumber(flag, value) {
-  const parsed = Number(value);
+  const trimmed = String(value).trim();
+  const parsed = trimmed === "" ? NaN : Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new CliUsageError(`error: option '${flag}' argument '${value}' is invalid. must be zero or greater\n`);
   }
@@ -1735,7 +1739,8 @@ function parseNonNegativeNumber(flag, value) {
 }
 
 function parsePositiveInteger(flag, value) {
-  const parsed = Number(value);
+  const trimmed = String(value).trim();
+  const parsed = trimmed === "" ? NaN : Number(trimmed);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new CliUsageError(`error: option '${flag}' argument '${value}' is invalid. must be a positive integer\n`);
   }
@@ -1743,8 +1748,9 @@ function parsePositiveInteger(flag, value) {
 }
 
 function parseCliPrNumber(flag, value) {
+  const trimmed = String(value).trim().replace(/^#/, "");
   try {
-    return parsePrNumber(Number(String(value).replace(/^#/, "")));
+    return parsePrNumber(trimmed === "" ? NaN : Number(trimmed));
   } catch {
     throw new CliUsageError(`error: option '${flag}' argument '${value}' is invalid. must be a positive integer\n`);
   }
@@ -1764,88 +1770,70 @@ function parseStackPrList(flag, value) {
   return parsed;
 }
 
+const CLI_OPTIONS = {
+  owner: { type: "string" },
+  repo: { type: "string" },
+  pr: { type: "string" },
+  stack: { type: "boolean", default: false },
+  "queued-stack": { type: "boolean", default: false },
+  "stack-prs": { type: "string" },
+  interval: { type: "string" },
+  "sweep-interval": { type: "string" },
+  timeout: { type: "string" },
+  "max-query-errors": { type: "string" },
+  "status-only": { type: "boolean", default: false },
+  "allow-draft": { type: "boolean", default: false },
+  pretty: { type: "boolean", default: false },
+  help: { type: "boolean", short: "h", default: false },
+};
+
 export function parseArgs(argv, io) {
-  let owner = null;
-  let repo = null;
-  let pr = null;
-  let stack = false;
-  let queuedStack = false;
-  let stackPrs;
-  let interval = 60;
-  let sweepInterval = 300;
-  let timeout = 0;
-  let maxQueryErrors = 5;
-  let statusOnly = false;
-  let allowDraft = false;
-  let pretty = false;
-
-  const needValue = (flag, idx) => {
-    if (idx + 1 >= argv.length) {
-      throw new CliUsageError(`error: option '${flag}' argument missing\n`);
-    }
-    return argv[idx + 1];
-  };
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const rawArg = argv[i];
-    if (rawArg === "-h" || rawArg === "--help") {
-      io.stdout(HELP_TEXT);
-      throw new CliUsageError("", 0);
-    }
-    const eqIndex = rawArg.indexOf("=");
-    const flag = eqIndex >= 0 ? rawArg.slice(0, eqIndex) : rawArg;
-    const inlineVal = eqIndex >= 0 ? rawArg.slice(eqIndex + 1) : null;
-    const takeVal = () => {
-      if (inlineVal !== null) return inlineVal;
-      const val = needValue(flag, i);
-      i += 1;
-      return val;
-    };
-
-    switch (flag) {
-      case "--owner":
-        owner = takeVal();
-        break;
-      case "--repo":
-        repo = takeVal();
-        break;
-      case "--pr":
-        pr = parseCliPrNumber(flag, takeVal());
-        break;
-      case "--stack":
-        stack = true;
-        break;
-      case "--queued-stack":
-        queuedStack = true;
-        break;
-      case "--stack-prs":
-        stackPrs = parseStackPrList(flag, takeVal());
-        break;
-      case "--interval":
-        interval = parsePositiveNumber(flag, takeVal());
-        break;
-      case "--sweep-interval":
-        sweepInterval = parsePositiveNumber(flag, takeVal());
-        break;
-      case "--timeout":
-        timeout = parseNonNegativeNumber(flag, takeVal());
-        break;
-      case "--max-query-errors":
-        maxQueryErrors = parsePositiveInteger(flag, takeVal());
-        break;
-      case "--status-only":
-        statusOnly = true;
-        break;
-      case "--allow-draft":
-        allowDraft = true;
-        break;
-      case "--pretty":
-        pretty = true;
-        break;
-      default:
-        throw new CliUsageError(`error: unknown option '${rawArg}'\n`);
-    }
+  let values;
+  try {
+    ({ values } = parseNodeArgs({
+      args: argv,
+      options: CLI_OPTIONS,
+      strict: true,
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`error: ${message}\n`);
   }
+
+  if (values.help) {
+    io.stdout(HELP_TEXT);
+    throw new CliUsageError("", 0);
+  }
+
+  const owner = values.owner ?? null;
+  const repo = values.repo ?? null;
+  const pr = values.pr !== undefined ? parseCliPrNumber("--pr", values.pr) : null;
+  const stack = values.stack;
+  const queuedStack = values["queued-stack"];
+  const stackPrs =
+    values["stack-prs"] !== undefined
+      ? parseStackPrList("--stack-prs", values["stack-prs"])
+      : undefined;
+  const interval =
+    values.interval !== undefined
+      ? parsePositiveNumber("--interval", values.interval)
+      : 60;
+  const sweepInterval =
+    values["sweep-interval"] !== undefined
+      ? parsePositiveNumber("--sweep-interval", values["sweep-interval"])
+      : 300;
+  const timeout =
+    values.timeout !== undefined
+      ? parseNonNegativeNumber("--timeout", values.timeout)
+      : 0;
+  const maxQueryErrors =
+    values["max-query-errors"] !== undefined
+      ? parsePositiveInteger("--max-query-errors", values["max-query-errors"])
+      : 5;
+  const statusOnly = values["status-only"];
+  const allowDraft = values["allow-draft"];
+  const pretty = values.pretty;
 
   if (stack && queuedStack) {
     throw new CliUsageError(
@@ -1940,10 +1928,18 @@ export async function main(argv, runtime = realRuntime()) {
   return verdict.exitCode;
 }
 
-const isMain =
-  process.argv[1] !== undefined &&
-  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+function isEntrypoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      realpathSync(resolve(process.argv[1])) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
 
-if (isMain) {
+if (isEntrypoint()) {
   process.exitCode = await main(process.argv.slice(2));
 }
