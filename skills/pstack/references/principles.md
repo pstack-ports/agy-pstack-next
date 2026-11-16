@@ -1,221 +1,52 @@
-# Engineering principles
-
-These 24 principles govern design, implementation, verification, and swarm coordination across `/pstack` workflows. Apply the specific principles that match your active topology and name each principle that changed a concrete decision in your report.
-
-## Core principles
-
-### 1. Laziness protocol
-
-Apply when sizing a diff, refactoring, or considering a new abstraction, wrapper, or flag path.
-
-- Consolidate repeated choices behind one source of truth and pass the result as a plain value.
-- Ship the smallest diff that solves the root problem.
-- Prefer deleting code over adding layers, helpers, or configuration knobs.
-
-### 2. Foundational thinking
-
-Apply before writing logic, choosing types, or ordering multi-step work.
-
-- Choose core data structures and domain types first. Trace dominant read and write paths so downstream code becomes straightforward.
-- Unify shared types and schemas rather than deduplicating every three-line snippet. Three explicit lines beat a premature abstraction.
-- Ask what happens if two actors touch shared state concurrently. Isolate the state whenever the answer is anything other than nothing.
-- Sequence foundations before features. Land shared types, test harnesses, linters, and build checks first when every subsequent slice benefits from them.
-
-### 3. Redesign from first principles
-
-Apply when integrating a new requirement into an existing module.
-
-- Read all affected files and understand the current invariants before editing.
-- Ask what shape you would build today if this requirement had existed from day one, instead of bolting special cases onto the old design.
-- Propagate the new model cleanly across types, runtime logic, tests, and docs.
-- Design the whole target shape first, then sequence delivery in small verifiable commits.
-
-### 4. Attack the premise
-
-Apply whenever two or more attempted fixes sharing one assumption fail the same check.
-
-- Stop writing fixes and write down the shared assumption in one declarative sentence.
-- Build a rerunnable probe that tests that premise directly before attempting another code change.
-- Inspect the distribution of failures across inputs, not just the failure count.
-- When evidence refutes the premise, pivot to what the failures actually share. When evidence confirms the premise, trace one step further upstream and remove what creates the bad condition rather than compensating after it.
-
-### 5. Subtract before you add
-
-Apply before any feature addition, refactor, or migration.
-
-- Remove dead code paths, unused parameters, redundant validators, and empty stubs before introducing new behavior.
-- Design strictly for observed requirements rather than speculative future cases.
-- Leave every touched module smaller or simpler behind the same or narrower interface.
-
-### 6. Minimize reader load
-
-Apply when shaping modules or reviewing diffs that feel hard to trace.
-
-- Track two independent costs. Count indirection layers between a question and its answer, and count mutable state a reader must hold in working memory.
-- Inline single-caller wrappers, pass-through adapters, and interfaces with only one implementation.
-- Make every adjacent boundary change the level of abstraction.
-- Shrink state scope. Prefer pure return values over mutation, local variables over instance fields, and derived values over synchronized state.
-- Hold the 30-second test. A new reader must find where a value originates and what can mutate it within 30 seconds.
-
-### 7. Outcome-oriented execution
-
-Apply during multi-phase rewrites and migrations with explicit phase boundaries.
-
-- Converge directly on the target architecture rather than preserving smooth intermediate compatibility shims that turn into permanent debt.
-- Declare upfront where temporary breakage between internal phases is expected and reversible.
-- Keep targeted checks green on converted slices during the migration, and require full static and behavioral verification before closing the program.
-
-### 8. Experience first
-
-Apply when weighing UX, API ergonomics, or scope tradeoffs.
-
-- Choose user clarity and delight over implementation convenience.
-- Ship three cohesive, polished capabilities rather than ten rough ones.
-- Prototype visual and interactive choices cheaply before writing production code.
-- Treat callers of an internal API and future maintainers of the module as real users. Frame every summary around what changes for them.
-
-### 9. Exhaust the design space
-
-Apply when facing a novel UI interaction or an architectural fork with no precedent in the repository.
-
-- Build two or three distinct prototypes or concrete design candidates across orthogonal axes (see `/crucible`).
-- Compare observed tradeoffs side by side on the real target before committing to one implementation.
-
-### 10. Build the lever
-
-Apply to any non-trivial edit, migration, trace analysis, or verification check.
-
-- Execute one unit manually to confirm the pattern, then write a deterministic codemod, generator, SQLite loader, or verification script to run the rest.
-- Verify the lever by rerunning it on the manual unit and checking that the diff matches.
-- Run a deterministic lever directly instead of fanning out swarm workers to repeat mechanical edits by hand.
-- Keep worker verification scripts outside author write scopes when independent checking matters. Commit durable levers alongside the code change.
-
-## Architecture principles
-
-### 11. Model the domain
-
-Apply when stateful logic branches repeatedly or duplicates shape assumptions across files.
-
-- Replace scattered boolean flags and lifecycle checks with explicit state machines or discriminated unions.
-- Replace multi-file conditional chains with registries, lookup tables, or command reducers.
-- Group modules by domain ownership and invariants rather than execution-order phases such as load, validate, transform, and save.
-- Keep plain, direct code when the existing shape is local, total, and unlikely to branch further.
-
-### 12. Boundary discipline
-
-Apply when wiring CLI entrypoints, network handlers, config loaders, storage adapters, or IPC bridges.
-
-- Parse, validate, and narrow untrusted inputs once at the system boundary into domain types.
-- Never leak raw wire, transport, ORM, or `Record<string, unknown>` shapes past the boundary parser.
-- Keep core domain logic in pure functions with zero framework dependencies so tests exercise behavior directly without heavy harnesses.
-- Drop redundant defensive checks inside trusted internal call chains.
-
-### 13. Type system discipline
-
-Apply when designing signatures, domain models, or schemas in statically typed languages.
-
-- Make illegal states unrepresentable in the type definition itself.
-- Brand semantically distinct primitives (such as `PullRequestNumber` vs `IssueNumber`) at parse time so callers cannot transpose arguments.
-- Treat external payloads as `unknown` until validated by a schema or verifying type guard.
-- Exhaust all union variants using `never` in `default` branches, and derive subsets from authoritative schemas instead of duplicating interfaces.
-
-### 14. Make operations idempotent
-
-Apply to CLI commands, setup scripts, migrations, state transitions, and background loops that run across retries or crashes.
-
-- Compute actions by diffing observed current state against desired target state, never by assuming where a previous run stopped.
-- Ensure running an operation twice in a row or restarting after a mid-flight crash converges to the exact same end state.
-- Write outputs to temporary paths and rename atomically, or key artifacts by content hash, so stale partial state never corrupts recovery.
-
-### 15. Migrate callers then delete legacy APIs
-
-Apply when replacing an internal function, module, hook, or schema whose callers live in the same repository.
-
-- Migrate every caller to the new contract and delete the old API in the same wave.
-- Rewrite tests against observable behavior on the new API and delete tests that only pinned retired internals.
-- Never leave deprecation wrappers, dual code paths, or unused compatibility flags in internal code.
-
-### 16. Separate before serializing shared state
-
-Apply whenever parallel swarm workers or concurrent runtime tasks could touch the same file, git ref, port, database, or state file.
-
-- Eliminate shared mutable targets first. Assign disjoint file ownership per `impl-*` worker, run authors in `workspace: "share"` worktrees, and isolate ports, temp directories, and browser profiles per worker.
-- Merge independent outputs at an explicit integration step rather than letting multiple actors mutate one shared artifact.
-- Introduce locks, single-writer queues, or sequential phases only when a single shared state object is a true domain requirement.
-
-## Verification principles
-
-### 17. Prove it works
-
-Apply before declaring any slice, bug fix, refactor, or PR complete.
-
-- Verify directly on the real running target using `/control-ui`, `/control-cli`, or executable tests, never by trusting typecheck alone or repeating a worker's summary.
-- Inspect actual process output, DOM state, screenshots, database rows, or git commit trees rather than cached proxies.
-- Script verification checks so `ro-verify` can rerun the exact command at the candidate commit SHA.
-- When a check passes unexpectedly fast or fails mysteriously, audit the measurement or harness script before blaming the application.
-
-### 18. Fix root causes
-
-Apply during every bug hunt, flaky test diagnosis, or incident investigation.
-
-- Reproduce the failure deterministically first, then trace backward from the symptom to the earliest wrong state transition in the system.
-- Decide whether the triggering state is valid in the domain. Handle valid states cleanly at the consumer, and stop invalid states at the producer instead of masking them with nil guards, retries, or swallowed errors.
-- Suspect persisted caches, lockfiles, or serialized config whenever a defect appears only after restart.
-- Sweep the codebase for sibling occurrences of the same root fault and fix them together.
-
-### 19. Sequence verifiable units
-
-Apply to refactors, caller sweeps, bug fixes, and stacked PR series.
-
-- Bracket every unit with a known-good baseline, one focused change, and an immediate check before starting the next unit.
-- Order git commits so history proves correctness step by step. Commit the failing reproduction test before the bug fix, dead-code deletion before structural reshape, and harness setup before optimization.
-
-### 20. Test behavior, not implementation
-
-Apply whenever adding, editing, or reviewing automated tests.
-
-- Drive code through its public caller or user interface with realistic inputs, and assert observable outputs, returned errors, persisted state, or external boundary payloads.
-- Apply the two-edit litmus test. A good test fails when observable behavior breaks and stays green when internal helpers or data structures are refactored.
-- Compute expected values from the specification, never by copying output from the implementation under test.
-
-### 21. Explain the number
-
-Apply before trusting, reporting, or acting on any benchmark, latency delta, memory reading, or eval score.
-
-- Lock the decision threshold and measured noise floor before testing candidates.
-- Profile a separate un-timed run to identify the true bottleneck ("why not double?"), whether CPU, I/O, lock contention, serialization, or the load generator itself.
-- Answer seven checks on every performance claim:
-  1. Name the measured physical or code-path limiter.
-  2. Confirm both baseline and candidate ran with production tuning, flags, and warm states.
-  3. Check Amdahl arithmetic so claimed savings never exceed the runtime share of the modified path.
-  4. Count errors and verify output correctness inside the harness so fast failures never masquerade as speedups.
-  5. Interleave at least 5 alternating runs (`A, B, A, B, ...`) and compare medians against the run-to-run range.
-  6. Report end-to-end user path impact alongside any microbenchmark delta.
-  7. Verify work counters inside the timed region so dead-code elimination, unawaited promises, or skipped queries are ruled out.
-
-## Delegation and swarm principles
-
-### 22. Guard the context window
-
-Apply when planning swarm fan-out, reading logs, or auditing multi-slice work.
-
-- Push bulk file exploration, trace SQLite queries, transcript mining, and test output parsing into `ro-*` or `impl-*` workers.
-- Post compact findings on the swarm board with `#seq` message citations, commit SHAs, and exact file-and-line pointers rather than raw command dumps.
-- Size worker briefs to focused slices so no worker degrades from context bloat.
-
-### 23. Never block on the human
-
-Apply whenever a technical question, missing local tool, or recoverable obstacle appears mid-run.
-
-- Settle empirical questions about behavior, layout, timing, or API shape by running a probe or throwaway sketch rather than asking the user.
-- Build missing local harnesses, fixtures, or scripts autonomously and keep driving toward the exit predicate.
-- Escalate to the user only for irreversible external side effects (pushing or opening PRs when unrequested, force-pushing shared branches, production deploys, destructive data operations, external messages) or genuine product taste decisions no experiment can resolve.
-
-## Meta principle
-
-### 24. Encode lessons in structure
-
-Apply whenever a review catch, user correction, or swarm failure mode repeats.
-
-- Turn recurring rules into executable enforcement inside `hooks/guard.mjs`, schema types, linter rules, verification scripts, or CI gates instead of appending more prose instructions.
-- Reserve skill or role-capsule prose for judgment calls that static or runtime checks cannot express, and pair each judgment rule with the concrete failure mode it prevents.
+# Pstack Engineering Principles
+
+Distill the 3 to 4 principles relevant to a slice into each worker's brief, and judge diffs against them before merging.
+
+## 1. Core Execution & Architecture
+
+1. **Laziness protocol.** Ship the smallest diff that solves the root problem. Consolidate repeated choices behind one source of truth. Three direct lines beat a premature abstraction.
+2. **Subtract before you add.** Delete dead code, unused flags, single-caller pass-through wrappers, and obsolete stubs before adding new behavior.
+3. **Foundational thinking.** Define core data structures, state transitions, and shared test scaffolds first. When the data model fits the domain, control flow becomes short and obvious.
+4. **Redesign from first principles.** Integrate new requirements as if they had existed from day one instead of bolting special-case flags onto old assumptions.
+5. **Migrate callers then delete legacy APIs.** When replacing an internal contract, migrate every caller and delete the old signature, compatibility shim, and obsolete tests in the same wave.
+6. **Minimize reader load (30-second test).** Minimize indirection layers and mutable state scope. A new reader must find where a value originates and what mutates it within 30 seconds.
+7. **Model the domain & type discipline.** Make illegal states unrepresentable via discriminated unions, explicit state machines, and branded IDs. Exhaust union variants with `never`.
+8. **Boundary discipline.** Parse, validate, and narrow untrusted inputs once at system edges (CLI args, network payloads, env vars, disk files). Keep internal domain logic in pure functions without redundant defensive nil checks.
+9. **Make operations idempotent.** Compute actions by diffing observed current state against target state. Write shared files via temp-file plus atomic rename so retries or crashes converge cleanly.
+10. **Separate before serializing shared state.** Eliminate shared mutable targets across parallel workers first: disjoint file ownership in `workspace: "share"` worktrees, ephemeral ports (`--port 0`), and per-run `/tmp` directories.
+11. **Experience first.** Choose caller and end-user clarity over implementation convenience. Ship three cohesive capabilities rather than ten rough ones.
+12. **Outcome-oriented execution.** Converge directly on the target architecture across verifiable phase boundaries rather than maintaining throwaway intermediate shims.
+13. **Exhaust the design space.** On novel architectural or UX forks with no clear precedent, compare 2 to 3 orthogonal designs or prototypes side by side (`/crucible`).
+14. **Build the lever.** Confirm a non-trivial transformation or check manually on one unit, then write a deterministic script or codemod anyone can rerun.
+
+## 2. Structural Design Red Flags
+
+Screen designs and diffs against these eight traps (assume the next contributor copies the nearest compiling pattern):
+
+- **Shallow module:** Wide interface hiding little policy, forcing callers to invoke multi-step ceremonies. Prefer deep modules behind narrow entry points.
+- **Information leakage:** Re-exporting wire, ORM, or framework shapes across module boundaries so changes force lockstep edits.
+- **Temporal decomposition:** Splitting packages by execution order (`load`, `validate`, `save`) instead of grouping code with the domain invariant it protects.
+- **Pass-through method:** Forwarding arguments unchanged to another layer with no added policy or abstraction.
+- **Split ownership:** Multiple modules mutating or caching parallel copies of the same state. Assign one owner per mutable state.
+- **Two ways to do one task:** Leaving legacy and new code paths side by side. Keep one supported path.
+- **Importable internals:** Allowing callers to import private helpers directly instead of locking exports at the boundary.
+- **Hand-synced list:** Repeating enum cases, routes, or registries across files without a single canonical source or exhaustive compile check.
+
+## 3. Verification, Debugging & Numbers
+
+15. **Prove it works.** Never accept an author self-report or `"it compiles"` as proof. Gate every wave through an independent `verifier` running real behavioral checks (`.agents/skills/verify-*`, CLI/UI flows, and test suites).
+16. **Fix root causes.** Reproduce deterministically first, then trace back to the earliest invalid state transition. Never mask bad internal state with nil guards, swallowed errors, or blind retries.
+17. **Attack the premise.** When two fixes sharing one assumption fail the same check, stop editing production code, write that assumption down in one sentence, and run a direct probe to test it first.
+18. **Test behavior, not implementation.** Drive public interfaces with realistic inputs. Tests must fail when observable behavior breaks and stay green when private internals are refactored. Never compute expected values using the code under test.
+19. **Sequence verifiable units.** Order commits so history proves correctness step by step: failing reproduction test before fix, dead-code deletion before reshape, harness setup before optimization.
+20. **Explain the number.** Vet every benchmark or latency claim against seven checks before trusting it: (1) profiled physical or code-path limiter ("why not 2x faster?"), (2) production flags and warm-up parity, (3) Amdahl arithmetic ceiling check, (4) zero silent errors, (5) at least 5 interleaved runs (`A, B, A, B, ...`) reporting median and full range, (6) end-to-end user path impact, and (7) verified work counters inside the timed window.
+
+## 4. Swarm Delegation & Code/Prose Hygiene
+
+21. **Guard the context window.** Keep bulk file sweeps, log parsing, and raw test dumps inside workers. Cite board posts by `#seq` number and write reports over `4` KB to `/tmp/<worker>-report.md` with a concise board summary.
+22. **Never block on reversible work.** Settle empirical technical questions by running probes or prototypes rather than asking the user. Pause only for genuine product-taste choices or irreversible external actions (`git push`, opening PRs, deploys, destructive deletes).
+23. **Encode lessons in structure.** Turn recurring mistakes into static types, linter checks, verification harnesses, or CI gates instead of adding more prompt prose (pair with `/learn` when capturing user preferences).
+24. **Zero-slop comment & prose hygiene.**
+    - **Delete disposable comments on sight:** Line-by-line narration, ASCII banners, commented-out dead code, and multi-sentence sermons apologizing for fragile internal code. When an internal trap needed a warning comment, delete the excuse and mark the symbol `MUST KILL` for structural repair.
+    - **Five comment keep-exceptions only:** (1) license headers, (2) proven live foreign/OS/vendor quirks this repo cannot reshape, (3) valid formatter or buggy-rule lint directives, (4) public API contract docs not expressible in types, and (5) external RFC/issue/spec links.
+    - **Clean prose:** Write short declarative sentences in active voice with concrete nouns. Label claims with their evidence tier (direct measurement vs inference). Avoid chatbot filler and buzzwords.

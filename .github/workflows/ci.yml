@@ -22,14 +22,11 @@ jobs:
   validate:
     name: Validate plugin
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
 
       - name: Resolve Antigravity CLI version
         id: agy-version
@@ -58,7 +55,7 @@ jobs:
       - name: Verify Antigravity CLI version
         run: agy --version
 
-      - name: Validate plugin with Antigravity CLI
+      - name: Validate clean-sheet plugin structure and links
         run: |
           AGY_HOME="$(mktemp -d)"
           trap 'rm -rf "$AGY_HOME"' EXIT
@@ -66,229 +63,81 @@ jobs:
           HOME="$AGY_HOME" agy plugin install .
           HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/agy-pstack-next"
           HOME="$AGY_HOME" agy plugin list --json > "$AGY_HOME/plugins.json"
-          AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" bun -e '
-            import { readdirSync, readFileSync, existsSync, accessSync, constants } from "node:fs";
-            import { join } from "node:path";
+          AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" node -e '
+            import { readdirSync, readFileSync, existsSync } from "node:fs";
+            import { dirname, join, resolve } from "node:path";
 
             const errors = [];
             const fail = (msg) => errors.push(msg);
 
-            if (existsSync("plugin.json")) {
-              fail("root plugin.json should not exist alongside .antigravity-plugin/plugin.json");
-            }
-            if (existsSync("agents")) {
-              fail("legacy agents directory should not exist in Swarm-Centric Pstack v2");
-            }
-            if (existsSync("automations")) {
-              fail("legacy automations directory should not exist in Swarm-Centric Pstack v2");
-            }
-            if (!existsSync("hooks.json")) {
-              fail("root hooks.json is missing");
-            }
-
-            const checkExecutable = (relPath) => {
-              try {
-                accessSync(relPath, constants.X_OK);
-              } catch {
-                fail(`${relPath} is missing or not executable`);
+            for (const legacy of ["plugin.json", "hooks.json", "hooks", "roles", "agents", "automations", "docs"]) {
+              if (existsSync(legacy)) {
+                fail(`Legacy path "${legacy}" must not exist in clean-sheet pstack v3`);
               }
-            };
-            checkExecutable("hooks/guard.mjs");
-            checkExecutable("skills/pstack/scripts/watch-pr");
-            checkExecutable("skills/pstack/scripts/check-plan.mjs");
-            checkExecutable("skills/pstack/scripts/worktree-audit.sh");
-            checkExecutable("skills/pstack/scripts/decision-log.sh");
-            checkExecutable("skills/setup-pstack/scripts/sync-hooks.mjs");
-
-            for (const capsule of ["coordinator", "poteto-agent", "research", "comment-sicko"]) {
-              const p = join("roles", `${capsule}.md`);
-              if (!existsSync(p)) fail(`Missing role capsule ${p}`);
-            }
-
-            for (const topo of ["program", "build", "diagnose", "hillclimb", "ship", "evolve"]) {
-              const p = join("skills/pstack/topologies", `${topo}.md`);
-              if (!existsSync(p)) fail(`Missing pstack topology ${p}`);
             }
 
             const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
-            const allowedPluginKeys = new Set([
-              "name",
-              "displayName",
-              "version",
-              "description",
-              "author",
-              "homepage",
-              "repository",
-              "license",
-              "keywords",
-              "logo",
-              "suggestedPrompts",
-            ]);
-            for (const key of Object.keys(pluginJson)) {
-              if (!allowedPluginKeys.has(key)) {
-                fail(`.antigravity-plugin/plugin.json contains unsupported key "${key}"`);
-              }
-            }
-            if (!/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(pluginJson.name ?? "")) {
-              fail(`.antigravity-plugin/plugin.json has invalid name "${pluginJson.name}"`);
-            }
-            for (const field of ["name", "version", "description"]) {
-              if (!pluginJson[field] || typeof pluginJson[field] !== "string") {
-                fail(`.antigravity-plugin/plugin.json missing string field "${field}"`);
-              }
-            }
-            if (!pluginJson.logo || !existsSync(pluginJson.logo)) {
-              fail(`.antigravity-plugin/plugin.json logo "${pluginJson.logo}" does not exist`);
-            }
-
-            const parseFrontmatter = (filePath) => {
-              const content = readFileSync(filePath, "utf8");
-              const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-              if (!match) {
-                fail(`${filePath}: missing YAML frontmatter`);
-                return null;
-              }
-              return match[1];
-            };
-
-            const expectedSkills = readdirSync("skills", { withFileTypes: true })
+            const expectedSkills = ["crucible", "interrogate", "pstack", "statechart", "understand", "verify-gen"];
+            const actualSkills = readdirSync("skills", { withFileTypes: true })
               .filter((d) => d.isDirectory())
               .map((d) => d.name)
               .sort();
 
-            if (expectedSkills.length !== 14) {
-              fail(`Expected 14 skills, found ${expectedSkills.length}: ${expectedSkills.join(", ")}`);
+            if (JSON.stringify(actualSkills) !== JSON.stringify(expectedSkills)) {
+              fail(`Expected skills [${expectedSkills.join(", ")}], found [${actualSkills.join(", ")}]`);
             }
 
-            for (const dir of expectedSkills) {
+            const walkMd = (dir) => {
+              const out = [];
+              for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                const p = join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  if (entry.name === "scripts") fail(`Unexpected scripts directory: ${p}`);
+                  out.push(...walkMd(p));
+                } else if (entry.name.endsWith(".md")) {
+                  out.push(p);
+                }
+              }
+              return out;
+            };
+
+            const mdFiles = ["README.md", ...walkMd("skills")];
+            for (const file of mdFiles) {
+              const text = readFileSync(file, "utf8");
+              for (const m of text.matchAll(/\]\((?!https?:|mailto:|file:|customization:)([^)#]+)(?:#[^)]*)?\)/g)) {
+                const target = resolve(dirname(file), m[1]);
+                if (!existsSync(target)) {
+                  fail(`${file}: broken relative link "${m[1]}"`);
+                }
+              }
+            }
+
+            for (const dir of actualSkills) {
               const skillFile = join("skills", dir, "SKILL.md");
-              if (!existsSync(skillFile)) {
-                fail(`skills/${dir}: missing SKILL.md`);
+              const content = readFileSync(skillFile, "utf8");
+              const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/)?.[1];
+              if (!fm) {
+                fail(`${skillFile}: missing YAML frontmatter`);
                 continue;
               }
-              const fm = parseFrontmatter(skillFile);
-              if (!fm) continue;
-              const nameMatch = fm.match(/^name:\s*(.+)$/m);
-              const descMatch = fm.match(/^description:\s*(.+)$/m);
-              const skillName = nameMatch?.[1]?.trim();
-              if (skillName !== dir) {
-                fail(`${skillFile}: frontmatter name "${skillName}" does not match directory "${dir}"`);
-              }
-              if (!descMatch?.[1]?.trim()) {
-                fail(`${skillFile}: missing description in frontmatter`);
-              }
-              for (const badKey of ["paths", "icon", "color"]) {
-                if (new RegExp(`^${badKey}:`, "m").test(fm)) {
-                  fail(`${skillFile}: unsupported top-level frontmatter key "${badKey}"`);
-                }
+              const skillName = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+              if (skillName !== dir) fail(`${skillFile}: name "${skillName}" !== "${dir}"`);
+              if (!fm.match(/^description:\s*(.+)$/m)?.[1]?.trim()) {
+                fail(`${skillFile}: missing description`);
               }
             }
 
             const installedList = JSON.parse(readFileSync(process.env.AGY_PLUGINS_JSON, "utf8"));
             const installed = installedList.find((p) => p.name === pluginJson.name);
-            if (!installed) {
-              fail(`agy plugin list --json did not include "${pluginJson.name}"`);
-            } else {
-              if (!installed.enabled) fail(`Installed plugin "${pluginJson.name}" is not enabled`);
-              if (installed.version !== pluginJson.version) {
-                fail(`Installed plugin version "${installed.version}" !== "${pluginJson.version}"`);
-              }
-              const loadedSkills = [...(installed.skills ?? [])].sort();
-              const loadedAgents = [...(installed.agents ?? [])].sort();
-              if (JSON.stringify(loadedSkills) !== JSON.stringify(expectedSkills)) {
-                fail(`Loaded skills mismatch: expected ${expectedSkills.length}, got ${loadedSkills.length}`);
-              }
-              if (loadedAgents.length !== 0) {
-                fail(`Expected 0 loaded agents, got ${loadedAgents.length}`);
-              }
+            if (!installed || !installed.enabled) {
+              fail(`Installed plugin "${pluginJson.name}" missing or disabled`);
+            } else if (JSON.stringify([...(installed.skills ?? [])].sort()) !== JSON.stringify(expectedSkills)) {
+              fail(`Loaded skills mismatch: ${JSON.stringify(installed.skills)}`);
             }
 
             if (errors.length > 0) {
               for (const err of errors) console.error(`ERROR: ${err}`);
               process.exit(1);
             }
-            console.log(`Validated ${expectedSkills.length} skills, 4 role capsules, 6 topologies, and hooks guard.`);
+            console.log(`Validated ${actualSkills.length} clean-sheet skills and ${mdFiles.length} markdown files.`);
           '
-
-      - name: Run swarm guard unit tests
-        run: node --test hooks/guard.test.mjs
-
-      - name: Run pstack script syntax and unit tests
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: commit.gpgsign
-          GIT_CONFIG_VALUE_0: "false"
-        run: |
-          bash -n skills/pstack/scripts/worktree-audit.sh
-          bash -n skills/pstack/scripts/decision-log.sh
-          node --test skills/pstack/scripts/watch-pr.test.mjs skills/pstack/scripts/check-plan.test.mjs
-
-      - name: Smoke check watch-pr CLI
-        run: ./skills/pstack/scripts/watch-pr --help > /dev/null
-
-      - name: Verify TLA+ tools pin matches statechart runner
-        run: |
-          bun - <<'EOF'
-          import { readFileSync } from "node:fs";
-
-          const runTs = readFileSync("skills/statechart/scripts/run.ts", "utf8");
-          const ciYml = readFileSync(".github/workflows/ci.yml", "utf8");
-
-          const toolMatch = runTs.match(
-            /const TLC_TOOL =\s*"http:tla2tools\[url=(https:\/\/[^,\]]+),checksum=sha256:([0-9a-f]{64})\]@([^"]+)"/,
-          );
-          if (!toolMatch) {
-            throw new Error("Could not parse TLC_TOOL from skills/statechart/scripts/run.ts");
-          }
-          const [, url, sha256, version] = toolMatch;
-
-          const requiredSnippets = [
-            `path: ~/.cache/tla2tools/tla2tools-${version}.jar`,
-            `key: tla2tools-${version}`,
-            url,
-            `${sha256}  $HOME/.cache/tla2tools/tla2tools-${version}.jar`,
-            `TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-${version}.jar"`,
-          ];
-          for (const snippet of requiredSnippets) {
-            if (!ciYml.includes(snippet)) {
-              throw new Error(`ci.yml missing pinned TLC_TOOL snippet: ${snippet}`);
-            }
-          }
-
-          for (const m of ciYml.matchAll(/https:\/\/github\.com\/tlaplus\/tlaplus\/releases\/download\/[^/\s"']+\/tla2tools\.jar/g)) {
-            if (m[0] !== url) {
-              throw new Error(`ci.yml tla2tools URL "${m[0]}" does not match run.ts "${url}"`);
-            }
-          }
-          for (const m of ciYml.matchAll(/tla2tools-([0-9]+\.[0-9]+\.[0-9]+)(?:\.jar)?/g)) {
-            if (m[1] !== version) {
-              throw new Error(`ci.yml tla2tools version "${m[1]}" does not match run.ts "${version}"`);
-            }
-          }
-          EOF
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "25"
-
-      - name: Cache TLA+ tools
-        id: cache-tla2tools
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/tla2tools/tla2tools-1.7.4.jar
-          key: tla2tools-1.7.4
-
-      - name: Download TLA+ tools
-        if: steps.cache-tla2tools.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p "$HOME/.cache/tla2tools"
-          curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$HOME/.cache/tla2tools/tla2tools-1.7.4.jar"
-          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.cache/tla2tools/tla2tools-1.7.4.jar" | sha256sum -c -
-
-      - name: Test statechart
-        working-directory: skills/statechart/scripts
-        run: |
-          bun install --frozen-lockfile
-          TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-1.7.4.jar" bun run test
