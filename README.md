@@ -24,7 +24,7 @@ agy plugin list
 
 Run two commands to start working. In the `agy` CLI (`1.5.8+`), installed plugin skills are namespaced as `/agy-pstack-next:<skill>`, while built-in Antigravity commands such as `/goal` and `/schedule` stay unprefixed (prose and tables below use `/<skill>` as shorthand).
 
-1. Run [`/agy-pstack-next:setup-pstack`](./skills/setup-pstack/SKILL.md) to discover your available models, write `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on`, register `pstack-swarm-guard` in global `~/.gemini/config/hooks.json` for swarm workers, and optionally generate a project verification skill.
+1. Run [`/agy-pstack-next:setup-pstack`](./skills/setup-pstack/SKILL.md) to discover your available models, validate and write `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` (including `monitor` and separate `impl-*` and `lead-*` rows), sync `pstack-swarm-guard` in global `~/.gemini/config/hooks.json` via [`sync-hooks.mjs`](./skills/setup-pstack/scripts/sync-hooks.mjs) (plus `--check`), and optionally generate a project verification skill.
 2. Start engineering tasks with [`/agy-pstack-next:pstack`](./skills/pstack/SKILL.md), stating the goal and a checkable finish condition.
 
 ```text
@@ -52,7 +52,7 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 | `adv-*` | `workspace: "share"` | [`roles/poteto-agent.md`](./roles/poteto-agent.md) | Writes executable repros and exploit probes inside its own worktree, artifact dir, and canonical temp roots. `git push` and mutating `gh` commands always blocked. |
 | `ro-*` | `workspace: "inherit"` | [`roles/research.md`](./roles/research.md) | Strictly read-only. Blocks `edit_file`, `write_file` outside canonical temp roots and brain-directory timeline screenshots, mutating `git`, `gh`, and MCP calls, and verifies `git status` cleanliness on `Stop`. |
 | `sicko-*` | `workspace: "share"` | [`roles/comment-sicko.md`](./roles/comment-sicko.md) | Comment and slop surgeon. Confines `edit_file` to its own worktree. Blocks `write_file`, `git push`, file-restoring or history-rewriting `git` subcommands, and mutating `gh` commands, and rejects untracked or deleted files on `Stop`. |
-| `monitor*`, `narrator*` | Built-in | None (skipped) | Native stall detection (`swarm_monitor`) and board narration (`swarm_narrator`, skipped when `swarm_pane` Overview is active unless requested) with zero extra capsule tokens. |
+| `monitor*`, `narrator*` | Built-in | None (skipped) | Selective stall detection (`swarm_monitor`, skipped on short `<= 4` worker single-wave runs, spawned on multi-wave or long runs using `monitor` from `pstack-models.md`) and board narration (`swarm_narrator`, skipped when `swarm_pane` Overview is active unless requested). `hooks/guard.mjs` releases `coordinator` subagent locks automatically once all task workers are killed (`[done]`). |
 
 ### Mechanical Guardrails in `hooks/guard.mjs`
 
@@ -67,7 +67,7 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 
 - **Warm context forks.** Pass `fork: "<member>"` in `swarm{action: "add"}` to branch an implementation worker directly from a winning `ro-*` investigator or `cand-*` prototype without re-reading the repo cold.
 - **Safe landing before teardown.** Because `swarm{action: "kill"}` permanently deletes a worker's `share` worktree, the coordinator always runs `git fetch <worker_cwd> <sha> && git merge` (or `cherry-pick`) before killing a worker.
-- **Board `#seq` citations and doorbell `@mentions`.** Workers cite earlier findings by `#seq` number instead of re-quoting logs and `@mention` only the specific peer who acts next.
+- **Board `#seq` citations, `$PWD` paths, and `/tmp` reports.** Workers fetch cited `#seq` posts with `read_board` `seqs` instead of reading from `0`, pass absolute `$PWD/...` paths inside `share` worktrees, write detailed reports over `4` KB to `/tmp/<worker-name>-report.md` with a summary on the board, and `@mention` only the specific peer who acts next.
 - **Live quota hot-swap.** If a worker hits rate limits or low quota, `swarm{action: "model"}` switches its model in place while preserving its conversation history and worktree.
 
 ## The 14 Skills
@@ -77,7 +77,7 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 | Skill | Purpose |
 |---|---|
 | [`/pstack`](./skills/pstack/SKILL.md) | Swarm coordinator kernel with 6 composable topologies (`program`, `build`, `diagnose`, `hillclimb`, `ship`, `evolve`), distilled engineering principles, TypeScript patterns, and PR babysitting. |
-| [`/setup-pstack`](./skills/setup-pstack/SKILL.md) | Live `swarm{action: "models"}` configuration for `~/.gemini/config/rules/pstack-models.md`, global `~/.gemini/config/hooks.json` guard registration, budget presets, workflow advisor, and `/schedule` automation setup. |
+| [`/setup-pstack`](./skills/setup-pstack/SKILL.md) | Live `swarm{action: "models", all: true}` validation and configuration for `~/.gemini/config/rules/pstack-models.md` (`frugal`, `balanced`, `max`, `inherit` presets including `monitor`), [`sync-hooks.mjs`](./skills/setup-pstack/scripts/sync-hooks.mjs) global hook sync (`--check`), workflow advisor, and `/schedule` setup. |
 | [`/understand`](./skills/understand/SKILL.md) | Parallel `ro-*` clue-sharing mesh unifying mechanism walkthroughs, historical git and tracker provenance, and interactive Socratic explanations, with warm `fork` into implementation. |
 | [`/crucible`](./skills/crucible/SKILL.md) | Parallel multi-candidate design (`sketch`) and prototype (`full`) arena across orthogonal axes (`cand-*`), cross-family `ro-judge` scoring, and donor `cherry-pick` synthesis. |
 | [`/interrogate`](./skills/interrogate/SKILL.md) | Adversarial bug hunting (`adv-*` executable repros) combined with transitive caller, schema, and rollout blast-radius mapping (`ro-blast`), gated by `ro-verify`. |
@@ -97,8 +97,8 @@ Every swarm member's prefix determines its workspace isolation, injected role ca
 
 | Topology | What It Orchestrates |
 |---|---|
-| [`program`](./skills/pstack/topologies/program.md) | Multi-phase plans, stacked branches, `#area` swarm channels (when `swarm` exposes `channel`) or `lead-<area>` sub-coordinators, autonomous overnight runs, board checkpointing, session resume, and safe worktree cleanup. |
-| [`build`](./skills/pstack/topologies/build.md) | Features, caller-migrating refactors, prototypes, and visual parity loops across disjoint `impl-*` worktrees, `sicko-*` diff cleanup, and `ro-verify` behavioral proof. |
+| [`program`](./skills/pstack/topologies/program.md) | Multi-phase plans, stacked branches, `#area` swarm channels (when `swarm` exposes `channel`) or `lead-<area>` sub-coordinators, autonomous overnight runs, [`check-plan.mjs`](./skills/pstack/scripts/check-plan.mjs), [`decision-log.sh`](./skills/pstack/scripts/decision-log.sh), [`worktree-audit.sh`](./skills/pstack/scripts/worktree-audit.sh), session resume, and safe worktree cleanup. |
+| [`build`](./skills/pstack/topologies/build.md) | Features, caller-migrating refactors, prototypes, and visual parity loops across disjoint `impl-*` worktrees, conditional `sicko-*` diff cleanup on comments or non-trivial code changes, and `ro-verify` behavioral proof. |
 | [`diagnose`](./skills/pstack/topologies/diagnose.md) | Bug fixes, read-only investigations, live runtime forensics, and trace profiling via parallel `ro-*` hypothesis probes, warm `fork` into `impl-fix`, and regression verification. |
 | [`hillclimb`](./skills/pstack/topologies/hillclimb.md) | Sustained metric optimization with `ro-bench` baseline and noise-floor locking, explain-the-number checks, parallel `cand-*` lever trials, and compounding cherry-picked wins. |
 | [`ship`](./skills/pstack/topologies/ship.md) | Pre-PR `ro-verify` and `/interrogate` gates, local branch landing, opt-in PR creation and push (`PSTACK_ALLOW_PUSH=1`), CI and review triage via [`watch-pr`](./skills/pstack/scripts/watch-pr) and [`bugbot-triage.md`](./skills/pstack/references/bugbot-triage.md), and clean worker teardown. |

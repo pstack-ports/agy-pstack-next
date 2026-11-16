@@ -67,9 +67,9 @@ Wake `@cand-a @cand-b @cand-c` for one bounded critique turn when trade-offs are
 
 Spawn `ro-judge` (`workspace: "inherit"`, read-only) on a model from `ro-judge pool` in `~/.gemini/config/rules/pstack-models.md` whose model family differs from both the coordinator and winning contenders (`inherit` never judges).
 
-`ro-judge` inspects every candidate's worktree files and git diff directly, screens each candidate against every item in [`references/design-red-flags.md`](references/design-red-flags.md) (passed in `ro-judge`'s brief as `<plugin-root>/skills/crucible/references/design-red-flags.md`), grades the rubric criterion by criterion, and posts a `#seq` verdict naming:
+Before handing off candidate submissions and diffs to `ro-judge`, anonymize candidate labels (`design-oak`, `design-pine`, `design-cedar`) and strip author prefixes (`cand-*`) and model IDs so cross-model judging stays blind. `ro-judge` inspects every anonymized candidate's worktree files and git diff directly, screens each candidate against every item in [`references/design-red-flags.md`](references/design-red-flags.md) (passed in `ro-judge`'s brief as `<plugin-root>/skills/crucible/references/design-red-flags.md`), grades the rubric criterion by criterion, and posts a `#seq` verdict naming:
 
-- Recommended base candidate (`cand-winner`) and why its core boundary ages best.
+- Recommended base candidate (`design-oak` or `design-pine`) and why its core boundary ages best (which the coordinator maps back to the winning `cand-*` member).
 - Specific donor artifacts (edge-case tests, benchmarks, type refinements, helper functions) worth porting from losing `cand-*` branches.
 - Red flags detected in each candidate.
 
@@ -97,7 +97,7 @@ Apply the `crucible checkpoint` setting from `~/.gemini/config/rules/pstack-mode
    ```
 2. Inside `impl-synth`, fetch the winning branch (`git fetch <winner_cwd> <winner_sha> && git checkout -B crucible-synth FETCH_HEAD`) and pull targeted tests or helpers from donor worktrees (`git fetch <donor_cwd> <donor_sha>` with `git cherry-pick --no-commit` or path checkout). Rewrite grafted pieces so names, types, and invariants fit one unified mental model rather than mechanical Franken-code.
 3. If Phase 2 ran in `sketch` mode and no checkpoint paused execution, `impl-synth` (or downstream `impl-*` slices under [`/pstack`](../pstack/SKILL.md) `build`) replaces `not implemented` bodies with production code and behavioral tests.
-4. **Scrap rule when implementation fights the sketch.** If filling in a `sketch` triggers repeated structural workarounds across unrelated callers, type casts (`any`), or surprise locks on supposedly isolated state, stop bolting on patches. Scrap the sketch, fold the newly discovered constraint into Phase 1, and re-run Phase 2 smaller and cleaner.
+4. **Scrap rule when implementation fights the sketch.** If filling in a `sketch` triggers caller leaks across module boundaries or `2+` implementation deviations from the sketch (such as repeated structural workarounds across unrelated callers, `any` casts, or surprise locks on supposedly isolated state), stop bolting on patches. Scrap the sketch, fold the newly discovered constraint into Phase 1, and re-run Phase 2 smaller and cleaner.
 
 ---
 

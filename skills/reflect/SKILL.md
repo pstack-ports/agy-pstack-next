@@ -9,6 +9,7 @@ description: >-
   architecture, types, linters, hooks/guard.mjs, tests, role capsules, or
   skills. Use for /agy-pstack-next:reflect, /reflect, "reflect on this session",
   "stop repeating this mistake", "correct", or "sharpen this prompt".
+disable-model-invocation: true
 ---
 
 # Reflect
@@ -68,7 +69,7 @@ Present a crisp synthesis before changing shared skills, role capsules, or hooks
 
 - **Accepted table.** Columns for `Problem`, `Rung (Architecture / Hook-Lint-Type / Test / Skill-Role)`, `Proposal`, and `Target path`.
 - **Rejected list.** One line per dropped finding naming the gate it failed (`durability`, `specificity`, `skill-not-used`, `already-covered`, `duplicate`).
-- **Backlog.** Larger devex items suited for an issue tracker rather than immediate session edits.
+- **Backlog.** Capture larger devex items immediately in the session or repository backlog rather than letting recurring friction drop, recording `pattern`, `hit` (observed count or `#seq`/commit evidence), and proposed `mechanism` fields on every entry. Whenever a temporary rule exception or suppression is kept, attach an explicit `expiry` date so stale exceptions get revisited.
 
 Wait for explicit user approval when modifying skills, role capsules, or global rules (unless running an explicit mid-session `--correct` code/test fix requested by the user). Never edit installed plugin cache files under `~/.gemini/config/plugins/` directly. When customizing an installed plugin skill outside the plugin repository itself, copy the skill into `.agents/skills/<skill>/` or `~/.gemini/config/skills/<skill>/` and edit that override copy.
 
@@ -77,7 +78,7 @@ Wait for explicit user approval when modifying skills, role capsules, or global 
 Once approved, retire `ro-judgment`, `ro-tooling`, and `ro-divergent` with `swarm{action: "kill"}` and spawn `impl-sharpen` (`workspace: "share"`):
 
 1. Pass explicit resolved paths such as `<plugin-root>/skills/technical-writing/SKILL.md` (and `<plugin-root>/roles/poteto-agent.md` when global `hooks.json` is not active) in `impl-sharpen`'s brief rather than telling it to invoke plugin skills by name. `impl-sharpen` implements the approved architectural refactors, type or lint rules, `hooks/guard.mjs` + `hooks/guard.test.mjs` guards, `roles/*.md` capsule updates, or `SKILL.md` improvements (following Antigravity's built-in `agy-customizations` skill for frontmatter and structure).
-2. **Prove every check catches the real mistake.** Run the new lint, typecheck, `node --test hooks/guard.test.mjs`, or `agy plugin validate --strict` against the past failure shape to confirm it fails when broken and passes when fixed.
+2. **Prove every check catches the real mistake.** Run the new lint, typecheck, `node --test hooks/guard.test.mjs`, `agy plugin validate --strict --json .`, and `node '<plugin-root>/skills/setup-pstack/scripts/sync-hooks.mjs' --check` against the past failure shape to confirm the guard fails when broken and passes with zero drift when fixed.
 3. Fetch and merge `impl-sharpen`'s clean commit into the coordinator workspace (`git fetch <sharpen_cwd> <sha> && git merge --no-edit FETCH_HEAD`) before calling `swarm{action: "kill", name: "impl-sharpen"}` (leaving `monitor` and `narrator` alive unless asked). Never `git push` unless the user asks.
 
 ---

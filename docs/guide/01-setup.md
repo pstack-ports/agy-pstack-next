@@ -22,20 +22,21 @@ Run the setup skill inside Antigravity:
 /agy-pstack-next:setup-pstack
 ```
 
-[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) queries `swarm{action: "models", all: true}` to discover every model currently available in your Antigravity environment across Claude, Gemini, and GPT-OSS families, alongside `inherit` (which runs workers on your active session model). It asks for your budget preset and performs two machine-local setup steps.
+[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) queries `swarm{action: "models", all: true}` to discover every model currently available in your Antigravity environment across Claude, Gemini, and GPT-OSS families, validates any existing model IDs in `~/.gemini/config/rules/pstack-models.md` against that live catalog (alongside `inherit`, which runs workers on your active session model), asks for your budget preset (`frugal`, `balanced`, `max`, or `inherit`), and performs two machine-local setup steps.
 
-1. **Writes `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter.** Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` so every coordinator turn receives your model and autonomy settings automatically.
-2. **Registers `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`.** Root plugin [`hooks.json`](../../hooks.json) covers top-level sessions across `SessionStart`, `PreInvocation`, `PreToolUse`, and `Stop`, whereas `agy` native `Swarm Worker` subagents do not inherit user-plugin hooks. `/setup-pstack` reads any existing `~/.gemini/config/hooks.json` object first (preserving entries such as `herdr`) and registers `pstack-swarm-guard` as `test ! -f '<abs_guard_path>' || node '<abs_guard_path>'` across those four hook events. Both hook paths share `<appDataDir>/plugin_data/agy-pstack-next` state (per-conversation `capsules/<conversation-id>.json` files and `member-map.json`), so swarm workers enforce capsules, structural zero-regex/zero-sandbox tool confinement, and `Stop` cleanliness checks without duplicate injections in the root coordinator.
+1. **Writes `~/.gemini/config/rules/pstack-models.md` with `trigger: always_on` frontmatter.** Named rule files under `~/.gemini/config/rules/*.md` require `trigger: always_on` YAML frontmatter in `agy` so every coordinator turn receives your model and autonomy settings automatically, with separate `impl-*` and `lead-*` lines plus `monitor` pinned to the fast low-cost tier (such as `gemini-3.8-flash-low`).
+2. **Syncs `pstack-swarm-guard` in global `~/.gemini/config/hooks.json`.** Root plugin [`hooks.json`](../../hooks.json) covers top-level sessions across `SessionStart`, `PreInvocation`, `PreToolUse`, and `Stop`, whereas `agy` native `Swarm Worker` subagents do not inherit user-plugin hooks. `/setup-pstack` runs [`sync-hooks.mjs`](../../skills/setup-pstack/scripts/sync-hooks.mjs) (and `--check` for drift verification) to preserve existing entries (such as `herdr`) and register `pstack-swarm-guard` as `test ! -f '<abs_guard_path>' || node '<abs_guard_path>'` across those four hook events. Both hook paths share `<appDataDir>/plugin_data/agy-pstack-next` state (per-conversation `capsules/<conversation-id>.json` files and `member-map.json`), so swarm workers enforce capsules, structural zero-regex/zero-sandbox tool confinement, and `Stop` cleanliness checks without duplicate injections in the root coordinator.
 
 That global entry stays inert outside active pstack runs. Guarding the command with `test ! -f '<abs_guard_path>' ||` keeps `~/.gemini/config/hooks.json` a clean exit-0 no-op if `agy plugin uninstall agy-pstack-next` removes the plugin directory. `hooks/guard.mjs` also inspects `~/.gemini/config/config.json` (`plugins["agy-pstack-next"].enabled`), so running `agy plugin disable agy-pstack-next` suspends capsule injection, `PreToolUse` gating, and `Stop` cleanliness checks across global hooks too. Standalone inline skills (`/bro`, `/technical-writing`, `/setup-pstack`, `/statechart`, `/control-ui`, `/control-cli`, `/make-bot-ui`, and `/ketchup --plain`), mid-sentence `/pstack` prose mentions, and plain built-in `/swarm` sessions without pstack worker prefixes (`impl-*`, `cand-*`, `lead-*`, `ro-*`, `adv-*`, `sicko-*`) pass through `hooks/guard.mjs` unmanaged.
 
 Every swarm workflow reads `pstack-models.md` to pin models by role prefix.
 
 - **`coordinator`.** Plans slices, manages the board, and synthesizes results.
-- **`impl-*`, `cand-*`, `lead-*`.** Author code, prototypes, and sub-area slices in `workspace: "share"` worktrees.
+- **`impl-*`, `lead-*`, `cand-*`.** Separate prefixes for slice implementation (`impl-*`), multi-area coordination (`lead-*`), and competing prototypes (`cand-*`) in `workspace: "share"` worktrees.
 - **`ro-*` and `ro-verify`.** Run read-only exploration, trace probes, and independent behavioral verification in `workspace: "inherit"`.
 - **`adv-*` and `ro-judge`.** Run adversarial bug repros and cross-family design or eval judging so a model family does not grade its own blind spots.
-- **`sicko-*`.** Runs post-pass comment and slop surgery across diffs.
+- **`sicko-*`.** Runs conditional post-pass comment and slop surgery on diffs that add comments or non-trivial code changes.
+- **`monitor`.** Runs built-in stall detection (`swarm_monitor`) on multi-wave or long-running swarms, pinned to the fast low-cost tier (such as `gemini-3.8-flash-low`) while skipped on short `<= 4` worker runs.
 
 You override only the roles you care about. Roles omitted from `pstack-models.md` fall back to `inherit` or the skill's preset defaults. If a worker hits rate limits or low quota mid-run, `/pstack` hot-swaps its model live via `swarm{action: "model"}` without losing its conversation or worktree.
 
@@ -55,7 +56,7 @@ Start a fresh chat after updating `pstack-models.md` and `~/.gemini/config/hooks
 
 Parallel swarms trade tokens for wall-clock speed and independent verification. Four levers control spend.
 
-- Pick a leaner budget preset in `/setup-pstack` so `ro-*` explorers and `sicko-*` cleanup workers use fast, inexpensive models while `coordinator` and `ro-judge` keep frontier reasoning models.
+- Pick the `frugal` or `balanced` budget preset in `/setup-pstack` so `monitor`, `ro-*`, and `sicko-*` workers use fast, low-cost models while `coordinator` and `ro-judge` keep frontier reasoning models.
 - Leave roles on `inherit` when your active session already uses the exact model you want.
 - Right-size candidate counts in `/crucible` and `/interrogate` (`2` or `3` candidates for routine boundaries, more only for irreversible interfaces).
 - Use `/pstack` for multi-file, risky, or verifiable engineering tasks rather than single-line typo edits.
