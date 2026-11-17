@@ -12,14 +12,14 @@ description: >-
 
 Build an accurate mental model of what code does, why it looks that way, and what constraints govern changing it.
 
-Load built-in `swarm` (and `swarm_pane` when present) when fanning out a multi-scout mesh. For a single-file question answerable in 1 or 2 local reads, inspect directly without spawning a swarm.
+Load built-in `swarm` (and `swarm_pane` when present) when fanning out a multi-scout mesh, and anchor all git and code lookups to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — linked git worktrees share commit history while holding independent `HEAD`s and working trees). For a single-file question answerable in 1 or 2 local reads, inspect directly without spawning a swarm.
 
 ## 1. Parallel Clue-Sharing Mesh (`workspace: "inherit"`)
 
-1. **Seed anchor.** Run 1 to 2 quick read-only lookups (`git log --follow --oneline -20 -- <path>`, `git blame`) and check `<mcp_servers>` for issue trackers, docs, chat, or telemetry tools.
+1. **Seed anchor.** Run 1 to 2 quick read-only lookups (`git -C <TARGET_CWD> log --follow --oneline -20 -- <path>`, `git -C <TARGET_CWD> blame`) and check `<mcp_servers>` for issue trackers, docs, chat, or telemetry tools.
 2. **Spawn scouts (`workspace: "inherit"`).** Call `swarm{action: "models"}` and assign fast or high-context models by scope:
-   - **`code`:** Execution paths, domain types, callers, boundaries, and test assertions (`file:line` anchors).
-   - **`git`:** `git log --follow -p`, `-S`/`-G` pickaxe back past mechanical renames to the introducing commit, and `gh pr view <n> --json title,body,comments,reviews`.
+   - **`code`:** Execution paths, domain types, callers, boundaries, and test assertions in `TARGET_CWD` (`file:line` anchors).
+   - **`git`:** `git -C <TARGET_CWD> log --follow -p`, `-S`/`-G` pickaxe back past mechanical renames to the introducing commit SHA, and `gh pr view <n> --json title,body,comments,reviews`.
    - **`context` (when external MCPs exist):** Trackers (Linear/GitHub Issues), docs (Roam/Notion/ADRs), incidents, and telemetry.
 3. **Live `#seq` pivoting.** Scouts never stay siloed: as soon as `git` uncovers PR `#482` or ticket `ENG-910`, it posts a one-line clue and `@mentions` peers so they pivot immediately without repeating searches.
 
