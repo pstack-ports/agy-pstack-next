@@ -31,4 +31,6 @@ Translate raw TLA+ variable tuples and action identifiers into words an operator
 
 ## 3. Replay Counterexamples Against Real Code
 
+> **Migration note:** This plugin ships `0` scripts. If an older v2 `.agents/skills/verify-*-formal/` skill calls a removed `scripts/statechart` binary (or `control-ui`/`control-cli` plugin paths), run the direct `tlc` command from step 2 above instead, or refresh the skill with `/verify-gen --maintain`.
+
 Whenever a spec models repository code (including `.agents/skills/verify-*-formal/` suites), replay every step of a failing TLC trace against the real production implementation via a test or harness before reporting a product bug. An un-reproducible step indicates `verification drift` in the model; a reproducible trace proves a real defect.

@@ -63,7 +63,7 @@ jobs:
           HOME="$AGY_HOME" agy plugin install .
           HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/agy-pstack-next"
           HOME="$AGY_HOME" agy plugin list --json > "$AGY_HOME/plugins.json"
-          AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" node -e '
+          AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" node --input-type=module -e '
             import { readdirSync, readFileSync, existsSync } from "node:fs";
             import { dirname, join, resolve } from "node:path";
 

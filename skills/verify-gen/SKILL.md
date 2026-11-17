@@ -14,6 +14,10 @@ Build and maintain self-contained, project-local verification skills under `.age
 
 Load built-in `swarm` before fanning out workers, and read [`references/harness-and-map.md`](references/harness-and-map.md) for parallel isolation rules and the `features/*.md` schema.
 
+Swarm workers do not mount plugin skills in `<skills>`: pass the resolved absolute `<plugin-dir>/skills/verify-gen/references/harness-and-map.md` and `<plugin-dir>/skills/statechart/SKILL.md` paths in worker briefs. Repo-local `.agents/skills/verify-*` files live inside `$PWD` and are read directly.
+
+> **Migration note:** Older v2 `verify-<area>-formal` skills may call a removed `scripts/statechart` binary or `control-ui`/`control-cli` plugin paths. Under `--maintain`, rewrite them to the direct `tlc` command in `statechart/SKILL.md`.
+
 ## Swarm Pipeline
 
 1. **Read-only mappers (`workspace: "inherit"`):** Inspect startup commands, readiness signals, existing Playwright/Cypress/PTY/HTTP harnesses, invariants, or git diffs since `sync_commit`. Ask the user only what repository code cannot reveal.
@@ -36,8 +40,8 @@ Load built-in `swarm` before fanning out workers, and read [`references/harness-
 
 ## 2. Formal Create (`--formal`: `.agents/skills/verify-<area>-formal/`)
 
-1. **Pick the highest-consequence promise** (concurrency, retries, leases, state machines, parsers) and lowest-cost tool developers can run in seconds: TLA+ (TLC) paired with [`/statechart`](../statechart/SKILL.md) for event-ordering races, language-native SMT/bounded verifiers for input invariants, or property-based testing against real production functions (never a toy copy).
-2. **Write `.agents/skills/verify-<area>-formal/SKILL.md`** with YAML frontmatter, plain-sentence invariant + user harm, indivisible source-step mapping, explicit bounds/assumptions, covered file/function paths, `sync_commit: <HEAD_SHA>`, and a reference to `/statechart` by name when TLA+ is used.
+1. **Pick the highest-consequence promise** (concurrency, retries, leases, state machines, parsers) and lowest-cost tool developers can run in seconds: TLA+ (TLC) paired with [statechart](../statechart/SKILL.md) for event-ordering races, language-native SMT/bounded verifiers for input invariants, or property-based testing against real production functions (never a toy copy).
+2. **Write `.agents/skills/verify-<area>-formal/SKILL.md`** with YAML frontmatter, plain-sentence invariant + user harm, indivisible source-step mapping, explicit bounds/assumptions, covered file/function paths, `sync_commit: <HEAD_SHA>`, and, when TLA+ is used, a reference to `/statechart` (for root sessions) alongside an instruction to read `<plugin-dir>/skills/statechart/SKILL.md` (resolved to an absolute path, e.g. `~/.gemini/config/plugins/agy-pstack-next/skills/statechart/SKILL.md`) when run by a swarm worker. Do not generate calls to a `scripts/statechart` binary; this plugin ships `0` scripts.
 3. **Prove failure sensitivity:** Inside its isolated `share` worktree, `verify-author` (and then `verifier` independently in its own disposable `share` worktree) applies a temporary scratch break to guarded production code, confirms the formal check catches the bug, and reverts the product break so only `.agents/skills/verify-<area>-formal/` is committed. If `HEAD` already violates the invariant, keep the invariant intact and report the counterexample as a finding.
 
 ## 3. Upkeep (`--maintain`)

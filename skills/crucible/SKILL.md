@@ -36,7 +36,7 @@ Load built-in `swarm` (and `swarm_pane` when present) before spawning workers.
 Keep `design-a..c` parked in `waiting` (zero cost while keeping their `share` worktrees on disk for inspection and `cherry-pick`).
 
 1. **Optional `#seq` critique round.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest concrete failure mode or caller leak in each rival axis.
-2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders. Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags in [`../pstack/references/principles.md`](../pstack/references/principles.md), scores the rubric, and posts:
+2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders. Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags (pass the resolved absolute `<plugin-dir>/skills/pstack/references/principles.md` path in `judge`'s brief, never a relative `../` path or slash name, since swarm workers do not mount plugin skills), scores the rubric, and posts:
    - Recommended base option and why its boundary ages best.
    - Specific donor artifacts (edge-case tests, helpers, benchmarks) worth porting from rival worktrees.
 

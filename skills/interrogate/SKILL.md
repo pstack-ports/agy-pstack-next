@@ -24,7 +24,7 @@ Load built-in `swarm` (and `swarm_pane` when present) before spawning workers.
 Call `swarm{action: "models"}` and pick distinct `high`/`xhigh` model families across adversaries and the verifier when available:
 
 1. **Adversarial exploit writers (`adv-logic`, `adv-boundary`, optional `adv-race` in `workspace: "share"`):**
-   - **`adv-logic`:** State invariants, off-by-one bounds, partial-failure rollback, idempotency, and ordering races (pairing with [`/statechart`](../statechart/SKILL.md) when protocol interleavings matter).
+   - **`adv-logic`:** State invariants, off-by-one bounds, partial-failure rollback, idempotency, and ordering races (when protocol interleavings matter, pass the resolved absolute `<plugin-dir>/skills/statechart/SKILL.md` path in `adv-logic`'s brief for `read_file`, not `/statechart` by slash name, since swarm workers do not mount plugin skills).
    - **`adv-boundary`:** Untrusted inputs, auth/permission gates, resource leaks, timeouts, and live UI/CLI journeys on isolated `/tmp` dirs and `--port 0`.
    - Every `adv-*` writes and executes real failing tests, fuzz probes, or CLI reproductions inside its disposable `share` worktree. Style opinions and hypothetical prose critiques are banned. Never `git push`.
 2. **Transitive blast-radius mapper (`blast` in `workspace: "inherit"`):**

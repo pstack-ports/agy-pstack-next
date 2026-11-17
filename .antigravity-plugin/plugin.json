@@ -2,7 +2,7 @@
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
   "version": "3.0.0",
-  "description": "Pure-philosophy pstack workflows for Antigravity native swarm. Zero hooks, zero setup, autonomous model selection, isolated git worktrees, and behavioral verification.",
+  "description": "Pstack-inspired workflows for Antigravity native swarm.",
   "author": {
     "name": "Lauren Tan"
   },

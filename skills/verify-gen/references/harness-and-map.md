@@ -12,7 +12,7 @@ Multiple swarm workers (`author`, `verifier`, `adv-*`) often run simultaneously 
 - **Stable selectors & observable proof:** Drive via ARIA roles, accessible names, and `data-testid` handles rather than CSS paths or pixel coordinates. Capture both an ARIA snapshot and a full-window screenshot alongside console/network error checks.
 
 ### Interactive CLI & TUI Harnesses (`tmux` / PTY)
-- **Socket & home isolation:** Use a dedicated tmux socket (`tmux -L "verify-$RUN_ID" -f /dev/null new-session -d -x 120 -y 36 ...`) and temp home/config overrides (`HOME=/tmp/<app>-$RUN_ID/home`, `XDG_CONFIG_HOME=...`, `NO_COLOR=1` or fixed `TERM=xterm-256color`) so terminal dimensions and user dotfiles stays deterministic.
+- **Socket & home isolation:** Use a dedicated tmux socket (`tmux -L "verify-$RUN_ID" -f /dev/null new-session -d -x 120 -y 36 ...`) and temp home/config overrides (`HOME=/tmp/<app>-$RUN_ID/home`, `XDG_CONFIG_HOME=...`, `NO_COLOR=1` or fixed `TERM=xterm-256color`) so terminal dimensions and user dotfiles stay deterministic.
 - **Readiness over `sleep`:** Poll `tmux -L "verify-$RUN_ID" capture-pane -p` until the expected prompt or screen marker appears rather than sleeping fixed durations.
 
 ### Cleanup & Mutation Proof Invariants
