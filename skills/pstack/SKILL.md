@@ -2,9 +2,9 @@
 name: pstack
 description: >-
   Swarm-native engineering coordinator for features, bug fixes, caller-migrating
-  refactors, performance hillclimbs, multi-phase programs, and opt-in PR
-  shipping. Use for /agy-pstack-next:pstack, /pstack, or non-trivial engineering
-  work across an Antigravity native swarm.
+  refactors, performance hillclimbs, ambiguous or multi-phase programs, and
+  opt-in PR shipping. Use for /agy-pstack-next:pstack, /pstack, "figure it out",
+  or non-trivial engineering work across an Antigravity native swarm.
 ---
 
 # Pstack Swarm Coordinator
@@ -31,7 +31,7 @@ Maintain **`1` independent `verifier` worker per `2` to `4` authors**. Author se
 
 1. **Discover repo `verify-*` skills first.** Instruct every `verifier` to check `.agents/skills/verify-*/SKILL.md` in the workspace first. When present, execute its `Launch -> Doctor -> Drive -> Evidence -> Cleanup` behavioral recipe (or `--formal` check) cold using isolated `/tmp/<app>-$RUN_ID` state and ephemeral ports (`--port 0`). Otherwise run unit/integration suites and exercise the real CLI, UI, or API surface directly.
 2. **Audit diff hygiene.** Confirm zero disposable narration comments, dead shims, or design red flags from [`references/principles.md`](references/principles.md) remain. On large comment-heavy diffs, run a dedicated `deslop` worker (`workspace: "share"`) restricted to comment-only cleanup and verify `git -C <deslop_cwd> diff` before merging.
-3. **Require an explicit verdict.** `verifier` opens its completion post with `@coordinator [done] PASS` (`PASS+NOTES`), `ISSUES`, or `BLOCKED`. Route `ISSUES` back to the owning author; treat inconclusive checks as `BLOCKED`. For high-risk concurrency, auth, or schema changes, chain [`/interrogate`](../interrogate/SKILL.md).
+3. **Require an explicit verdict & protect gate integrity.** `verifier` opens its completion post with `@coordinator [done] PASS` (`PASS+NOTES`), `ISSUES`, or `BLOCKED`. Route `ISSUES` back to the owning author and treat inconclusive checks as `BLOCKED`. If a verification harness or gate itself is faulty, repair the gate in its own isolated commit rather than weakening or bypassing it. For high-risk concurrency, auth, or schema changes, chain [`/interrogate`](../interrogate/SKILL.md).
 
 ## 3. Five Composable Task Shapes
 
@@ -40,5 +40,5 @@ Pick or chain the matching shape from the user's goal:
 - **`diagnose` (bugs & incidents).** Fan out 2 to 3 `inherit` scouts on competing hypotheses (`Attack the Premise` after two failed attempts). Once a scout pinpoints the root fault, branch the author warmly via `swarm{action: "add", name: "fix", workspace: "share", fork: "<winning-scout>"}`. Commit a failing behavioral reproduction test first, then the root-cause fix, and gate with `verifier`.
 - **`build` (features & caller-migrating refactors).** Ground unfamiliar invariants via [`/understand`](../understand/SKILL.md) or novel boundary forks via [`/crucible`](../crucible/SKILL.md). Land shared domain types and dead-code deletions first (`Subtract Before You Add`), then fan out disjoint `share` slices (`tasks: [...]` when homogeneous). On internal API refactors, pin behavior first, migrate **every** caller, and delete the legacy API and shims in the same wave.
 - **`hillclimb` (performance & metric optimization).** Have `bench` (`inherit`) lock the baseline, noise floor, profiled bottleneck, and Amdahl ceiling (`Explain the Number`). Fan out parallel `share` lever trials, require 5+ interleaved runs (`A, B, A, B, ...`) with zero errors, discard deltas inside noise spread, and compound orthogonal winners via `git cherry-pick`.
-- **`program` (multi-phase or large sweeps).** Track phase checkpoints in `<appDataDir>/brain/<conversation-id>/task.md`. For `> 8` workers or independent areas, split the board with `swarm{action: "channel"}` when exposed by `swarm`, otherwise coordinate via area lead workers and verify Phase N completely before starting Phase N+1. Pair unattended runs with `/goal` or `schedule` anchored on an executable exit check.
+- **`program` (ambiguous, high-blast-radius, or multi-phase programs).** Before fanning out a fleet, write the falsifiable done predicate, pre-change baseline check (`old vs new`), and atomic phase sequence to `<appDataDir>/brain/<conversation-id>/task.md` (`UserFacing: true`; set `RequestFeedback: true` once before a multi-hour run with one-way doors unless the user already granted unattended `/goal` autonomy). De-risk the hardest unknown first in one isolated `share` probe (or [`/crucible`](../crucible/SKILL.md) on contested boundaries) and lock the verification harness ([`/verify-gen`](../verify-gen/SKILL.md) when absent) before parallel slice fan-out. Verify Phase N completely before starting Phase N+1, reverting any experimental phase cleanly if it misses its predicate instead of stacking patches. For `> 8` workers or independent areas, split the board via `swarm{action: "channel"}` when exposed, otherwise coordinate through area lead workers, and pair unattended runs with `/goal` or `schedule` anchored on an executable exit check.
 - **`ship` (local landing & opt-in PRs).** Default to finishing on a clean, verified local git branch and retiring task workers. Push to a remote, run `gh pr create` (concise `Why`, `What changed`, `Blast Radius`, and `Verification` sections), or watch CI/review threads (`schedule` + `gh pr checks` / `gh pr view`) **only** when the user explicitly asks.
