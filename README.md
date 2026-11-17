@@ -33,6 +33,7 @@ No setup command, hook registration, or model config file is required. Start imm
 | [`/understand`](./skills/understand/SKILL.md) | Parallel clue-sharing scouts for mechanism walkthroughs (`how`), historical provenance under 5 epistemic confidence tiers (`why`), and interactive walkthroughs (`teach`). |
 | [`/verify-gen`](./skills/verify-gen/SKILL.md) | Create and `--maintain` repo-local `.agents/skills/verify-<app>/` behavioral suites and `.agents/skills/verify-<area>-formal/` invariant suites. |
 | [`/statechart`](./skills/statechart/SKILL.md) | Check TLA+ models with TLC and render user-facing Mermaid `stateDiagram-v2` charts and shortest counterexample paths (used by formal `verify-*` skills). |
+| [`/bro`](./skills/bro/SKILL.md) | Restate the last reply or a named passage in plain everyday language with zero jargon. |
 
 ## Validate
 

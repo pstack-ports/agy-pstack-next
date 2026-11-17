@@ -77,7 +77,7 @@ jobs:
             }
 
             const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
-            const expectedSkills = ["crucible", "interrogate", "pstack", "statechart", "understand", "verify-gen"];
+            const expectedSkills = ["bro", "crucible", "interrogate", "pstack", "statechart", "understand", "verify-gen"];
             const actualSkills = readdirSync("skills", { withFileTypes: true })
               .filter((d) => d.isDirectory())
               .map((d) => d.name)
