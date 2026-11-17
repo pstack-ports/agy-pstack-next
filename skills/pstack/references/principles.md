@@ -13,7 +13,7 @@ Distill the 3 to 4 principles relevant to a slice into each worker's brief, and 
 7. **Model the domain & type discipline.** Make illegal states unrepresentable via discriminated unions, explicit state machines, and branded IDs. Exhaust union variants with `never`.
 8. **Boundary discipline.** Parse, validate, and narrow untrusted inputs once at system edges (CLI args, network payloads, env vars, disk files). Keep internal domain logic in pure functions without redundant defensive nil checks.
 9. **Make operations idempotent.** Compute actions by diffing observed current state against target state. Write shared files via temp-file plus atomic rename so retries or crashes converge cleanly.
-10. **Separate before serializing shared state.** Eliminate shared mutable targets across parallel workers first: disjoint file ownership in `workspace: "share"` worktrees, ephemeral ports (`--port 0`), and per-run `/tmp` directories.
+10. **Separate before serializing shared state.** Eliminate shared mutable targets across parallel workers and concurrent `agy` sessions across different projects or git worktrees first: disjoint file ownership in `workspace: "share"` worktrees, detached `HEAD` (never shared branch names across linked git worktrees), ephemeral ports (`--port 0`), PID/socket-scoped teardown, and `mktemp -d` per-run directories.
 11. **Experience first.** Choose caller and end-user clarity over implementation convenience. Ship three cohesive capabilities rather than ten rough ones.
 12. **Outcome-oriented execution.** Converge directly on the target architecture across verifiable phase boundaries rather than maintaining throwaway intermediate shims.
 13. **Exhaust the design space.** On novel architectural or UX forks with no clear precedent, compare 2 to 3 orthogonal designs or prototypes side by side (`/crucible`).
@@ -43,7 +43,7 @@ Screen designs and diffs against these eight traps (assume the next contributor 
 
 ## 4. Swarm Delegation & Code/Prose Hygiene
 
-21. **Guard the context window.** Keep bulk file sweeps, log parsing, and raw test dumps inside workers. Cite board posts by `#seq` number and write reports over `4` KB to `/tmp/<worker>-report.md` with a concise board summary.
+21. **Guard the context window.** Keep bulk file sweeps, log parsing, and raw test dumps inside workers. Cite board posts by `#seq` number and write reports over `4` KB to `<appDataDir>/brain/<conversation-id>/scratch/<worker>-report.md` (or a `mktemp` file, never a flat `/tmp/<worker>-report.md` path that collides across concurrent sessions) with a concise board summary.
 22. **Never block on reversible work.** Settle empirical technical questions by running probes or prototypes rather than asking the user. Pause only for genuine product-taste choices or irreversible external actions (`git push`, opening PRs, deploys, destructive deletes).
 23. **Encode lessons in structure.** Turn recurring mistakes into static types, linter checks, verification harnesses, or CI gates instead of adding more prompt prose (pair with `/learn` when capturing user preferences).
 24. **Zero-slop comment & prose hygiene.**

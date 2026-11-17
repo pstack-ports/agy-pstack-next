@@ -22,11 +22,16 @@ jobs:
   validate:
     name: Validate plugin
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Resolve Antigravity CLI version
         id: agy-version
@@ -55,7 +60,7 @@ jobs:
       - name: Verify Antigravity CLI version
         run: agy --version
 
-      - name: Validate clean-sheet plugin structure and links
+      - name: Validate plugin structure, links, and statechart compiler
         run: |
           AGY_HOME="$(mktemp -d)"
           trap 'rm -rf "$AGY_HOME"' EXIT
@@ -64,20 +69,32 @@ jobs:
           HOME="$AGY_HOME" agy plugin validate --strict "$AGY_HOME/.gemini/config/plugins/agy-pstack-next"
           HOME="$AGY_HOME" agy plugin list --json > "$AGY_HOME/plugins.json"
           AGY_PLUGINS_JSON="$AGY_HOME/plugins.json" node --input-type=module -e '
-            import { readdirSync, readFileSync, existsSync } from "node:fs";
+            import { accessSync, constants, readdirSync, readFileSync, existsSync } from "node:fs";
             import { dirname, join, resolve } from "node:path";
 
             const errors = [];
             const fail = (msg) => errors.push(msg);
 
-            for (const legacy of ["plugin.json", "hooks.json", "hooks", "roles", "agents", "automations", "docs"]) {
+            for (const legacy of ["plugin.json", "hooks.json", "hooks", "roles", "agents", "automations", "docs", "skills/verify-gen"]) {
               if (existsSync(legacy)) {
-                fail(`Legacy path "${legacy}" must not exist in clean-sheet pstack v3`);
+                fail(`Legacy path "${legacy}" must not exist`);
               }
             }
 
             const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
-            const expectedSkills = ["bro", "crucible", "interrogate", "pstack", "statechart", "understand", "verify-gen"];
+            const expectedSkills = [
+              "bro",
+              "create-formal-verification-skill",
+              "create-verification-skill",
+              "crucible",
+              "interrogate",
+              "maintain-formal-verification-skill",
+              "maintain-verification-skill",
+              "pstack",
+              "statechart",
+              "typescript-best-practices",
+              "understand",
+            ];
             const actualSkills = readdirSync("skills", { withFileTypes: true })
               .filter((d) => d.isDirectory())
               .map((d) => d.name)
@@ -87,12 +104,23 @@ jobs:
               fail(`Expected skills [${expectedSkills.join(", ")}], found [${actualSkills.join(", ")}]`);
             }
 
+            const statechartBin = join("skills", "statechart", "scripts", "statechart");
+            try {
+              accessSync(statechartBin, constants.X_OK);
+            } catch {
+              fail(`${statechartBin} must exist and be executable`);
+            }
+
+            const allowedScriptsDir = join("skills", "statechart", "scripts");
             const walkMd = (dir) => {
               const out = [];
               for (const entry of readdirSync(dir, { withFileTypes: true })) {
                 const p = join(dir, entry.name);
                 if (entry.isDirectory()) {
-                  if (entry.name === "scripts") fail(`Unexpected scripts directory: ${p}`);
+                  if (entry.name === "scripts") {
+                    if (p !== allowedScriptsDir) fail(`Unexpected scripts directory: ${p}`);
+                    continue;
+                  }
                   out.push(...walkMd(p));
                 } else if (entry.name.endsWith(".md")) {
                   out.push(p);
@@ -125,6 +153,9 @@ jobs:
               if (!fm.match(/^description:\s*(.+)$/m)?.[1]?.trim()) {
                 fail(`${skillFile}: missing description`);
               }
+              if (/^(paths|disable-model-invocation):/m.test(fm)) {
+                fail(`${skillFile}: unsupported Cursor-only frontmatter key found`);
+              }
             }
 
             const installedList = JSON.parse(readFileSync(process.env.AGY_PLUGINS_JSON, "utf8"));
@@ -139,5 +170,32 @@ jobs:
               for (const err of errors) console.error(`ERROR: ${err}`);
               process.exit(1);
             }
-            console.log(`Validated ${actualSkills.length} clean-sheet skills and ${mdFiles.length} markdown files.`);
+            console.log(`Validated ${actualSkills.length} skills and ${mdFiles.length} markdown files.`);
           '
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Cache TLA+ tools
+        id: cache-tla2tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tla2tools/tla2tools-1.7.4.jar
+          key: tla2tools-1.7.4
+
+      - name: Download TLA+ tools
+        if: steps.cache-tla2tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.cache/tla2tools"
+          curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$HOME/.cache/tla2tools/tla2tools-1.7.4.jar"
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.cache/tla2tools/tla2tools-1.7.4.jar" | sha256sum -c -
+
+      - name: Test statechart compiler
+        working-directory: skills/statechart/scripts
+        run: |
+          npm install --no-package-lock --no-audit --no-fund
+          TLA2TOOLS="$HOME/.cache/tla2tools/tla2tools-1.7.4.jar" npm test
+          rm -rf node_modules

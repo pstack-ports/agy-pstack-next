@@ -1,8 +1,8 @@
 # pstack
 
-Pstack-inspired workflows for Google Antigravity (`agy`), adapted from [pstack](https://github.com/cursor/plugins/tree/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack) by [Lauren Tan (poteto)](https://x.com/poteto).
+Pstack-inspired workflows for Google Antigravity (`agy`), adapted from [pstack](https://github.com/cursor/plugins/tree/2f87c854fe/pstack) (`0.15.43`) by [Lauren Tan (poteto)](https://x.com/poteto).
 
-If you want to go fast, go deep first. Throughput without verification only ships broken code faster. `pstack` pairs Antigravity's native `swarm` runtime and git worktree isolation with disciplined engineering principles, autonomous multi-model selection, adversarial verification, and zero-slop code hygiene.
+If you want to go fast, go deep first. Throughput without verification only ships broken code faster. `pstack` pairs Antigravity's native `swarm` runtime and git worktree isolation with disciplined engineering principles, autonomous multi-model selection, TLA+ statechart verification, adversarial exploit testing, and zero-slop code hygiene.
 
 ## Install
 
@@ -16,12 +16,13 @@ No setup command, hook registration, or model config file is required. Start imm
 /agy-pstack-next:pstack reproduce the idle scroll drift first, fix the root cause, and prove the fix in the browser.
 ```
 
-## Architecture: Pure Philosophy, Zero Hooks
+## Architecture: Swarm-Centric, Multi-Worktree Safe, Zero Hooks
 
-- **Zero runtime scripts or global hooks.** Native `swarm` (`workspace: "share"` git worktrees, `fork` warm handoffs, `#seq` board citations, and `swarm_pane`) provides isolation directly through git. The coordinator audits `git -C <worker_cwd> diff` and requires an independent `verifier` gate before merging any slice into your checkout.
-- **Autonomous model and effort selection.** The coordinator inspects live models and remaining quota via `swarm{action: "models"}` and assigns each worker a fitting `<model>-<effort>` (fast `flash` for scouts, strong coding models for slice authors, cross-family `high`/`xhigh` models for `/crucible`, `/interrogate`, and blind `judge`s, plus live `swarm{action: "model"}` hot-swaps on low quota).
-- **Inline worker briefs.** Workers use plain job names (`parser`, `verifier`, `design-a`, `deslop`) and receive the 3 to 4 task-relevant rules from [`principles.md`](./skills/pstack/references/principles.md) directly in their `swarm` brief with zero startup file-read overhead.
-- **Works with `.agents/skills/verify-*` suites.** Independent `verifier` workers automatically discover and run project-local behavioral skills (`.agents/skills/verify-<app>/`) and upstream formal skills directly. If an older v2 `verify-<area>-formal` skill calls the removed `scripts/statechart` binary or `control-ui`/`control-cli` plugin paths, follow the direct `tlc` command in [`statechart/SKILL.md`](./skills/statechart/SKILL.md) or refresh it with [`/verify-gen --maintain`](./skills/verify-gen/SKILL.md). This plugin ships `0` scripts.
+- **Native `swarm` orchestration with zero global hooks.** `swarm` (`workspace: "share"` git worktrees, `fork` warm handoffs, `#seq` board citations, and `#channel` area splits) provides isolation directly through git. The coordinator audits `git -C <worker_cwd> diff` and requires an independent `verifier` gate before landing any slice into the active worktree.
+- **Multi-project & multi-worktree concurrent safety.** Every skill anchors git operations to the active target worktree (`git -C <TARGET_CWD> rev-parse --show-toplevel` rather than `[ -d .git ]`), checks out candidate revisions via detached `HEAD` (avoiding git's shared-branch lock across linked worktrees), allocates per-run scratch directories with `mktemp -d`, binds ephemeral ports (`--port 0`), verifies PID and worktree build ownership in `Doctor`, and tears down only owned PIDs and dedicated `tmux -L` sockets—so multiple `agy` sessions can work across different projects and different git worktrees simultaneously without colliding.
+- **Autonomous model and effort selection.** The coordinator inspects live models and remaining quota via `swarm{action: "models"}` and assigns each worker a fitting `<model>-<effort>` (fast models for scouts, strong coding models for slice authors, cross-family `high`/`xhigh` models for `/crucible`, `/interrogate`, and blind `judge`s, plus live `swarm{action: "model"}` hot-swaps on low quota).
+- **Inline worker briefs & resolved plugin paths.** Workers use plain job names (`parser`, `verifier`, `design-a`, `deslop`) and receive the 3 to 4 task-relevant rules from [`principles.md`](./skills/pstack/references/principles.md) inline, plus resolved `<plugin-dir>/skills/...` paths when reading [`typescript-best-practices`](./skills/typescript-best-practices/SKILL.md) or running the bundled zero-npm-dependency [`statechart`](./skills/statechart/SKILL.md) TLA+ compiler (`skills/statechart/scripts/statechart`).
+- **Upstream-aligned `.agents/skills/verify-*` lifecycle.** Dedicated skills create and maintain both behavioral feature-map suites (`.agents/skills/verify-<app>/`) and formal invariant suites (`.agents/skills/verify-<area>-formal/`), which `verifier` workers discover and execute cold on every task.
 
 ## Skills
 
@@ -31,8 +32,12 @@ No setup command, hook registration, or model config file is required. Start imm
 | [`/crucible`](./skills/crucible/SKILL.md) | Competing architectural (`sketch`) or executable (`full`) prototypes across distinct model families, blind cross-family `judge`, and warm `fork` + `cherry-pick` synthesis. |
 | [`/interrogate`](./skills/interrogate/SKILL.md) | Adversarial exploit hunting (`workspace: "share"` failing repros) paired with transitive caller, wire-schema, and rollout-skew blast-radius proof. |
 | [`/understand`](./skills/understand/SKILL.md) | Parallel clue-sharing scouts for mechanism walkthroughs (`how`), historical provenance under 5 epistemic confidence tiers (`why`), and interactive walkthroughs (`teach`). |
-| [`/verify-gen`](./skills/verify-gen/SKILL.md) | Create and `--maintain` repo-local `.agents/skills/verify-<app>/` behavioral suites and `.agents/skills/verify-<area>-formal/` invariant suites. |
-| [`/statechart`](./skills/statechart/SKILL.md) | Check TLA+ models with TLC and render user-facing Mermaid `stateDiagram-v2` charts and shortest counterexample paths (used by formal `verify-*` skills). |
+| [`/typescript-best-practices`](./skills/typescript-best-practices/SKILL.md) | TypeScript type-system and boundary discipline grounded in concrete syntax and [`patterns.md`](./skills/typescript-best-practices/references/patterns.md) when reading or editing `.ts`/`.tsx` files. |
+| [`/statechart`](./skills/statechart/SKILL.md) | Full TLA+ (TLC) model checker and Mermaid statechart compiler (`scripts/statechart` + Pele SVG rendering) with user-language state/step views and shortest bug paths. |
+| [`/create-verification-skill`](./skills/create-verification-skill/SKILL.md) | Interview a repo, generate a `.agents/skills/verify-<app>/` behavioral harness + `features/` map, and prove it cold end to end. |
+| [`/maintain-verification-skill`](./skills/maintain-verification-skill/SKILL.md) | Parallel source-drift audit + single-owner live pass across every mapped feature (`clean`, `changed`, or `blocked`) under strict edit scope. |
+| [`/create-formal-verification-skill`](./skills/create-formal-verification-skill/SKILL.md) | Formally verify a high-consequence concurrency, state-machine, parser, or input invariant (TLA+, SMT, prover, or PBT), prove failure sensitivity, and generate `.agents/skills/verify-<area>-formal/`. |
+| [`/maintain-formal-verification-skill`](./skills/maintain-formal-verification-skill/SKILL.md) | Sync formal checks with `sync_commit..HEAD` code changes, re-prove failure sensitivity, and separate verification drift from real product bugs (`in sync`, `updated`, `bug`, or `blocked`). |
 | [`/bro`](./skills/bro/SKILL.md) | Restate the last reply or a named passage in plain everyday language with zero jargon. |
 
 ## Validate
