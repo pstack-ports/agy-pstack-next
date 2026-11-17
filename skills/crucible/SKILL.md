@@ -1,111 +1,49 @@
 ---
 name: crucible
 description: >-
-  Explore competing architectures or working implementations across orthogonal
-  design axes in isolated share worktrees, evaluate via peer #seq critique and a
-  cross-family ro-judge against design red flags, and synthesize via warm fork
-  and donor cherry-pick. Supports sketch and full fidelity modes. Use for
-  /agy-pstack-next:crucible, /crucible, "design this", "architect this", "race
-  prototypes", or comparing structural options before locking in a shape.
+  Explore competing designs (sketch) or working prototypes (full) across
+  orthogonal axes and distinct model families in isolated share worktrees, grade
+  blind against design red flags, and synthesize via warm fork and cherry-pick.
+  Use for /agy-pstack-next:crucible, /crucible, "design this", "architect this",
+  or comparing structural options before committing to one shape.
 ---
 
 # Crucible
 
-Explore structurally distinct designs or working prototypes across parallel `cand-*` workers, stress-test them against [`references/design-red-flags.md`](references/design-red-flags.md), and graft the strongest elements into one coherent winner.
+Explore structurally distinct designs or executable prototypes in parallel, stress-test them blind against the Structural Design Red Flags in [`../pstack/references/principles.md`](../pstack/references/principles.md), and graft the strongest parts into one coherent implementation.
 
-## Phase 1. Ground constraints and pick fidelity
+Load built-in `swarm` (and `swarm_pane` when present) before spawning workers.
 
-### 1. Ground existing boundaries first
+## Phase 1. Ground Constraints & Pick Fidelity
 
-Skip grounding only for greenfield code with zero surrounding callers. Otherwise run [`/understand`](../understand/SKILL.md) (or dispatch a fast `ro-code` scout) to map current module boundaries, callers, domain invariants, and historical constraints before framing candidates.
+1. **Ground existing boundaries.** Skip only for greenfield modules with zero callers. Otherwise run [`/understand`](../understand/SKILL.md) (or one fast `inherit` scout) to map current callers, domain invariants, and constraints.
+2. **Choose `sketch` or `full` fidelity.**
+   - **`sketch` (fast boundary & API design):** Default when settling module boundaries, data shapes, or public signatures. Each candidate writes 2 to 3 realistic caller snippets first, concrete domain types (`not implemented` bodies allowed), a state transition table, a failure matrix (retry, crash mid-flight, concurrent actor, bad input), and a touched-file diff sketch.
+   - **`full` (executable prototypes):** Default when comparing algorithms, UI feel, refactor strategies, or perf levers where paper sketches hide friction. Each candidate builds a working prototype in its `share` worktree, runs behavioral tests or benchmarks, and commits cleanly.
+3. **Lock a falsifiable rubric.** Define 3 to 6 concrete criteria before fan-out (interface depth, single-owner state, boundary parsing, failure recovery, caller ergonomics, measured latency/coverage).
 
-### 2. Choose `sketch` or `full` fidelity
+## Phase 2. Fan Out Orthogonal Axes Across Model Families
 
-Pick the fidelity mode from the user's request or task risk:
+1. Call `swarm{action: "models"}` to inspect live models and remaining quota, and pick 2 to 3 `high`/`xhigh` models from **distinct provider families** when available (unless the user requested specific models).
+2. Because the swarm board is public, assign **explicit orthogonal design axes** to `design-a`, `design-b`, and `design-c` (`workspace: "share"`):
+   - **`design-a`:** e.g. pure immutable data-transform pipeline with stateless callers.
+   - **`design-b`:** e.g. deep stateful module hiding lifecycle, caching, and idempotent transitions behind one narrow handle.
+   - **`design-c`:** e.g. subtractive extension of an existing module with zero new public surface.
+3. Require each brief to: write caller usage before types, prefer deep modules over shallow wrappers, encode invariants in types, commit locally (never push), and post `[done] <sha> <cwd>` plus key tradeoffs.
 
-- **`sketch` mode (fast design exploration).** Default when settling module boundaries, public APIs, or data models before writing full bodies. Each `cand-*` worker (`workspace: "share"`) produces caller usage snippets first, concrete domain types and signatures (`not implemented` bodies allowed), a state transition table, a failure matrix (retry, crash halfway, concurrent actor, invalid input), a diff sketch showing touched files, and a draft rationale per [`references/rationale-template.md`](references/rationale-template.md).
-- **`full` mode (executable prototypes).** Default when comparing algorithms, UI ergonomics, refactoring strategies, or performance levers where paper sketches hide real friction. Each `cand-*` worker (`workspace: "share"`) builds a working implementation in its isolated worktree, runs real behavioral tests (plus benchmarks or [`control-ui`](../control-ui/SKILL.md) and [`control-cli`](../control-cli/SKILL.md) captures when relevant), commits cleanly on its local branch, and posts its commit SHA, worktree `pwd`, measured output, and rationale.
+## Phase 3. Peer Critique & Blind Cross-Family `judge`
 
-### 3. Define a concrete grading rubric
+Keep `design-a..c` parked in `waiting` (zero cost while keeping their `share` worktrees on disk for inspection and `cherry-pick`).
 
-Write 3 to 6 task-specific, falsifiable rubric criteria before spawning candidates (interface depth, single-owner state, boundary validation, failure recovery, caller ergonomics, measured latency or test coverage).
+1. **Optional `#seq` critique round.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest concrete failure mode or caller leak in each rival axis.
+2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders. Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags (pass the resolved absolute `<plugin-dir>/skills/pstack/references/principles.md` path in `judge`'s brief, never a relative `../` path or slash name, since swarm workers do not mount plugin skills), scores the rubric, and posts:
+   - Recommended base option and why its boundary ages best.
+   - Specific donor artifacts (edge-case tests, helpers, benchmarks) worth porting from rival worktrees.
 
----
+## Phase 4. Synthesize via Warm `fork`, Verify & Retire
 
-## Phase 2. Fan out orthogonal `cand-*` axes on the board
-
-Because every swarm brief on the board is public to all members, never attempt fake blind-brief workarounds. Use board visibility deliberately by assigning **explicit orthogonal design axes** to `cand-a`, `cand-b`, and `cand-c` (minimum two candidates, typically three):
-
-- **`cand-a`** explores Axis A (for example, a pure data-transform pipeline with immutable value types and stateless callers).
-- **`cand-b`** explores Axis B (for example, a deep stateful module owning lifecycle, caching, and idempotent transitions behind one narrow handle).
-- **`cand-c`** explores Axis C (for example, a subtractive extension of an existing boundary with zero new public modules).
-
-Spawn all `cand-*` workers with `workspace: "share"`. Assign models from the `cand-*` setting in `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (reading the file from disk only when absent from `<user_rules>`, defaulting to multi-family diversity when available or `inherit`). Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved paths in worker briefs (such as `<plugin-root>/skills/crucible/references/rationale-template.md`, `<plugin-root>/skills/statechart/SKILL.md`, `<plugin-root>/skills/control-ui/SKILL.md`, and `<plugin-root>/skills/control-cli/SKILL.md`) for `read_file` rather than telling workers to invoke plugin skills by name. When global `~/.gemini/config/hooks.json` is not active, also pass `<plugin-root>/roles/poteto-agent.md` in `cand-*` and `impl-synth` briefs and `<plugin-root>/roles/research.md` in `ro-judge` and `ro-steward` briefs.
-
-### Candidate design discipline
-
-Include these rules in every `cand-*` brief:
-
-1. **Caller usage first.** Write 2 or 3 realistic caller snippets before writing types, and reconcile signatures to the caller experience.
-2. **Data structures before control flow.** Trace dominant read and write paths through the core types without bolting on secondary caches later.
-3. **Deep modules over shallow wrappers.** Hide substantial policy and complexity behind a small public interface. Never re-export wire, storage, or framework types across the boundary.
-4. **Separate state before serializing.** Prefer per-actor state merged at read boundaries over shared mutable state guarded by locks.
-5. **Encode invariants in types.** Prefer unrepresentable invalid states over runtime checks, and runtime checks at boundaries over prose comments.
-6. **Commit cleanly in your `share` worktree.** Post your `#seq` submission with `pwd`, branch HEAD SHA, test or sketch evidence, and key tradeoffs, then wait (`swarm_wait`).
-
----
-
-## Phase 3. Peer `#seq` critique, `ro-judge`, and optional `ro-steward`
-
-Keep `cand-a`, `cand-b`, and `cand-c` parked in `waiting` after they post. Waiting workers consume zero tokens while keeping their `share` worktrees intact on disk for inspection and cherry-picking.
-
-### 1. Peer `#seq` critique round
-
-Wake `@cand-a @cand-b @cand-c` for one bounded critique turn when trade-offs are subtle. Each candidate cites its peers' `#seq` submissions and names the sharpest concrete failure mode, caller leak, or invariant gap in each rival axis. Ban generic praise.
-
-### 2. Cross-family `ro-judge` evaluation
-
-Spawn `ro-judge` (`workspace: "inherit"`, read-only) on a model from `ro-judge pool` in `~/.gemini/config/rules/pstack-models.md` whose model family differs from both the coordinator and winning contenders (`inherit` never judges).
-
-Before handing off candidate submissions and diffs to `ro-judge`, anonymize candidate labels (`design-oak`, `design-pine`, `design-cedar`) and strip author prefixes (`cand-*`) and model IDs so cross-model judging stays blind. `ro-judge` inspects every anonymized candidate's worktree files and git diff directly, screens each candidate against every item in [`references/design-red-flags.md`](references/design-red-flags.md) (passed in `ro-judge`'s brief as `<plugin-root>/skills/crucible/references/design-red-flags.md`), grades the rubric criterion by criterion, and posts a `#seq` verdict naming:
-
-- Recommended base candidate (`design-oak` or `design-pine`) and why its core boundary ages best (which the coordinator maps back to the winning `cand-*` member).
-- Specific donor artifacts (edge-case tests, benchmarks, type refinements, helper functions) worth porting from losing `cand-*` branches.
-- Red flags detected in each candidate.
-
-### 3. Optional `ro-steward` boundary audit
-
-When the task modifies public package exports, wire protocols, database schemas, or cross-service contracts, also spawn `ro-steward` (`workspace: "inherit"`). `ro-steward` audits caller migration cost, backward compatibility, and importable-internals leakage across the repository.
-
----
-
-## Phase 4. Synthesize via warm `fork` and donor `cherry-pick`
-
-Read the candidate diffs and `#seq` verdicts from `ro-judge` (and `ro-steward`) yourself before deciding. Agreement confirms the base. Disagreement means checking the exact lines each cited. When two shapes tie on capability, pick the deeper interface with fewer public concepts.
-
-### Optional human checkpoint
-
-Apply the `crucible checkpoint` setting from `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (reading the file from disk only when absent from `<user_rules>`), alongside whether the user asked for a checkpoint (`with checkpoint` or `stop before implementing`). When active, present the chosen base, planned donor grafts, and [`references/rationale-template.md`](references/rationale-template.md) summary, and pause for sign-off before running `impl-synth` or filling in `sketch` bodies.
-
-### Graft and verify in `impl-synth`
-
-**Critical worktree rule.** Keep all `cand-*` workers alive in `waiting` throughout synthesis. Calling `swarm{action: "kill"}` deletes a worker's `share` worktree immediately, which destroys donor commits before `impl-synth` can fetch them.
-
-1. Spawn `impl-synth` branched warmly from the winning candidate:
-   ```json
-   {"action": "add", "name": "impl-synth", "workspace": "share", "fork": "cand-a", "brief": "Fetch cand-a HEAD, cherry-pick specified donor tests/helpers from cand-b and cand-c worktrees, unify under cand-a's mental model, write rationale per <plugin-root>/skills/crucible/references/rationale-template.md, run full verification, commit, and report SHA and pwd."}
-   ```
-2. Inside `impl-synth`, fetch the winning branch (`git fetch <winner_cwd> <winner_sha> && git checkout -B crucible-synth FETCH_HEAD`) and pull targeted tests or helpers from donor worktrees (`git fetch <donor_cwd> <donor_sha>` with `git cherry-pick --no-commit` or path checkout). Rewrite grafted pieces so names, types, and invariants fit one unified mental model rather than mechanical Franken-code.
-3. If Phase 2 ran in `sketch` mode and no checkpoint paused execution, `impl-synth` (or downstream `impl-*` slices under [`/pstack`](../pstack/SKILL.md) `build`) replaces `not implemented` bodies with production code and behavioral tests.
-4. **Scrap rule when implementation fights the sketch.** If filling in a `sketch` triggers caller leaks across module boundaries or `2+` implementation deviations from the sketch (such as repeated structural workarounds across unrelated callers, `any` casts, or surprise locks on supposedly isolated state), stop bolting on patches. Scrap the sketch, fold the newly discovered constraint into Phase 1, and re-run Phase 2 smaller and cleaner.
-
----
-
-## Phase 5. Merge locally and retire the swarm
-
-1. Verify `impl-synth`'s tests, types, benchmarks, and [`references/rationale-template.md`](references/rationale-template.md) decision record.
-2. Fetch and merge `impl-synth` into the coordinator workspace first:
-   ```bash
-   git fetch <impl_synth_cwd> <impl_synth_sha> && git merge --no-edit FETCH_HEAD
-   ```
-3. Only after `git status` and `git log -1` confirm the synthesized commit landed in the coordinator workspace, call `swarm{action: "kill"}` on `cand-a`, `cand-b`, `cand-c`, `ro-judge`, `ro-steward`, and `impl-synth` while leaving built-in `monitor` and `narrator` alive unless the user asks. Do not `git push` unless the user explicitly requested it.
+1. Inspect the winning diff and `judge` citations yourself. Pause for user sign-off here only if the user asked to review before implementation.
+2. Spawn `synth` (`workspace: "share"`, `fork: "<winning-design>"`):
+   - `git fetch <winner_cwd> <winner_sha> && git checkout -B crucible-synth FETCH_HEAD`
+   - Pull targeted donor tests/helpers via `git fetch <donor_cwd> <donor_sha>` and rewrite grafted pieces so names, types, and invariants fit **one** unified mental model (scrap and re-sketch if filling in `sketch` bodies causes caller leaks across boundaries).
+3. Gate `synth` with an independent `verifier` (running `.agents/skills/verify-*` when present), `git fetch` and `merge` `synth` into your checkout, and only **after** `git log -1` confirms landing, call `swarm{action: "kill"}` on all task workers. Never `git push` unasked.

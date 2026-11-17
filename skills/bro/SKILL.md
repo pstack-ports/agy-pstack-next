@@ -14,7 +14,7 @@ Restate your last message in plain spoken human language so another person under
 
 - **Run inline with zero side effects.** Reply directly in the current turn. Never spawn swarm workers, write files, or edit the repository.
 - **Skip goal-framing preambles.** Start straight with the plain restatement. Never open with "Your goal is" or chatbot pleasantries.
-- **Cut all engineering jargon.** Replace technical terms, protocol acronyms, internal worker or type names, file paths, CLI commands, and commit hashes with what actually happened and why it matters. Keep an identifier only when the human needs it to make a decision.
+- **Cut all engineering jargon.** Replace technical terms, shorthand abbreviations, internal worker or type names, file paths, command-line commands, and commit hashes with what actually happened and why it matters. Keep an identifier only when the human needs it to make a decision.
 - **Keep real choices and risks.** Preserve concrete user impact, open decisions, trade-offs, and risks in everyday words. Drop technical backstory that changes no human decision.
 - **Write like one human talking to another.** Use short declarative sentences in active voice. Avoid em-dashes, en-dashes, mid-sentence prose colons, and abstract filler.
 

@@ -1,88 +1,47 @@
 ---
 name: interrogate
 description: >-
-  Unifies adversarial bug hunting and transitive blast-radius proof. Spawns
-  isolated adv-* exploit authors (workspace: "share") alongside read-only
-  ro-blast caller, schema, and rollout mappers (workspace: "inherit"), uses live
-  #seq board deduplication and cross-boundary exploit chaining, and gates every
-  surviving finding through ro-verify. Use for /agy-pstack-next:interrogate,
-  /interrogate, "adversarial review", "break this", "stress test this diff",
-  "blast radius", or "what could this break".
+  Break a diff or design with executable failing reproductions in isolated share
+  worktrees and prove transitive caller, wire-schema, and mixed-version rollout
+  safety. Use for /agy-pstack-next:interrogate, /interrogate, "break this",
+  "adversarial review", "stress test this diff", or "blast radius".
 ---
 
 # Interrogate
 
-Break a change or design with executable reproductions and prove what happens across transitive callers, wire schemas, migrations, and mixed-version rollouts. Report verified defects and blast-radius evidence without modifying the coordinator's working tree.
+Break a change or design with real executed reproductions and prove what happens across transitive callers, wire schemas, migrations, and mixed-version rollouts—without modifying the coordinator's checkout.
 
-## Phase 1. Frame scope, intent, and the core safety fact
+Load built-in `swarm` (and `swarm_pane` when present) before spawning workers.
 
-1. **Lock the scope.** Use the files, commits, PR, or design artifact named by the user. When none is named, inspect the branch diff from merge-base through uncommitted working-tree changes (`git merge-base HEAD main` and `git status --short`).
-2. **Restate the behavioral intent.** Summarize in plain words what the change must accomplish and what existing invariants must hold, reading commit messages, PR descriptions, and linked tickets first. Ask the user only when intent itself is ambiguous.
-3. **Name the primary safety hypothesis.** Most risky changes look safe because of one load-bearing assumption (for example, "this eviction path only drops entries with refcount zero" or "old readers ignore unknown JSON fields"). Write that assumption down explicitly so the swarm tests it rather than reciting it.
+## Phase 1. Lock Scope, Intent & Primary Safety Fact
 
----
+1. **Scope.** Inspect the user-named files, commits, or PR (default: `git merge-base HEAD main` plus `git status --short`). If uncommitted edits exist, export a patch to `/tmp` so `share` workers test the exact working state.
+2. **Behavioral intent.** Restate in plain sentences what the change must accomplish and preserve.
+3. **Primary safety hypothesis.** Write down the single load-bearing assumption making the change look safe (e.g., *"old readers ignore unknown enum variants"* or *"eviction only runs at refcount zero"*) so workers test it directly.
 
-## Phase 2. Fan out `adv-*` adversaries and `ro-blast`
+## Phase 2. Fan Out Exploit Authors & Blast-Radius Scout
 
-### 1. Adversarial exploit hunters (`adv-*`, `workspace: "share"`)
+Call `swarm{action: "models"}` and pick distinct `high`/`xhigh` model families across adversaries and the verifier when available:
 
-Apply the `adv-*` model setting from `~/.gemini/config/rules/pstack-models.md` already loaded in `<user_rules>` via `always_on` without calling `read_file` on disk (read the file from disk only when absent from `<user_rules>`, defaulting to two distinct model families when available or `inherit`). Spawn parallel `adv-*` workers (`adv-logic`, `adv-boundary`, and optionally `adv-concurrency`) in `workspace: "share"`:
+1. **Adversarial exploit writers (`adv-logic`, `adv-boundary`, optional `adv-race` in `workspace: "share"`):**
+   - **`adv-logic`:** State invariants, off-by-one bounds, partial-failure rollback, idempotency, and ordering races (when protocol interleavings matter, pass the resolved absolute `<plugin-dir>/skills/statechart/SKILL.md` path in `adv-logic`'s brief for `read_file`, not `/statechart` by slash name, since swarm workers do not mount plugin skills).
+   - **`adv-boundary`:** Untrusted inputs, auth/permission gates, resource leaks, timeouts, and live UI/CLI journeys on isolated `/tmp` dirs and `--port 0`.
+   - Every `adv-*` writes and executes real failing tests, fuzz probes, or CLI reproductions inside its disposable `share` worktree. Style opinions and hypothetical prose critiques are banned. Never `git push`.
+2. **Transitive blast-radius mapper (`blast` in `workspace: "inherit"`):**
+   - Walk 2 to 3 hops upstream/downstream across callers and pinned dependencies.
+   - Check async cancellation, shutdown order, wire/RPC/DB schemas, feature-flag combinations, and **mixed-version rollout skew** (old reader + new writer, new reader + old writer).
+   - Push the primary safety hypothesis as far up the proof ladder as possible: (1) unverified claim -> (2) `file:line` citation -> (3) state walkthrough -> (4) executed read-only probe -> (5) live E2E reproduction.
 
-- `hooks/guard.mjs` confines `adv-*` file writes strictly inside each worker's isolated `share` worktree and temp roots and blocks `git push` unconditionally. When global `~/.gemini/config/hooks.json` is not active, pass `<plugin-root>/roles/poteto-agent.md` in every `adv-*` brief and `<plugin-root>/roles/research.md` in `ro-blast` and `ro-verify` briefs.
-- Because workers do not mount installed plugin skills in `<skills>`, pass explicit resolved `SKILL.md` paths (such as `<plugin-root>/skills/control-ui/SKILL.md`, `<plugin-root>/skills/control-cli/SKILL.md`, and `<plugin-root>/skills/statechart/SKILL.md`) in worker briefs for `read_file` rather than telling workers to invoke plugin skills by name.
-- When the target includes uncommitted edits in the coordinator workspace, pass a patch path or `git diff` fetch instruction so each `adv-*` reproduces against the exact working state.
-- Assign distinct attack angles so workers do not crowd the same obvious branch:
-  - **`adv-logic`** attacks state invariants, off-by-one bounds, error recovery, partial-failure rollback, and idempotency (reading `<plugin-root>/skills/statechart/SKILL.md` when modeling ordering or protocol races).
-  - **`adv-boundary`** attacks untrusted inputs, auth and permission checks, resource leaks, timeouts, and UI or CLI flows (reading the passed `<plugin-root>/skills/control-ui/SKILL.md` or `<plugin-root>/skills/control-cli/SKILL.md` path on worker-isolated ports when needed).
-- Every `adv-*` worker writes and executes real failing tests, fuzz scripts, or CLI probes inside its own `share` worktree. Style opinions, naming critiques, and hypothetical future-code risks are banned.
+## Phase 3. Live `#seq` Deduplication & Exploit Chaining
 
-### 2. Transitive blast-radius mapper (`ro-blast`, `workspace: "inherit"`)
+- Workers post one-line `[CLAIM] <file:line> <bug>` messages immediately on spotting a defect and check `read_board{since}` before duplicating a peer's target.
+- Whenever `blast` spots a suspicious caller assumption or schema mismatch, it posts the trace and rings `@adv-boundary` or `@adv-logic` to chain that trace into an executed failing test in its `share` worktree.
 
-Spawn `ro-blast` (`workspace: "inherit"`, read-only via `hooks/guard.mjs`) alongside `adv-*` to trace everything symbol `grep` misses:
+## Phase 4. `verifier` Survival Gate & Clean Teardown
 
-- **Transitive callers and pinned dependencies.** Walk 2 to 3 hops upstream and downstream, including pinned third-party library source and local patches.
-- **Lifecycle and async ordering.** Check microtask queues, cancellation, unmount or shutdown order, retry loops, and shared caches.
-- **Wire formats, storage schemas, and flags.** Trace JSON API payloads, protobuf or RPC contracts, database columns and migrations, analytics events, feature-flag combinations, and other languages reading the same bytes.
-- **Mixed-version rollout skew.** Trace what happens during deploy when an old reader consumes a new writer's output and when a new reader consumes an old writer's state.
-- **Five-rung proof ladder for the core safety fact.** Push the primary safety hypothesis as far up this ladder as possible and record the exact rung reached:
-  1. Unverified assertion (worthless alone).
-  2. Exact `file:line` citation in repository or library source.
-  3. Step-by-step state walkthrough proving the bad path is unreachable.
-  4. Executed read-only probe or existing test proving the invariant against real code.
-  5. Verified end-to-end in the running application (handed to an `adv-*` worktree when a throwaway harness script is required).
+Keep `adv-*` workers parked in `waiting` while an independent `verifier` (`workspace: "inherit"`) audits every claim:
 
----
-
-## Phase 3. Live `#seq` deduplication and exploit chaining
-
-Require `adv-*` and `ro-blast` to coordinate live on the swarm board rather than working in silence until the end:
-
-1. **Immediate `#seq` bug claims.** As soon as a worker spots a concrete bug or broken downstream contract, it posts a short claim (`[CLAIM] src/sync/queue.ts:142 duplicate ack under retry`) before polishing its test.
-2. **Board deduplication.** Before building a repro, each `adv-*` calls `read_board{since}` and skips defects already claimed in an earlier `#seq` post unless proving a wider impact.
-3. **Cross-boundary exploit chaining.** Whenever `ro-blast` posts a suspicious caller assumption, schema mismatch, or rollout skew (`#seq`), it tags `@adv-boundary` or `@adv-logic`. That `adv-*` worker chains the `ro-blast` trace into an executable test in its `share` worktree (`Chaining #9 into failing wire-compat test in test/rollout.repro.ts`) so prose blast-radius theories turn into hard reproductions.
-
----
-
-## Phase 4. Gate through `ro-verify` and tear down cleanly
-
-Keep `adv-*` workers parked in `waiting` (zero token cost, `share` worktrees still on disk) while `ro-verify` audits their claims.
-
-1. Spawn `ro-verify` (`workspace: "inherit"`, read-only) once `adv-*` and `ro-blast` post final summaries.
-2. `ro-verify` inspects each `adv-*` worktree repro script, reruns the exact reproduction command (or checks the recorded execution output and test code), and audits every `ro-blast` trace.
-3. **Strict survival gate.** A finding survives **only** when:
-   - An executed test, script, or command reproduces the failure against real code and violates the stated intent, **or**
-   - For multi-version rollout skew, external migration order, or pure pre-code design specs where single-tree execution cannot run two deploys at once, an exact `file:line` state trace on both sides of the boundary proves the break.
-4. `ro-verify` merges duplicate root causes, drops unverified speculation, and records per-worker dropped counts with explicit reasons.
-5. After `ro-verify` posts its `#seq` audit (and only if no immediate `impl-fix` needs to cherry-pick a repro test from an `adv-*` worktree), call `swarm{action: "kill"}` on every `adv-*` worker, `ro-blast`, and `ro-verify` while leaving built-in `monitor` and `narrator` alive unless the user asks. Never merge throwaway `adv-*` exploit hacks into the coordinator branch.
-
----
-
-## Output contract
-
-Deliver one concise report with five sections:
-
-- **Intent.** Plain restatement of what the change does and must preserve.
-- **Core safety fact.** The load-bearing safety invariant, the proof rung reached (1 to 5), and the command output or `file:line` trace proving it (or `unproven` if refuted or unverified).
-- **Verified findings.** Each surviving defect or rollout break ordered by severity, naming `file:line`, the exact repro command and actual vs required output (or two-sided boundary trace), downstream blast radius, and `#seq` worker attribution. Write `No verified findings` when zero survive.
-- **Cleared blast-radius paths.** Callers, wire contracts, migrations, and rollout edges checked by `ro-blast` and confirmed safe.
-- **Dropped claims.** Count and reason per worker for claims rejected by `ro-verify`.
+1. `verifier` reruns each `adv-*` reproduction command and checks every `blast` trace.
+2. **Strict survival rule:** A finding survives **only** when (a) an executed command/test reproduces the failure against real code and violates stated intent, or (b) for multi-version deploy skew / pre-code specs where one tree cannot execute two versions at once, an exact `file:line` trace on both sides of the boundary proves the break.
+3. Merge duplicate root causes, drop unproved speculation with per-worker counts, then call `swarm{action: "kill"}` on `adv-*`, `blast`, and `verifier` (never merge throwaway exploit hacks into the primary branch).
+4. Report five concise sections: **Intent**, **Core Safety Fact** (with proof rung 1–5), **Verified Findings** (ordered by severity with repro commands), **Cleared Blast-Radius Paths**, and **Dropped Claims**.

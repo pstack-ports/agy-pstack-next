@@ -1,8 +1,8 @@
 {
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
-  "version": "2.1.0",
-  "description": "Swarm-centric engineering workflows for Antigravity. Hook-enforced role capsules, worktree isolation, adversarial verification, and 14 composable skills for high-rigor parallel code.",
+  "version": "3.0.0",
+  "description": "Pstack-inspired workflows for Antigravity native swarm.",
   "author": {
     "name": "Lauren Tan"
   },
@@ -10,8 +10,8 @@
   "repository": "https://github.com/pstack-ports/agy-pstack-next",
   "logo": "assets/logo.png",
   "suggestedPrompts": [
-    "/agy-pstack-next:setup-pstack configure per-role swarm models, global guard hooks, and autonomy gates",
-    "/agy-pstack-next:pstack reproduce this bug, fix the root cause in an isolated worktree, and verify the result",
-    "/agy-pstack-next:understand walk me through how this subsystem works and trace why its invariants are shaped this way"
+    "/agy-pstack-next:pstack reproduce this bug with a failing behavioral test, fix the root cause in an isolated worktree, and prove it passes",
+    "/agy-pstack-next:crucible explore three orthogonal designs across model families, judge blind against red flags, and synthesize the winner",
+    "/agy-pstack-next:interrogate try to break this diff with executable repros and map transitive caller and rollout blast radius"
   ]
 }
