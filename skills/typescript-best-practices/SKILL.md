@@ -9,9 +9,9 @@ description: >-
 
 # TypeScript best practices
 
-Apply the **Model the domain & type discipline** and **Boundary discipline** rules in [`../pstack/references/principles.md`](../pstack/references/principles.md) first.
+Apply **Model the domain & type discipline** and **Boundary discipline** in [`../pstack/references/principles.md`](../pstack/references/principles.md) first.
 
-When delegating `.ts` or `.tsx` authoring or review slices to `swarm` workers (which do not mount installed plugin skills in `<skills>`), pass the resolved absolute `<plugin-dir>/skills/typescript-best-practices/SKILL.md` (and `references/patterns.md` when needed) path in each worker's `brief`, and run typechecks/tests inside each worker's own `$PWD` worktree so concurrent worktrees and projects stay isolated.
+For code edits, refactors, or repo audits invoked directly by the user, route execution through built-in `swarm` per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md), passing `<plugin-dir>/skills/typescript-best-practices/SKILL.md` (and `references/patterns.md` when needed) in each worker's brief and running typechecks/tests inside the worker's `$PWD`.
 
 | Rule | Summary |
 |------|---------|

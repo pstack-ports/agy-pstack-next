@@ -1,8 +1,8 @@
 {
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
-  "version": "3.1.0",
-  "description": "Pstack-inspired workflows for Antigravity native swarm.",
+  "version": "3.2.0",
+  "description": "Pstack engineering workflows layered on Antigravity's built-in swarm.",
   "author": {
     "name": "Lauren Tan"
   },
@@ -11,7 +11,7 @@
   "logo": "assets/logo.png",
   "suggestedPrompts": [
     "/agy-pstack-next:pstack reproduce this bug with a failing behavioral test, fix the root cause in an isolated worktree, and prove it passes",
-    "/agy-pstack-next:crucible explore three orthogonal designs across model families, judge blind against red flags, and synthesize the winner",
+    "/agy-pstack-next:crucible explore three orthogonal design axes in isolated worktrees, judge blind against red flags, and synthesize the winner",
     "/agy-pstack-next:interrogate try to break this diff with executable repros and map transitive caller and rollout blast radius"
   ]
 }

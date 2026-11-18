@@ -12,17 +12,17 @@ description: >-
 
 The chart shows how a system moves between states, in the words of the person who reads it. That person, the reader, decides whether the behavior is right.
 
+When invoked directly by the user, follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md): delegate spec authoring, TLC checking, Pele rendering, and real-code bug replay to `swarm` worker(s), passing this skill's resolved `<plugin-dir>/skills/statechart/SKILL.md` path in each brief. Inside a worker, execute the steps below in a fresh scratch folder.
+
 ## Run
 
-Work in a fresh scratch folder outside any repository worktree (`SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/statechart-XXXXXX")"`) so concurrent `swarm` workers and simultaneous `agy` sessions across different projects or git worktrees never share `.tla`, `.cfg`, or `--out` paths (never rely on shell `$$`, which changes across separate `run_command` calls). Write a TLA+ spec and its config inside `$SCRATCH`, then run:
+Allocate `SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/statechart-XXXXXX")"` outside any repository worktree (never shell `$$`), write the TLA+ spec and config inside `$SCRATCH`, and run:
 
 ```sh
 <skill dir>/scripts/statechart "$SCRATCH/SPEC.tla" [--config FILE] [--view FILE] [--out "$SCRATCH/chart"]
 ```
 
-`scripts/statechart.ts` is TypeScript, so run `scripts/statechart` with a runtime that can execute TypeScript (Node 22.18+, Node 23.6+, Bun 1.1.5+, or Deno 2.0+).
-
-The first run installs TLC and Java with `mise` and needs the network (or set `TLA2TOOLS` and `JAVA`). Swarm workers do not mount installed plugin skills in `<skills>`, so coordinators pass the resolved absolute `<plugin-dir>/skills/statechart/SKILL.md` path in worker briefs and workers invoke `<skill dir>/scripts/statechart` from that directory directly.
+`scripts/statechart.ts` runs on Node 22.18+, Node 23.6+, Bun 1.1.5+, or Deno 2.0+. The first run installs TLC and Java via `mise` (requiring network) unless `TLA2TOOLS` and `JAVA` are set.
 
 ## Write the spec
 

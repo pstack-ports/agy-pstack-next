@@ -12,13 +12,13 @@ description: >-
 
 Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local Antigravity skill (`.agents/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent or swarm `verifier` that has never seen the app.
 
-## Swarm & Multi-Worktree Orchestration
+## Swarm Orchestration
 
-Load built-in `swarm` (and `swarm_pane` when present) and anchor every step to the active target project/worktree (`TARGET_CWD`, resolved via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never assume `[ -d .git ]`, which is a file in linked git worktrees, or assume a single workspace root):
+Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md), delegating Sections 1–4 below across three worker roles on `TARGET_CWD`:
 
-1. **Repo interview scouts (`workspace: "inherit"`):** Fan out read-only scouts on `TARGET_CWD` to map `Surface`, `Run`, `Drive`, `Observe`, and `Isolate` in parallel.
-2. **Skill author (`verify-author`, `workspace: "share"`):** Write `.agents/skills/verify-<app>/` inside its isolated worktree. Because swarm workers do not mount installed plugin skills in `<skills>`, pass the resolved absolute `<plugin-dir>/skills/create-verification-skill/references/feature-map-example/` path in `verify-author`'s brief. Commit locally without pushing (`@verifier [done] <sha> <cwd>`).
-3. **Cold independent `verifier` (`workspace: "share"`):** Fetch `<author_cwd> <sha>` and check out detached (`git fetch <author_cwd> <sha> && git checkout --detach FETCH_HEAD` so linked git worktrees never collide on branch names), then execute `.agents/skills/verify-<app>/SKILL.md` cold end to end. Once `verifier` posts `PASS`, inspect `git -C <author_cwd> show --stat <sha>`, land via `git -C <TARGET_CWD> fetch <author_cwd> <sha> && git -C <TARGET_CWD> merge --no-edit FETCH_HEAD`, and call `swarm{action: "kill"}` on task workers (never `git push` or open PRs unless asked).
+1. **Interview scouts (`workspace: "inherit"`):** Map `Surface`, `Run`, `Drive`, `Observe`, and `Isolate` in parallel (Section 1).
+2. **Skill author (`verify-author`, `workspace: "share"`):** Author `.agents/skills/verify-<app>/` and `features/` (Sections 2–3, passing `<plugin-dir>/skills/create-verification-skill/references/feature-map-example/` in `verify-author`'s brief), commit locally, and ring `@verifier [done] <sha> <cwd>`.
+3. **Cold `verifier` (`workspace: "share"`):** Check out `<author_cwd> <sha>` detached, prove `.agents/skills/verify-<app>/SKILL.md` cold end to end (Section 4), and post `@coordinator [done] PASS` (or `@verify-author` on `ISSUES`). Audit and land `<author_cwd> <sha>` into `TARGET_CWD` per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md).
 
 ## 1. Interview the repo, not the user
 
@@ -30,7 +30,7 @@ Answer these from the codebase and only ask the user what you cannot observe:
 - **Observe:** what evidence can be captured? Screenshots, ARIA snapshots, terminal transcripts, response bodies, logs, exit codes, DB state.
 - **Isolate (concurrent worktrees & projects):** can two instances run side by side across simultaneous `agy` sessions in different projects or different git worktrees of the same repo? Allocate per-run state once via `RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/verify-<app>-XXXXXX")"` (persisting `RUN_DIR` in a variable/file rather than relying on shell `$$`, which changes across `run_command` calls, or static `/tmp/<app>` paths), bind ephemeral ports (`--port 0`, `--remote-debugging-port=0`), isolate data/config dirs (`$RUN_DIR/data`, `HOME`/`XDG_CONFIG_HOME` overrides when CLI/TUI writes dotfiles), isolate browser profiles (`--user-data-dir="$RUN_DIR/profile"`), and use dedicated tmux sockets (`tmux -L "verify-$(basename "$RUN_DIR")" -f /dev/null`). If parallel instances are genuinely impossible (singleton desktop bundle ID, exclusive hardware/simulator lock), say so explicitly in the generated skill: refusing (`blocked`) to double-drive a shared instance beats corrupting another worktree's or the user's session.
 
-If the checkout doesn't build or start as-is, fix that first (or report it precisely) before generating; a skill written against a broken base teaches wrong steps. When an irrelevant missing asset blocks startup (a static dir the API never serves, a sample config), the generated skill may create it inside `$RUN_DIR` (or clearly marked as verification scaffolding) and remove it in cleanup.
+If the checkout doesn't build or start as-is, report it precisely (or fix via a `share` worker only when within user scope) before generating; a skill written against a broken base teaches wrong steps. When an irrelevant missing asset blocks startup (a static dir the API never serves, a sample config), the generated skill may create it inside `$RUN_DIR` (or clearly marked as verification scaffolding) and remove it in cleanup.
 
 ## 2. Generate the skill
 
