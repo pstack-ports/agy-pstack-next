@@ -189,7 +189,7 @@ jobs:
               fail("skills/bro/SKILL.md: must preserve zero-side-effect inline rule");
             }
 
-            const driftPattern = /across model families|cross-family|overriding its default single-model rule|Autonomous model|action:\s*"models"/i;
+            const driftPattern = /across model families|cross-family|overriding its default single-model rule|Autonomous model|action:\s*"models"|swarm_monitor|swarm_narrator|plan\.json|open_board/i;
             for (const file of ["plugin.json", ...mdFiles]) {
               const text = readFileSync(file, "utf8");
               const hit = text.match(driftPattern);

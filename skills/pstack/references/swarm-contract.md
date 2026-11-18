@@ -4,7 +4,7 @@ All technical work in `agy-pstack-next` runs through Antigravity's built-in `swa
 
 ## 1. Built-in `swarm` First (Zero Overrides)
 
-Before your first `swarm` call in a session, `read_file` the built-in `swarm` skill in `<skills>` (and `swarm_pane` if present in `<skills>`). Follow every built-in `swarm` rule as written—coordinator-only role (`Do not do the work`), turn-1 setup (`title`, task workers, `monitor`, `swarm_pane` `plan.json` or `narrator`, `open_board`), default conversation-model inheritance and quota hot-swaps, board/channel etiquette (`@name` only for the next actor, `#seq` citations, `swarm_wait{since}`), `1` independent `verifier` per `2–4` authors, and `[done] <summary>` shutdown. Never override built-in `swarm` rules or bypass `swarm` with `invoke_subagent` / `run_workflow` (except `image-generator` for visual assets).
+Before your first `swarm` call in a session, `read_file` the built-in `swarm` skill in `<skills>` (and `swarm_pane` if listed in `<skills>`) and follow them as written without overrides. Never bypass `swarm` with `invoke_subagent` or `run_workflow` (except `image-generator` for visual assets).
 
 ## 2. Multi-Worktree & Process Isolation
 
