@@ -11,7 +11,7 @@ description: >-
 
 Break a change or design with real executed reproductions and prove what happens across transitive callers, wire schemas, migrations, and mixed-version rollouts—without modifying the coordinator's checkout.
 
-Load built-in `swarm` (and `swarm_pane` when present) before spawning workers, and anchor inspection to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never test `[ -d .git ]` or assume a single workspace root).
+Load built-in `swarm` (and `swarm_pane` when present) for board, workspace, and lifecycle mechanics, **overriding its default single-model rule**: invoking `/interrogate` explicitly opts into cross-family `high`/`xhigh` selection via `swarm{action: "models"}` unless the user asked to stay on their current model or named specific models. Anchor inspection to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never test `[ -d .git ]` or assume a single workspace root).
 
 ## Phase 1. Lock Scope, Intent & Primary Safety Fact
 
@@ -21,7 +21,7 @@ Load built-in `swarm` (and `swarm_pane` when present) before spawning workers, a
 
 ## Phase 2. Fan Out Exploit Authors & Blast-Radius Scout
 
-Call `swarm{action: "models"}` and pick distinct `high`/`xhigh` model families across adversaries and the verifier when available:
+Call `swarm{action: "models"}` and pick distinct `high`/`xhigh` model families across adversaries and the verifier when available (unless the user asked to stay on their current model or named specific models):
 
 1. **Adversarial exploit writers (`adv-logic`, `adv-boundary`, optional `adv-race` in `workspace: "share"`):**
    - **`adv-logic`:** State invariants, off-by-one bounds, partial-failure rollback, idempotency, and ordering races (when protocol interleavings matter, pass the resolved absolute `<plugin-dir>/skills/statechart/SKILL.md` path in `adv-logic`'s brief for `read_file` so it runs `<skill dir>/scripts/statechart` in a `mktemp -d` folder, not `/statechart` by slash name, since swarm workers do not mount plugin skills).

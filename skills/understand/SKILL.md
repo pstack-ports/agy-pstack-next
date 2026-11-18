@@ -17,7 +17,7 @@ Load built-in `swarm` (and `swarm_pane` when present) when fanning out a multi-s
 ## 1. Parallel Clue-Sharing Mesh (`workspace: "inherit"`)
 
 1. **Seed anchor.** Run 1 to 2 quick read-only lookups (`git -C <TARGET_CWD> log --follow --oneline -20 -- <path>`, `git -C <TARGET_CWD> blame`) and check `<mcp_servers>` for issue trackers, docs, chat, or telemetry tools.
-2. **Spawn scouts (`workspace: "inherit"`).** Call `swarm{action: "models"}` and assign fast or high-context models by scope:
+2. **Spawn scouts (`workspace: "inherit"`).** Leave `model` unset on `swarm{action: "add"}` so scouts inherit the user's chosen model (unless the user requested specific models):
    - **`code`:** Execution paths, domain types, callers, boundaries, and test assertions in `TARGET_CWD` (`file:line` anchors).
    - **`git`:** `git -C <TARGET_CWD> log --follow -p`, `-S`/`-G` pickaxe back past mechanical renames to the introducing commit SHA, and `gh pr view <n> --json title,body,comments,reviews`.
    - **`context` (when external MCPs exist):** Trackers (Linear/GitHub Issues), docs (Roam/Notion/ADRs), incidents, and telemetry.
