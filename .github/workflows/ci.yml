@@ -75,13 +75,13 @@ jobs:
             const errors = [];
             const fail = (msg) => errors.push(msg);
 
-            for (const legacy of ["plugin.json", "hooks.json", "hooks", "roles", "agents", "automations", "docs", "skills/verify-gen"]) {
+            for (const legacy of [".antigravity-plugin", "hooks.json", "hooks", "roles", "agents", "automations", "docs", "skills/verify-gen"]) {
               if (existsSync(legacy)) {
                 fail(`Legacy path "${legacy}" must not exist`);
               }
             }
 
-            const pluginJson = JSON.parse(readFileSync(".antigravity-plugin/plugin.json", "utf8"));
+            const pluginJson = JSON.parse(readFileSync("plugin.json", "utf8"));
             const expectedSkills = [
               "bro",
               "create-formal-verification-skill",

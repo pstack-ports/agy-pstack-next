@@ -12,7 +12,7 @@ description: >-
 
 Explore structurally distinct designs or executable prototypes in parallel, stress-test them blind against the Structural Design Red Flags in [`../pstack/references/principles.md`](../pstack/references/principles.md), and graft the strongest parts into one coherent implementation.
 
-Load built-in `swarm` (and `swarm_pane` when present) before spawning workers, and anchor all lookups and final landing to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never test `[ -d .git ]` or assume a single workspace root).
+Load built-in `swarm` (and `swarm_pane` when present) for board, workspace, and lifecycle mechanics, **overriding its default single-model rule**: invoking `/crucible` explicitly opts into cross-family `high`/`xhigh` selection via `swarm{action: "models"}` unless the user asked to stay on their current model or named specific models. Anchor all lookups and final landing to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never test `[ -d .git ]` or assume a single workspace root).
 
 ## Phase 1. Ground Constraints & Pick Fidelity
 
@@ -24,7 +24,7 @@ Load built-in `swarm` (and `swarm_pane` when present) before spawning workers, a
 
 ## Phase 2. Fan Out Orthogonal Axes Across Model Families
 
-1. Call `swarm{action: "models"}` to inspect live models and remaining quota, and pick 2 to 3 `high`/`xhigh` models from **distinct provider families** when available (unless the user requested specific models).
+1. Call `swarm{action: "models"}` to inspect live models and remaining quota, and pick 2 to 3 `high`/`xhigh` models from **distinct provider families** when available (unless the user asked to stay on their current model or named specific models).
 2. Because the swarm board is public, assign **explicit orthogonal design axes** to `design-a`, `design-b`, and `design-c` (`workspace: "share"`):
    - **`design-a`:** e.g. pure immutable data-transform pipeline with stateless callers.
    - **`design-b`:** e.g. deep stateful module hiding lifecycle, caching, and idempotent transitions behind one narrow handle.
@@ -36,7 +36,7 @@ Load built-in `swarm` (and `swarm_pane` when present) before spawning workers, a
 Keep `design-a..c` parked in `waiting` (zero cost while keeping their `share` worktrees on disk for inspection and `cherry-pick`).
 
 1. **Optional `#seq` critique round.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest concrete failure mode or caller leak in each rival axis.
-2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders. Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags (pass the resolved absolute `<plugin-dir>/skills/pstack/references/principles.md` path in `judge`'s brief, never a relative `../` path or slash name, since swarm workers do not mount plugin skills), scores the rubric, and posts:
+2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders (or omit `model` when the user opted to stay on their current model). Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags (pass the resolved absolute `<plugin-dir>/skills/pstack/references/principles.md` path in `judge`'s brief, never a relative `../` path or slash name, since swarm workers do not mount plugin skills), scores the rubric, and posts:
    - Recommended base option and why its boundary ages best.
    - Specific donor artifacts (edge-case tests, helpers, benchmarks) worth porting from rival worktrees.
 
