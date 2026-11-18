@@ -2,48 +2,41 @@
 name: crucible
 description: >-
   Explore competing designs (sketch) or working prototypes (full) across
-  orthogonal axes and distinct model families in isolated share worktrees, grade
-  blind against design red flags, and synthesize via warm fork and cherry-pick.
-  Use for /agy-pstack-next:crucible, /crucible, "design this", "architect this",
-  or comparing structural options before committing to one shape.
+  orthogonal structural axes in isolated share worktrees, grade blind against
+  design red flags, and synthesize via warm fork and cherry-pick. Use for
+  /agy-pstack-next:crucible, /crucible, "design this", "architect this", or
+  comparing structural options before committing to one shape.
 ---
 
 # Crucible
 
-Explore structurally distinct designs or executable prototypes in parallel, stress-test them blind against the Structural Design Red Flags in [`../pstack/references/principles.md`](../pstack/references/principles.md), and graft the strongest parts into one coherent implementation.
-
-Load built-in `swarm` (and `swarm_pane` when present) for board, workspace, and lifecycle mechanics, **overriding its default single-model rule**: invoking `/crucible` explicitly opts into cross-family `high`/`xhigh` selection via `swarm{action: "models"}` unless the user asked to stay on their current model or named specific models. Anchor all lookups and final landing to the active target project/worktree (`TARGET_CWD`, verified via `git -C <TARGET_CWD> rev-parse --show-toplevel` — never test `[ -d .git ]` or assume a single workspace root).
+Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md) to explore structurally distinct designs in parallel, grade them blind against [`../pstack/references/principles.md`](../pstack/references/principles.md), and synthesize the strongest boundary.
 
 ## Phase 1. Ground Constraints & Pick Fidelity
 
-1. **Ground existing boundaries.** Skip only for greenfield modules with zero callers. Otherwise run [`/understand`](../understand/SKILL.md) (or one fast `inherit` scout on `TARGET_CWD`) to map current callers, domain invariants, and constraints.
-2. **Choose `sketch` or `full` fidelity.**
-   - **`sketch` (fast boundary & API design):** Default when settling module boundaries, data shapes, or public signatures. Each candidate writes 2 to 3 realistic caller snippets first, concrete domain types (`not implemented` bodies allowed), a state transition table, a failure matrix (retry, crash mid-flight, concurrent actor, bad input), and a touched-file diff sketch.
-   - **`full` (executable prototypes):** Default when comparing algorithms, UI feel, refactor strategies, or perf levers where paper sketches hide friction. Each candidate builds a working prototype in its `share` worktree, runs behavioral tests or benchmarks in an isolated `mktemp -d` directory with `--port 0` (so concurrent worktrees/projects never collide), and commits cleanly.
-3. **Lock a falsifiable rubric.** Define 3 to 6 concrete criteria before fan-out (interface depth, single-owner state, boundary parsing, failure recovery, caller ergonomics, measured latency/coverage).
+1. **Ground boundaries.** Skip only for greenfield modules with zero callers; otherwise run [`/understand`](../understand/SKILL.md) (or one `inherit` scout on `TARGET_CWD`) to map callers, invariants, and constraints.
+2. **Pick fidelity:**
+   - **`sketch` (default for boundaries & APIs):** 2–3 realistic caller snippets first, concrete domain types (`not implemented` bodies allowed), state transition table, failure matrix (retry, mid-flight crash, concurrency, bad input), and touched-file diff sketch.
+   - **`full` (default for algorithms, UI feel, refactors & perf):** Working prototype in each `share` worktree with executed behavioral tests or benchmarks committed cleanly.
+3. **Lock a falsifiable rubric.** Define 3–6 concrete criteria before fan-out (interface depth, single-owner state, boundary parsing, failure recovery, caller ergonomics, measured latency/coverage).
 
-## Phase 2. Fan Out Orthogonal Axes Across Model Families
+## Phase 2. Fan Out Orthogonal Design Axes
 
-1. Call `swarm{action: "models"}` to inspect live models and remaining quota, and pick 2 to 3 `high`/`xhigh` models from **distinct provider families** when available (unless the user asked to stay on their current model or named specific models).
-2. Because the swarm board is public, assign **explicit orthogonal design axes** to `design-a`, `design-b`, and `design-c` (`workspace: "share"`):
-   - **`design-a`:** e.g. pure immutable data-transform pipeline with stateless callers.
-   - **`design-b`:** e.g. deep stateful module hiding lifecycle, caching, and idempotent transitions behind one narrow handle.
-   - **`design-c`:** e.g. subtractive extension of an existing module with zero new public surface.
-3. Require each brief to: write caller usage before types, prefer deep modules over shallow wrappers, encode invariants in types (pass the resolved absolute `<plugin-dir>/skills/typescript-best-practices/SKILL.md` path for `.ts`/`.tsx` work, or `<plugin-dir>/skills/statechart/SKILL.md` when stateful flows warrant a checked TLA+ statechart), commit locally (never push), and post `[done] <sha> <cwd>` plus key tradeoffs.
+1. Because the swarm board is public, enforce genuine structural divergence by assigning **explicit orthogonal axes** to `design-a`, `design-b`, and `design-c` (`workspace: "share"`):
+   - **`design-a`:** Pure immutable data-transform pipeline with stateless callers.
+   - **`design-b`:** Deep stateful module hiding lifecycle, caching, and idempotent transitions behind one narrow handle.
+   - **`design-c`:** Subtractive extension of an existing module with zero new public surface.
+2. Require each brief to write caller usage before types, prefer deep modules, encode invariants in types (passing `<plugin-dir>/skills/typescript-best-practices/SKILL.md` for `.ts`/`.tsx` or `<plugin-dir>/skills/statechart/SKILL.md` when stateful flows warrant a TLA+ statechart), commit locally, and post `[done] <sha> <cwd>` plus key tradeoffs.
 
-## Phase 3. Peer Critique & Blind Cross-Family `judge`
+## Phase 3. Peer Critique & Blind `judge`
 
-Keep `design-a..c` parked in `waiting` (zero cost while keeping their `share` worktrees on disk for inspection and `cherry-pick`).
+Keep `design-a..c` in `waiting` so their `share` worktrees remain available for inspection and `cherry-pick`.
 
-1. **Optional `#seq` critique round.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest concrete failure mode or caller leak in each rival axis.
-2. **Blind cross-family `judge`.** Spawn `judge` (`workspace: "inherit"`) on a `high` model from a family **different** from the leading contenders (or omit `model` when the user opted to stay on their current model). Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) without model IDs. `judge` inspects each worktree diff directly, screens against all 8 Structural Design Red Flags (pass the resolved absolute `<plugin-dir>/skills/pstack/references/principles.md` path in `judge`'s brief, never a relative `../` path or slash name, since swarm workers do not mount plugin skills), scores the rubric, and posts:
-   - Recommended base option and why its boundary ages best.
-   - Specific donor artifacts (edge-case tests, helpers, benchmarks) worth porting from rival worktrees.
+1. **Optional `#seq` critique.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest failure mode or caller leak in each rival axis.
+2. **Blind `judge` (`workspace: "inherit"`).** Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) mapped only to `<cwd>` and `<sha>` without worker names or axis prompts. Instruct `judge` not to call `read_board{since: 0}` so authorship stays hidden; inspect each git diff directly, screen against all 8 Structural Design Red Flags (`<plugin-dir>/skills/pstack/references/principles.md`), score the rubric, and post the winning base option plus specific donor tests/helpers worth porting.
 
-## Phase 4. Synthesize via Warm `fork`, Verify & Retire
+## Phase 4. Synthesize via Warm `fork`, Verify & Land
 
-1. Inspect the winning diff and `judge` citations yourself. Pause for user sign-off here only if the user asked to review before implementation.
-2. Spawn `synth` (`workspace: "share"`, `fork: "<winning-design>"`):
-   - `git fetch <winner_cwd> <winner_sha> && git checkout --detach FETCH_HEAD` (use `--detach` rather than a fixed branch name so concurrent `/crucible` runs across linked git worktrees of the same repo never hit git's shared-branch lock).
-   - Pull targeted donor tests/helpers via `git fetch <donor_cwd> <donor_sha>` and rewrite grafted pieces so names, types, and invariants fit **one** unified mental model (scrap and re-sketch if filling in `sketch` bodies causes caller leaks across boundaries).
-3. Gate `synth` with an independent `verifier` (running `.agents/skills/verify-*` when present), land into `TARGET_CWD` via `git -C <TARGET_CWD> fetch <synth_cwd> <synth_sha> && git -C <TARGET_CWD> merge --no-edit FETCH_HEAD`, and only **after** `git -C <TARGET_CWD> log -1` confirms landing, call `swarm{action: "kill"}` on all task workers. Never `git push` unasked.
+1. Review the winning diff and `judge` citations; pause here only if the user asked to approve before synthesis.
+2. Spawn `synth` (`workspace: "share"`, `fork: "<winning-design>"`) to check out `<winner_cwd> <winner_sha>` detached, fetch targeted donor commits, and rewrite grafted pieces into **one** unified mental model (re-sketching if filling `sketch` bodies leaks internals across boundaries).
+3. Gate `synth` with an independent `verifier` (running `.agents/skills/verify-*` when present), then audit, land into `TARGET_CWD`, and retire task workers per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md).

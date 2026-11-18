@@ -158,6 +158,46 @@ jobs:
               }
             }
 
+            const swarmContract = join("skills", "pstack", "references", "swarm-contract.md");
+            if (!existsSync(swarmContract)) {
+              fail(`${swarmContract} must exist`);
+            }
+
+            const swarmSkills = [
+              "create-formal-verification-skill",
+              "create-verification-skill",
+              "crucible",
+              "interrogate",
+              "maintain-formal-verification-skill",
+              "maintain-verification-skill",
+              "pstack",
+              "statechart",
+              "typescript-best-practices",
+              "understand",
+            ];
+            for (const dir of swarmSkills) {
+              const skillFile = join("skills", dir, "SKILL.md");
+              const content = readFileSync(skillFile, "utf8");
+              const expectedRef = dir === "pstack" ? "references/swarm-contract.md" : "../pstack/references/swarm-contract.md";
+              if (!content.includes(`(${expectedRef})`)) {
+                fail(`${skillFile}: must reference ${expectedRef}`);
+              }
+            }
+
+            const broText = readFileSync(join("skills", "bro", "SKILL.md"), "utf8");
+            if (!broText.includes("Never spawn swarm workers, write files, or edit the repository.")) {
+              fail("skills/bro/SKILL.md: must preserve zero-side-effect inline rule");
+            }
+
+            const driftPattern = /across model families|cross-family|overriding its default single-model rule|Autonomous model|action:\s*"models"|swarm_monitor|swarm_narrator|plan\.json|open_board/i;
+            for (const file of ["plugin.json", ...mdFiles]) {
+              const text = readFileSync(file, "utf8");
+              const hit = text.match(driftPattern);
+              if (hit) {
+                fail(`${file}: contains built-in swarm override/drift pattern "${hit[0]}"`);
+              }
+            }
+
             const installedList = JSON.parse(readFileSync(process.env.AGY_PLUGINS_JSON, "utf8"));
             const installed = installedList.find((p) => p.name === pluginJson.name);
             if (!installed || !installed.enabled) {
