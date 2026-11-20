@@ -161,6 +161,11 @@ jobs:
             const swarmContract = join("skills", "pstack", "references", "swarm-contract.md");
             if (!existsSync(swarmContract)) {
               fail(`${swarmContract} must exist`);
+            } else {
+              const swarmContractText = readFileSync(swarmContract, "utf8");
+              if (!swarmContractText.includes("<appDataDir>/builtin/skills/native_swarm/SKILL.md")) {
+                fail(`${swarmContract}: must fall back to <appDataDir>/builtin/skills/native_swarm/SKILL.md when built-in swarm is omitted from <skills>`);
+              }
             }
 
             const swarmSkills = [
