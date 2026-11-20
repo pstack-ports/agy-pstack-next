@@ -4,7 +4,7 @@ All technical work in `agy-pstack-next` runs through Antigravity's built-in `swa
 
 ## 1. Built-in `swarm` First (Zero Overrides)
 
-Before your first `swarm` call in a session, `read_file` the built-in `swarm` skill in `<skills>` (and `swarm_pane` if listed in `<skills>`) and follow them as written without overrides. Never bypass `swarm` with `invoke_subagent` or `run_workflow` (except `image-generator` for visual assets).
+Before your first `swarm` call in a session, ensure Antigravity's built-in `swarm` instructions are loaded (plus `swarm_pane` if listed in `<skills>`) and follow them as written without overrides: if `/swarm` was not already expanded in this session and `swarm` is omitted from `<skills>` (built-in `swarm` sets `disable-model-invocation: true`), `read_file` `<appDataDir>/builtin/skills/native_swarm/SKILL.md` (using `App Data Directory` from `<user_information>`). If that read is unavailable or denied, ask the user to invoke `/swarm` (or approve reading that file) rather than guessing built-in swarm conventions. Never bypass `swarm` with `invoke_subagent` or `run_workflow` (except `image-generator` for visual assets).
 
 ## 2. Multi-Worktree & Process Isolation
 
