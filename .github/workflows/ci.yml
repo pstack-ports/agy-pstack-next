@@ -129,7 +129,7 @@ jobs:
               return out;
             };
 
-            const mdFiles = ["README.md", ...walkMd("skills")];
+            const mdFiles = ["README.md", ...walkMd("rules"), ...walkMd("skills")];
             for (const file of mdFiles) {
               const text = readFileSync(file, "utf8");
               for (const m of text.matchAll(/\]\((?!https?:|mailto:|file:|customization:)([^)#]+)(?:#[^)]*)?\)/g)) {
@@ -156,6 +156,15 @@ jobs:
               if (/^(paths|disable-model-invocation):/m.test(fm)) {
                 fail(`${skillFile}: unsupported Cursor-only frontmatter key found`);
               }
+            }
+
+            const pluginRule = join("rules", "AGENTS.md");
+            if (!existsSync(pluginRule)) {
+              fail(`${pluginRule} must exist`);
+            }
+            const legacyPrinciples = join("skills", "pstack", "references", "principles.md");
+            if (existsSync(legacyPrinciples)) {
+              fail(`${legacyPrinciples} must not exist; consolidated into ${pluginRule}`);
             }
 
             const swarmContract = join("skills", "pstack", "references", "swarm-contract.md");

@@ -10,7 +10,7 @@ description: >-
 
 # Crucible
 
-Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md) to explore structurally distinct designs in parallel, grade them blind against [`../pstack/references/principles.md`](../pstack/references/principles.md), and synthesize the strongest boundary.
+Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md) to explore structurally distinct designs in parallel, grade them blind against [`../../rules/AGENTS.md`](../../rules/AGENTS.md), and synthesize the strongest boundary.
 
 ## Phase 1. Ground Constraints & Pick Fidelity
 
@@ -33,7 +33,7 @@ Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack
 Keep `design-a..c` in `waiting` so their `share` worktrees remain available for inspection and `cherry-pick`.
 
 1. **Optional `#seq` critique.** When tradeoffs are subtle, wake `@design-a @design-b @design-c` once to cite peers' `#seq` posts and name the sharpest failure mode or caller leak in each rival axis.
-2. **Blind `judge` (`workspace: "inherit"`).** Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) mapped only to `<cwd>` and `<sha>` without worker names or axis prompts. Instruct `judge` not to call `read_board{since: 0}` so authorship stays hidden; inspect each git diff directly, screen against all 8 Structural Design Red Flags (`<plugin-dir>/skills/pstack/references/principles.md`), score the rubric, and post the winning base option plus specific donor tests/helpers worth porting.
+2. **Blind `judge` (`workspace: "inherit"`).** Pass anonymized labels (`option-oak`, `option-pine`, `option-cedar`) mapped only to `<cwd>` and `<sha>` without worker names or axis prompts. Instruct `judge` not to call `read_board{since: 0}` so authorship stays hidden; inspect each git diff directly, screen against all 8 Structural Design Red Flags (`<plugin-dir>/rules/AGENTS.md`), score the rubric, and post the winning base option plus specific donor tests/helpers worth porting.
 
 ## Phase 4. Synthesize via Warm `fork`, Verify & Land
 
