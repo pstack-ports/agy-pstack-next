@@ -11,7 +11,7 @@ description: >-
 
 Apply **Model the domain & type discipline** and **Boundary discipline** in [`../pstack/references/principles.md`](../pstack/references/principles.md) first.
 
-For code edits, refactors, or repo audits invoked directly by the user, route execution through built-in `swarm` per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md), passing `<plugin-dir>/skills/typescript-best-practices/SKILL.md` (and `references/patterns.md` when needed) in each worker's brief and running typechecks/tests inside the worker's `$PWD`.
+For multi-file edits or repo-wide audits invoked directly in App/CLI, route execution through built-in `swarm` per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md), passing `<plugin-dir>/skills/typescript-best-practices/SKILL.md` (and `references/patterns.md` when needed) in each worker's brief. When running inside `/boost`, `/teamwork`, an IDE extension, an active worker, or a single-file task, apply these rules and run typechecks/tests inline per the Embedded Context rule in [`swarm-contract.md`](../pstack/references/swarm-contract.md).
 
 | Rule | Summary |
 |------|---------|

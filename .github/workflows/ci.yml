@@ -166,6 +166,21 @@ jobs:
               if (!swarmContractText.includes("<appDataDir>/builtin/skills/native_swarm/SKILL.md")) {
                 fail(`${swarmContract}: must fall back to <appDataDir>/builtin/skills/native_swarm/SKILL.md when built-in swarm is omitted from <skills>`);
               }
+              if (!swarmContractText.includes("Embedded & Non-Swarm Contexts")) {
+                fail(`${swarmContract}: must document Embedded & Non-Swarm Contexts for Layer 1 portability`);
+              }
+            }
+
+            const interopRef = join("skills", "pstack", "references", "orchestrator-interop.md");
+            if (!existsSync(interopRef)) {
+              fail(`${interopRef} must exist`);
+            } else {
+              if (!readFileSync(join("skills", "pstack", "SKILL.md"), "utf8").includes("references/orchestrator-interop.md")) {
+                fail("skills/pstack/SKILL.md: must reference references/orchestrator-interop.md");
+              }
+              if (!readFileSync(swarmContract, "utf8").includes("(orchestrator-interop.md)")) {
+                fail(`${swarmContract}: must reference orchestrator-interop.md`);
+              }
             }
 
             const swarmSkills = [

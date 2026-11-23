@@ -1,8 +1,8 @@
 {
   "name": "agy-pstack-next",
   "displayName": "agy-pstack-next",
-  "version": "3.2.1",
-  "description": "Pstack engineering workflows layered on Antigravity's built-in swarm.",
+  "version": "3.3.0",
+  "description": "Composable Pstack engineering kit and swarm-native workflows across Antigravity's /swarm, /boost, and /teamwork.",
   "author": {
     "name": "Lauren Tan"
   },

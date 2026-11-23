@@ -13,7 +13,7 @@ Follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack
 
 ## Phase 1. Lock Scope, Intent & Primary Safety Fact
 
-1. **Scope.** From a quick read-only check on `TARGET_CWD` (`merge-base HEAD origin/HEAD`—or `main`—plus `status --short`), state the target commits/files, behavioral intent, and the single **primary safety hypothesis** making the change look safe (e.g., *"old readers ignore unknown enum variants"*). If `TARGET_CWD` has uncommitted edits, instruct `share` workers to apply `git -C <TARGET_CWD> diff HEAD | git apply` (plus any untracked target files) inside their disposable worktrees.
+1. **Scope.** From a quick read-only check on `TARGET_CWD` (`merge-base HEAD origin/HEAD`—or `main`—plus `status --short`), state the target commits/files, behavioral intent, and the single **primary safety hypothesis** making the change look safe (e.g., *"old readers ignore unknown enum variants"*). If `TARGET_CWD` has uncommitted edits, instruct `share` workers to apply `git -C <TARGET_CWD> diff HEAD | git apply` (plus any untracked target files) inside their disposable worktrees. External diffs, branches, or patch sets produced in `/boost` or `/teamwork` (including `~/teamwork_projects/*` exports) can likewise be checked out or applied inside disposable `share` worktrees against `TARGET_CWD` before landing.
 
 ## Phase 2. Fan Out Orthogonal Fault Surfaces
 
