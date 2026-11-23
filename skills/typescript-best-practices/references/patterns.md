@@ -1,6 +1,6 @@
 # TypeScript patterns
 
-Code examples for each rule in [`../SKILL.md`](../SKILL.md). The underlying principles are language-agnostic. See **Model the domain & type discipline** and **Boundary discipline** in [`../../pstack/references/principles.md`](../../pstack/references/principles.md).
+Code examples for each rule in [`../SKILL.md`](../SKILL.md). The underlying principles are language-agnostic. See **Model the domain & type discipline** and **Boundary discipline** in [`../../../rules/AGENTS.md`](../../../rules/AGENTS.md).
 
 ## Branded types
 
@@ -273,7 +273,7 @@ const config = { theme: "dark", cols: 3 } satisfies Config;
 
 ## Boundary validation
 
-Validate once where data crosses in. Trust types inside. See **Boundary discipline** in [`../../pstack/references/principles.md`](../../pstack/references/principles.md).
+Validate once where data crosses in. Trust types inside. See **Boundary discipline** in [`../../../rules/AGENTS.md`](../../../rules/AGENTS.md).
 
 - **Wire formats** (proto, JSON-RPC): parse with `ignoreUnknownFields` so forward-compatible changes don't break old clients.
 - **Persisted JSON:** versioned blob with a try/catch around the parse.

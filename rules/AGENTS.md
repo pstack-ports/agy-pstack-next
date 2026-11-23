@@ -1,6 +1,6 @@
 # Pstack Engineering Principles
 
-Distill the 3 to 4 principles relevant to a slice into each worker's brief, and judge diffs against them before merging.
+Apply these principles across regular sessions, `/boost`, `/teamwork`, and `/swarm` (distilling the 3 to 4 rules relevant to a slice into swarm worker briefs, and judging diffs against them before merging).
 
 ## 1. Core Execution & Architecture
 
@@ -34,7 +34,7 @@ Screen designs and diffs against these eight traps (assume the next contributor 
 
 ## 3. Verification, Debugging & Numbers
 
-15. **Prove it works.** Never accept an author self-report or `"it compiles"` as proof. Gate every wave through an independent `verifier` running real behavioral checks (`.agents/skills/verify-*`, CLI/UI flows, and test suites).
+15. **Prove it works.** Never accept an author self-report or `"it compiles"` as proof. Verify every change with real behavioral checks (`.agents/skills/verify-*`, CLI/UI flows, and test suites), gating through an independent `verifier` in `/swarm` or `Auditor` in `/teamwork`.
 16. **Fix root causes.** Reproduce deterministically first, then trace back to the earliest invalid state transition. Never mask bad internal state with nil guards, swallowed errors, or blind retries.
 17. **Attack the premise.** When two fixes sharing one assumption fail the same check, stop editing production code, write that assumption down in one sentence, and run a direct probe to test it first.
 18. **Test behavior, not implementation.** Drive public interfaces with realistic inputs. Tests must fail when observable behavior breaks and stay green when private internals are refactored. Never compute expected values using the code under test.
@@ -43,7 +43,7 @@ Screen designs and diffs against these eight traps (assume the next contributor 
 
 ## 4. Swarm Delegation & Code/Prose Hygiene
 
-21. **Guard the context window.** Keep bulk file sweeps, log parsing, and raw test dumps inside workers; post concise board summaries citing `#seq` and spill >4 KB reports to scratch files per [`swarm-contract.md`](swarm-contract.md).
+21. **Guard the context window.** Keep bulk file sweeps, log parsing, and raw test dumps inside delegated workers or subagents; in `/swarm`, post concise board summaries citing `#seq` and spill >4 KB reports to scratch files per [`swarm-contract.md`](../skills/pstack/references/swarm-contract.md).
 22. **Never block on reversible work.** Settle empirical technical questions by running probes or prototypes rather than asking the user. Pause only for genuine product-taste choices or irreversible external actions (`git push`, opening PRs, deploys, destructive deletes).
 23. **Encode lessons in structure.** Turn recurring mistakes into static types, linter checks, verification harnesses, or CI gates instead of adding more prompt prose (pair with `/learn` when capturing user preferences).
 24. **Zero-slop comment & prose hygiene.**

@@ -9,7 +9,7 @@ description: >-
 
 # TypeScript best practices
 
-Apply **Model the domain & type discipline** and **Boundary discipline** in [`../pstack/references/principles.md`](../pstack/references/principles.md) first.
+Apply **Model the domain & type discipline** and **Boundary discipline** in [`../../rules/AGENTS.md`](../../rules/AGENTS.md) first.
 
 For multi-file edits or repo-wide audits invoked directly in App/CLI, route execution through built-in `swarm` per [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md), passing `<plugin-dir>/skills/typescript-best-practices/SKILL.md` (and `references/patterns.md` when needed) in each worker's brief. When running inside `/boost`, `/teamwork`, an IDE extension, an active worker, or a single-file task, apply these rules and run typechecks/tests inline per the Embedded Context rule in [`swarm-contract.md`](../pstack/references/swarm-contract.md).
 
@@ -26,7 +26,7 @@ For multi-file edits or repo-wide audits invoked directly in App/CLI, route exec
 | Type guards | Must verify the claim. A lying guard is worse than `as` because the bug hides behind a name that says it's safe. Name them `isX` or `hasX`. |
 | Exhaustiveness | Inline `const _exhaustive: never = x;` in default arms so the compiler errors when a new variant is added. |
 | `satisfies` over `as` | Validates the value without widening literal types. |
-| Boundary validation | Parse where data crosses in, into a named domain type. `Record<string, unknown>` (however spelled) stops at that parse. Trust types inside. See **Boundary discipline** in [`../pstack/references/principles.md`](../pstack/references/principles.md). |
+| Boundary validation | Parse where data crosses in, into a named domain type. `Record<string, unknown>` (however spelled) stops at that parse. Trust types inside. See **Boundary discipline** in [`../../rules/AGENTS.md`](../../rules/AGENTS.md). |
 | Schema-derived types | Reach for `Pick`/`Omit`/`Parameters`/`ReturnType`/`Awaited`/`typeof` before declaring a new interface. |
 | Object args | Pass objects, not positional, so argument order is self-documenting. Skip on hot paths (per-frame render, tokenizers, parsers). |
 | Real tests | Don't mock what you can run. Prefer the framework's real test primitives with leak/disposable checks, and verify UI in a running build. Mock only what you can't run locally. |
