@@ -12,7 +12,7 @@ description: >-
 
 The chart shows how a system moves between states, in the words of the person who reads it. That person, the reader, decides whether the behavior is right.
 
-When invoked directly by the user, follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md): delegate spec authoring, TLC checking, Pele rendering, and real-code bug replay to `swarm` worker(s), passing this skill's resolved `<plugin-dir>/skills/statechart/SKILL.md` path in each brief. Inside a worker, execute the steps below in a fresh scratch folder.
+When invoked directly by the user in App/CLI for a broad multi-component system, follow built-in `swarm` and [`../pstack/references/swarm-contract.md`](../pstack/references/swarm-contract.md): delegate spec authoring, TLC checking, Pele rendering, and real-code bug replay to `swarm` worker(s), passing this skill's resolved `<plugin-dir>/skills/statechart/SKILL.md` path in each brief. When running inside `/boost`, `/teamwork`, an IDE extension, an active worker, or a single-model check, execute the steps below inline in a fresh `mktemp -d` scratch folder without spawning a nested `swarm`.
 
 ## Run
 

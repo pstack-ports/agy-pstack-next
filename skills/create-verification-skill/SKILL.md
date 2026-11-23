@@ -10,7 +10,7 @@ description: >-
 
 # Create a verification skill
 
-Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local Antigravity skill (`.agents/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent or swarm `verifier` that has never seen the app.
+Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local Antigravity skill (`.agents/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by a `/swarm` `verifier`, a `/boost` improvement worker, a `/teamwork` `Auditor` or `Success Auditor`, or an IDE agent that has never seen the app.
 
 ## Swarm Orchestration
 
@@ -34,7 +34,7 @@ If the checkout doesn't build or start as-is, report it precisely (or fix via a 
 
 ## 2. Generate the skill
 
-Write `.agents/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verify-<app>` and a `description` that names the app, the surface, and when to reach for it — without frontmatter the skill never registers) and these sections, each grounded in what the interview actually found (no placeholders left):
+Write `.agents/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verify-<app>` and a `description` that names the app, the surface, and when to reach for it — without frontmatter the skill never registers) without assuming `swarm` tools exist so `/swarm` `verifier`s, `/boost` challenge workers, `/teamwork` `Auditor` / `Success Auditor`, and direct IDE agents execute it identically, with these sections grounded in what the interview actually found (no placeholders left):
 
 - **Launch:** the exact command that starts the app for verification from `$PWD`, allocating `RUN_DIR` (`mktemp -d`), binding an ephemeral port when supported, and how to tell it's ready (a log line, a prompt, a health response). Launch must reach a usable state from an empty data dir, including any migrations and seed data. Ready means usable, not just that a process answers. A database health check can pass while its init scripts are still running. Include teardown. For a short-lived CLI or TUI there is no server to keep alive: launch means build the binary (or install deps) once in `$PWD`, then start each drive in its own isolated PTY or `tmux -L` session.
 - **Doctor:** one read-only check that answers "is this instance worth driving?" — process up (matching `$RUN_DIR/pid`), right worktree/build revision (so Worktree B never drives a server started from Worktree A), port owned by this run, disposable data dir active, auth valid. An agent runs this first whenever anything looks off.

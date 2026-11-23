@@ -1,10 +1,12 @@
 # Pstack Built-in `swarm` Contract
 
-All technical work in `agy-pstack-next` runs through Antigravity's built-in `swarm`.
+Multi-agent technical workflows in `agy-pstack-next` run through Antigravity's built-in `swarm`, while portable Layer 1 skills and generated `.agents/skills/verify-*` gates run inline in embedded or non-swarm contexts.
 
 ## 1. Built-in `swarm` First (Zero Overrides)
 
 Before your first `swarm` call in a session, ensure Antigravity's built-in `swarm` instructions are loaded (plus `swarm_pane` if listed in `<skills>`) and follow them as written without overrides: if `/swarm` was not already expanded in this session and `swarm` is omitted from `<skills>` (built-in `swarm` sets `disable-model-invocation: true`), `read_file` `<appDataDir>/builtin/skills/native_swarm/SKILL.md` (using `App Data Directory` from `<user_information>`). If that read is unavailable or denied, ask the user to invoke `/swarm` (or approve reading that file) rather than guessing built-in swarm conventions. Never bypass `swarm` with `invoke_subagent` or `run_workflow` (except `image-generator` for visual assets).
+
+- **Embedded & Non-Swarm Contexts (Layer 1 Portability).** When [`/typescript-best-practices`](../../typescript-best-practices/SKILL.md), [`/statechart`](../../statechart/SKILL.md), or a repo-local `.agents/skills/verify-*` skill is invoked inside `/boost`, `/teamwork`, an IDE extension, an existing swarm worker turn, or a single-file task, execute its rules and checks inline without spawning a nested `swarm`. When a task fits `/boost` or `/teamwork` better than `/swarm`, emit a grounded handoff brief per [`orchestrator-interop.md`](orchestrator-interop.md) rather than wrapping those commands programmatically.
 
 ## 2. Multi-Worktree & Process Isolation
 
